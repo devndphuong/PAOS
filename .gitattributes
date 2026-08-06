@@ -1,0 +1,6 @@
+# core.autocrlf=true là mặc định phổ biến trên Windows, và sẽ tự động chuyển
+# LF -> CRLF khi checkout nếu không có file này. scripts/*.sh cần LF thật —
+# CRLF trong dòng shebang (#!/usr/bin/env bash) khiến bash không parse được.
+# Ghi rõ ở đây để đúng trên MỌI máy, không phụ thuộc cấu hình git cá nhân.
+* text=auto eol=lf
+*.sh text eol=lf

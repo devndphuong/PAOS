@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://schemas/events/kernel.startup.v1.schema.json",
+  "title": "kernel.startup payload",
+  "description": "Payload cho event kernel.startup (doc 05 §3.1) — ghi khi paosd khởi động xong.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version"],
+  "properties": {
+    "version": {
+      "type": "string",
+      "description": "Phiên bản paosd, vd '0.0.1'"
+    },
+    "uptime": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Luôn 0 lúc startup — có mặt để đồng nhất hình dạng với kernel.shutdown"
+    }
+  }
+}

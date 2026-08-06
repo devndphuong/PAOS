@@ -1,0 +1,103 @@
+# Cưỡng chế quy tắc phụ thuộc doc 17 §1.
+#
+#   apps      ->  sdk  ->  kernel
+#   agents    ->  sdk  ->  kernel
+#   providers ->  capabilities  ->  kernel
+#   plugins   ->  sdk (KHÔNG được import kernel.*)
+#   kernel    ->  (không phụ thuộc ai)
+#
+# Vi phạm = CI đỏ, không merge được. Nếu một ngày bạn muốn thêm ngoại lệ vào
+# file này để merge nhanh — đọc lại doc 17 §10 trước.
+
+[importlinter]
+root_packages =
+    kernel
+    sdk
+    capabilities
+    providers
+    agents
+    apps
+include_external_packages = True
+
+# --- Hợp đồng 1: phân tầng -------------------------------------------------
+[importlinter:contract:layers]
+name = Quy tắc phụ thuộc theo tầng (doc 17 §1)
+type = layers
+layers =
+    apps
+    agents : providers
+    sdk : capabilities
+    kernel
+
+# --- Hợp đồng 2: Kernel không phụ thuộc ai --------------------------------
+[importlinter:contract:kernel-doc-lap]
+name = Kernel không import bất kỳ tầng nào khác (MNT-06)
+type = forbidden
+source_modules = kernel
+forbidden_modules =
+    sdk
+    capabilities
+    providers
+    agents
+    apps
+    plugins
+
+# --- Hợp đồng 3: Kernel không chạm framework web --------------------------
+# ADR-0021 điều khoản 2: toàn bộ mã HTTP nằm ở apps/paosd/.
+[importlinter:contract:kernel-khong-web]
+name = Kernel không import framework web (ADR-0021)
+type = forbidden
+source_modules = kernel
+forbidden_modules =
+    fastapi
+    starlette
+    uvicorn
+
+# --- Hợp đồng 4: Kernel không chạm HTTP client ----------------------------
+# Kernel không bao giờ gọi ra ngoài. Chỉ providers/ được phép.
+[importlinter:contract:kernel-khong-http-client]
+name = Kernel không import HTTP client (P1 / ADR-0009)
+type = forbidden
+source_modules = kernel
+forbidden_modules =
+    httpx
+    requests
+    aiohttp
+    urllib3
+
+# --- Hợp đồng 5: Agent không chạm provider --------------------------------
+# P3 — Agent chỉ khai báo capability, không bao giờ biết ai phục vụ.
+[importlinter:contract:agent-mu-provider]
+name = Agent không import providers (P3 / ADR-0004)
+type = forbidden
+source_modules = agents
+forbidden_modules =
+    providers
+    httpx
+    requests
+    aiohttp
+
+# --- Hợp đồng 6: Agent chỉ dùng SDK ---------------------------------------
+[importlinter:contract:agent-chi-dung-sdk]
+name = Agent không import kernel trực tiếp (doc 12)
+type = forbidden
+source_modules = agents
+forbidden_modules = kernel
+
+# --- Hợp đồng 7: Provider là driver, không phải agent ----------------------
+# doc 04 §2.2 — Adapter cấm phát Event, cấm gọi Capability khác, cấm đọc Memory.
+[importlinter:contract:provider-la-driver]
+name = Provider không import kernel/agents/sdk-agent (doc 04 §2.2)
+type = forbidden
+source_modules = providers
+forbidden_modules =
+    kernel
+    agents
+
+# --- Hợp đồng 8: Plugin chỉ được dùng SDK ---------------------------------
+# Bật lại khi thư mục plugins/ ra đời ở M8.
+# [importlinter:contract:plugin-chi-dung-sdk]
+# name = Plugin không import kernel (doc 12 §5)
+# type = forbidden
+# source_modules = plugins
+# forbidden_modules = kernel

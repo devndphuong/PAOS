@@ -1,0 +1,54 @@
+# ---------------------------------------------------------------------------
+# QUAN TRỌNG NHẤT — doc 18 §2.3
+# Workspace chứa model (GB), artifact, cache và dữ liệu cá nhân.
+# Commit nhầm một lần là hỏng lịch sử git vĩnh viễn.
+# ---------------------------------------------------------------------------
+workspace/
+*.db
+*.db-wal
+*.db-shm
+.paos/
+
+# Secret — SEC-01
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# Model & artefact nặng
+models/
+*.gguf
+*.safetensors
+*.mp4
+*.wav
+*.mp3
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# Công cụ
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Kết quả eval — sinh lại được, không commit (doc 08 §7.5)
+tests/eval/runs/
+
+# Hệ điều hành & IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+!.vscode/settings.json
+.claude/settings.local.json

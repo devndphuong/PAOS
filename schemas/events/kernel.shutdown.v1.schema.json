@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://schemas/events/kernel.shutdown.v1.schema.json",
+  "title": "kernel.shutdown payload",
+  "description": "Payload cho event kernel.shutdown (doc 05 §3.1) — ghi khi paosd bắt đầu tắt có kiểm soát.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "uptime"],
+  "properties": {
+    "version": {
+      "type": "string",
+      "description": "Phiên bản paosd, vd '0.0.1'"
+    },
+    "uptime": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Số giây đã chạy kể từ kernel.startup"
+    }
+  }
+}
