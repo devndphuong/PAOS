@@ -13,6 +13,7 @@ dependencies = [
     "pydantic>=2.9",        # ADR-0022 — model nội bộ, KHÔNG phải hợp đồng
     "jsonschema>=4.23",     # ADR-0022 — validate hợp đồng Event/Capability
     "python-ulid>=3.0",     # ADR-0023 — thay thế: tự cài đặt ~40 dòng
+    "aiosqlite>=0.20",      # ADR-0024 — driver cho single-writer actor
     "pyyaml>=6.0",          # manifest, policy
     "httpx>=0.27",          # chỉ dùng trong providers/, KHÔNG trong kernel/
 ]
@@ -71,7 +72,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101", "PLR2004"]          # assert & magic number là bình thường trong test
+"tests/**" = ["S101", "PLR2004", "ASYNC240"]  # assert, magic number, Path I/O đồng bộ đều bình thường trong test
 "apps/paosctl/**" = ["T20"]               # CLI được phép in ra stdout
 "scripts/**" = ["T20"]                    # script CI độc lập, không có trace_id để log qua
 
