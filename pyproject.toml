@@ -46,6 +46,10 @@ packages = ["kernel", "sdk", "capabilities", "providers", "agents", "apps"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+# docs/ chứa code mẫu minh họa (illustrative), không phải module thật — không
+# bắt buộc format/lint như source code. Ruff format hỗ trợ format code-block
+# trong markdown; loại trừ ở đây để tránh gate lint chạm vào nội dung tài liệu.
+extend-exclude = ["docs/"]
 
 [tool.ruff.lint]
 select = [
@@ -69,6 +73,7 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "PLR2004"]          # assert & magic number là bình thường trong test
 "apps/paosctl/**" = ["T20"]               # CLI được phép in ra stdout
+"scripts/**" = ["T20"]                    # script CI độc lập, không có trace_id để log qua
 
 [tool.ruff.lint.pylint]
 max-args = 6

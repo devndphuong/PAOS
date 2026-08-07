@@ -33,11 +33,35 @@ SCHEMA_DIR = ROOT / "schemas" / "events"
 # doc 05 §2 — thì quá khứ bắt buộc, không đặt tên kiểu mệnh lệnh.
 NAME_RE = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z0-9_*]+){1,3}$")
 PAST_TENSE_OK = {
-    "created", "started", "completed", "failed", "rejected", "cancelled",
-    "paused", "resumed", "checkpointed", "received", "scheduled", "retried",
-    "selected", "skipped", "entered", "triggered", "made", "passed",
-    "crashed", "installed", "startup", "shutdown", "made", "learned",
-    "extracted", "recorded", "exceeded", "deferred", "approved", "denied",
+    "created",
+    "started",
+    "completed",
+    "failed",
+    "rejected",
+    "cancelled",
+    "paused",
+    "resumed",
+    "checkpointed",
+    "received",
+    "scheduled",
+    "retried",
+    "selected",
+    "skipped",
+    "entered",
+    "triggered",
+    "made",
+    "passed",
+    "crashed",
+    "installed",
+    "startup",
+    "shutdown",
+    "learned",
+    "extracted",
+    "recorded",
+    "exceeded",
+    "deferred",
+    "approved",
+    "denied",
 }
 
 errors: list[str] = []
@@ -81,9 +105,7 @@ def schema_files() -> dict[str, list[Path]]:
         stem = path.name.removesuffix(".schema.json")
         m = re.match(r"^(?P<name>.+)\.v(?P<ver>\d+)$", stem)
         if not m:
-            errors.append(
-                f"{path.name}: tên file phải dạng <event.type>.v<n>.schema.json"
-            )
+            errors.append(f"{path.name}: tên file phải dạng <event.type>.v<n>.schema.json")
             continue
         mapping.setdefault(m["name"], []).append(path)
     return mapping

@@ -23,3 +23,18 @@ M0 làm được đầy đủ ngay bây giờ (E1/E2/E3/E7/E9 đạt — 5 mục
 - [ ] Cài `ffmpeg` (E4)
 - [ ] Cài Ollama + pull ít nhất 1 model (`qwen2.5-14b` theo ví dụ xuyên suốt tài liệu) (E5)
 - [ ] Trước M3: quyết định biến thể "nhẹ" cho `image.generate` phù hợp 4GB VRAM (SDXL-Turbo/Flux-schnell quantized, hoặc chấp nhận CPU/cloud fallback nhiều hơn 20% mặc định ở RSK-05)
+
+## Ghi chú vận hành riêng cho Windows (phát hiện lúc dựng khung repo, 2026-08-07)
+
+Không có gì trong doc 00–19 giả định hệ điều hành cụ thể, nhưng máy phát triển thật là Windows — năm điểm sau đây tốn thời gian nếu không biết trước:
+
+| Vấn đề | Biểu hiện | Đã xử lý |
+|---|---|---|
+| `python3` không tồn tại trên Windows, chỉ có `python.exe` | Mọi script/Makefile viết theo quy ước Unix (`PY := python3`, shebang `#!/usr/bin/env python3`) lỗi "not found" | Tạo bản sao `python3.exe` = `python.exe` trong cùng thư mục cài đặt |
+| `print()` tiếng Việt/ký hiệu Unicode (✓, ✗, ⚠) crash với `UnicodeEncodeError` khi stdout không phải UTF-8 | `scripts/check-event-schemas.py` chết giữa chừng dù logic đã đúng | Đặt biến môi trường người dùng `PYTHONUTF8=1` (`setx` / `[Environment]::SetEnvironmentVariable(...,"User")`) |
+| `core.autocrlf=true` (mặc định phổ biến trên Windows) tự chuyển LF→CRLF lúc checkout | `scripts/*.sh` có thể hỏng dòng shebang ở một `git clone`/`git worktree` khác trên máy khác | Thêm `.gitattributes` ở gốc repo: `* text=auto eol=lf` + `*.sh text eol=lf` |
+| `ruff format` phiên bản mới format cả code-block trong file Markdown | `make lint` báo "unformatted" cho code minh họa trong `docs/*.md` — nhưng đó là ví dụ đọc, không phải module thật | `extend-exclude = ["docs/"]` trong `[tool.ruff]` (pyproject.toml) |
+| Quy tắc `T20` (cấm `print()`) áp cho cả `scripts/` | `scripts/check-event-schemas.py` là script CI độc lập, in thẳng ra console — không có `trace_id` để đi qua logger Kernel | Thêm `"scripts/**" = ["T20"]` vào `per-file-ignores` (pyproject.toml), giống ngoại lệ đã có sẵn cho `apps/paosctl/**` |
+| `make`, `python`, `pip` không có trên PATH của phiên terminal đang mở lúc cài (registry đã cập nhật nhưng tiến trình đang chạy giữ PATH cũ) | Lệnh báo "not found" dù vừa cài xong | Không phải lỗi — mở terminal MỚI là thấy ngay. Không cần sửa gì thêm. |
+
+`.importlinter` cũng cần `capabilities/__init__.py` tồn tại (dù nội dung chính của `capabilities/` là YAML, không phải Python) để `root_packages` nhận diện được nó là package — đã thêm cùng lúc dựng khung.
