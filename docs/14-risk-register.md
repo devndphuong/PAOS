@@ -80,6 +80,7 @@ Nếu Qwen 14B viết script quá tệ, toàn bộ lời hứa "chi phí 0" sụ
 | RSK-18 | Phụ thuộc thư viện bị bỏ rơi | 6 | Ưu tiên thư viện chuẩn; mỗi phụ thuộc ngoài phải có phương án thay thế ghi trong ADR |
 | RSK-19 | Chi phí lưu trữ artifact phình to | 4 | Chính sách dọn `cache/`, nén artifact cũ, báo cáo dung lượng trong `doctor` |
 | RSK-20 | Mất động lực vì không thấy tiến triển | 9 | Báo cáo tuần tự động "PAOS đã học được gì" — biến tri thức tích lũy thành thứ nhìn thấy được |
+| RSK-21 | Runner M0 (`apps/paosd/runner.py`) chạy Agent đồng bộ ngay trong `dispatch()` — `POST /v1/jobs` block tới khi agent chạy xong, mới phát hiện khi nghiệm thu M0 (P-M0-6) | 9 | Chấp nhận được ở M0 vì `StubAdapter` tất định, <1s; PHẢI thay bằng hàng đợi async thật trước khi agent chạy giây–phút (Ollama) được nối vào Runner — đúng lúc DAG Scheduler thật ra đời (M1, doc 13) |
 
 ---
 
