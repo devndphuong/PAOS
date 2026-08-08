@@ -22,9 +22,12 @@ _DEFAULT_SCHEMA_DIR = Path(__file__).resolve().parents[2] / "schemas" / "events"
 
 @dataclass(frozen=True)
 class EventEnvelope:
-    """Đủ 10 trường doc 05 §1 — kể cả correlation_id/causation_id dù M0 chưa dùng."""
+    """Đủ 10 trường doc 05 §1 — kể cả correlation_id/causation_id dù M0 chưa dùng.
+    `seq` KHÔNG nằm trong 10 trường đó (thứ tự ghi DB, chi tiết nội bộ) — thêm ở
+    lát cắt 5c vì `events tail`/`explain` cần một con trỏ để phân trang/tail."""
 
     event_id: str
+    seq: int
     type: str
     version: int
     ts: str
@@ -37,6 +40,22 @@ class EventEnvelope:
 
 
 Subscriber = Callable[[EventEnvelope], Awaitable[None]]
+
+
+def _row_to_envelope(row: aiosqlite.Row | tuple[Any, ...]) -> EventEnvelope:
+    return EventEnvelope(
+        event_id=row[0],
+        seq=row[1],
+        type=row[2],
+        version=row[3],
+        ts=row[4],
+        source=row[5],
+        process_id=row[6],
+        task_id=row[7],
+        correlation_id=row[8],
+        causation_id=row[9],
+        payload=json.loads(row[10]),
+    )
 
 
 class EventBus:
@@ -123,6 +142,7 @@ class EventBus:
         seq = int(row[0])
         envelope = EventEnvelope(
             event_id=ids.new_id("evt"),
+            seq=seq,
             type=type,
             version=version,
             ts=clock.now().isoformat(),
@@ -185,29 +205,55 @@ class EventBus:
         result: list[tuple[str, EventEnvelope]] = []
         for name, (pattern, _handler) in self._subscribers.items():
             cursor = await conn.execute(
-                "SELECT e.event_id, e.type, e.version, e.ts, e.source, e.process_id, e.task_id, "
-                "e.correlation_id, e.causation_id, e.payload_json "
+                "SELECT e.event_id, e.seq, e.type, e.version, e.ts, e.source, e.process_id, "
+                "e.task_id, e.correlation_id, e.causation_id, e.payload_json "
                 "FROM events e LEFT JOIN event_deliveries d "
                 "  ON d.event_id = e.event_id AND d.subscriber = ? "
                 "WHERE d.event_id IS NULL ORDER BY e.seq",
                 (name,),
             )
             for row in await cursor.fetchall():
-                envelope = EventEnvelope(
-                    event_id=row[0],
-                    type=row[1],
-                    version=row[2],
-                    ts=row[3],
-                    source=row[4],
-                    process_id=row[5],
-                    task_id=row[6],
-                    correlation_id=row[7],
-                    causation_id=row[8],
-                    payload=json.loads(row[9]),
-                )
+                envelope = _row_to_envelope(row)
                 if fnmatch.fnmatch(envelope.type, pattern):
                     result.append((name, envelope))
         return result
+
+    async def events_for_process(self, process_id: str) -> list[EventEnvelope]:
+        """Toàn bộ event của một process, theo đúng thứ tự xảy ra — nền của
+        `paosctl explain` (doc 19 P-M0-5): dựng HOÀN TOÀN từ bảng events, không
+        đọc bộ nhớ tiến trình sống (R17)."""
+
+        async def _query(conn: aiosqlite.Connection) -> list[EventEnvelope]:
+            cursor = await conn.execute(
+                "SELECT event_id, seq, type, version, ts, source, process_id, task_id, "
+                "correlation_id, causation_id, payload_json FROM events "
+                "WHERE process_id = ? ORDER BY seq",
+                (process_id,),
+            )
+            return [_row_to_envelope(row) for row in await cursor.fetchall()]
+
+        return await self._store.read(_query)
+
+    async def events_since(
+        self, since_seq: int = 0, process_id: str | None = None
+    ) -> list[EventEnvelope]:
+        """Event có seq > since_seq, lọc thêm theo process_id nếu có — nền của
+        `paosctl events tail`."""
+
+        async def _query(conn: aiosqlite.Connection) -> list[EventEnvelope]:
+            sql = (
+                "SELECT event_id, seq, type, version, ts, source, process_id, task_id, "
+                "correlation_id, causation_id, payload_json FROM events WHERE seq > ?"
+            )
+            params: list[Any] = [since_seq]
+            if process_id is not None:
+                sql += " AND process_id = ?"
+                params.append(process_id)
+            sql += " ORDER BY seq"
+            cursor = await conn.execute(sql, params)
+            return [_row_to_envelope(row) for row in await cursor.fetchall()]
+
+        return await self._store.read(_query)
 
     def _load_schema(self, type: str, version: int) -> dict[str, Any] | None:
         path = self._schema_dir / f"{type}.v{version}.schema.json"

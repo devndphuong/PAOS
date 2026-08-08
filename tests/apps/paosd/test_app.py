@@ -20,16 +20,26 @@ from kernel.state.db import StateStore
 
 
 @pytest.fixture
-async def manager(tmp_path: Path):
-    store = StateStore(tmp_path / ".paos" / "state.db")
-    await store.start()
-    yield ProcessManager(store, EventBus(store))
-    await store.stop()
+async def store(tmp_path: Path):
+    s = StateStore(tmp_path / ".paos" / "state.db")
+    await s.start()
+    yield s
+    await s.stop()
 
 
 @pytest.fixture
-async def client(manager: ProcessManager):
-    transport = httpx.ASGITransport(app=create_app(manager))
+def events(store: StateStore) -> EventBus:
+    return EventBus(store)
+
+
+@pytest.fixture
+def manager(store: StateStore, events: EventBus) -> ProcessManager:
+    return ProcessManager(store, events)
+
+
+@pytest.fixture
+async def client(manager: ProcessManager, events: EventBus):
+    transport = httpx.ASGITransport(app=create_app(manager, events))
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
 
@@ -82,3 +92,53 @@ async def test_get_processes_filters_by_state(client: httpx.AsyncClient) -> None
 
     resp = await client.get("/v1/processes", params={"state": "not_a_real_state"})
     assert resp.status_code == 400
+
+
+async def test_explain_not_found(client: httpx.AsyncClient) -> None:
+    resp = await client.get("/v1/processes/999999/explain")
+    assert resp.status_code == 404
+
+
+async def test_explain_shows_created_event(client: httpx.AsyncClient) -> None:
+    created = (
+        await client.post("/v1/jobs", json={"intent": "x", "name": "a", "workflow_ref": "wf@1"})
+    ).json()
+    resp = await client.get(f"/v1/processes/{created['pid']}/explain")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["process_id"] == created["process_id"]
+    assert body["state"] == "CREATED"
+    assert len(body["trace"]) == 1
+    assert body["trace"][0]["type"] == "kernel.process.created"
+    assert body["trace"][0]["process_id"] == created["process_id"]
+
+
+async def test_events_not_found_for_unknown_pid(client: httpx.AsyncClient) -> None:
+    resp = await client.get("/v1/events", params={"pid": 999999})
+    assert resp.status_code == 404
+
+
+async def test_events_tail_filters_by_pid(client: httpx.AsyncClient) -> None:
+    a = (
+        await client.post("/v1/jobs", json={"intent": "x", "name": "a", "workflow_ref": "wf@1"})
+    ).json()
+    await client.post("/v1/jobs", json={"intent": "x", "name": "b", "workflow_ref": "wf@1"})
+
+    resp = await client.get("/v1/events", params={"pid": a["pid"]})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body) == 1
+    assert body[0]["process_id"] == a["process_id"]
+
+
+async def test_events_tail_since_seq(client: httpx.AsyncClient) -> None:
+    await client.post("/v1/jobs", json={"intent": "x", "name": "a", "workflow_ref": "wf@1"})
+    first = (await client.get("/v1/events")).json()
+    assert len(first) == 1
+
+    await client.post("/v1/jobs", json={"intent": "x", "name": "b", "workflow_ref": "wf@1"})
+    resp = await client.get("/v1/events", params={"since_seq": first[0]["seq"]})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body) == 1
+    assert body[0]["seq"] > first[0]["seq"]

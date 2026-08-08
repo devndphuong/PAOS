@@ -172,7 +172,7 @@ class ProcessManager:
                 conn,
                 EventType.PROCESS_CREATED.value,
                 source="kernel.process",
-                payload={"pid": pid, "workflow_ref": workflow_ref},
+                payload={"pid": pid, "workflow_ref": workflow_ref, "spec": spec},
                 process_id=process_id,
             )
             process = Process(

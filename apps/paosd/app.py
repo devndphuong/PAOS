@@ -8,6 +8,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from kernel.errors import PaosError
+from kernel.events.bus import EventBus, EventEnvelope
 from kernel.process.manager import Process, ProcessManager, ProcessState
 
 
@@ -37,6 +38,43 @@ class ProcessResponse(BaseModel):
     error_code: str | None
 
 
+class EventResponse(BaseModel):
+    event_id: str
+    seq: int
+    type: str
+    version: int
+    ts: str
+    source: str
+    process_id: str | None
+    task_id: str | None
+    correlation_id: str | None
+    causation_id: str | None
+    payload: dict[str, Any]
+
+
+class ExplainResponse(BaseModel):
+    process_id: str
+    pid: int
+    state: str
+    trace: list[EventResponse]
+
+
+def _to_event_response(e: EventEnvelope) -> EventResponse:
+    return EventResponse(
+        event_id=e.event_id,
+        seq=e.seq,
+        type=e.type,
+        version=e.version,
+        ts=e.ts,
+        source=e.source,
+        process_id=e.process_id,
+        task_id=e.task_id,
+        correlation_id=e.correlation_id,
+        causation_id=e.causation_id,
+        payload=e.payload,
+    )
+
+
 def _to_response(p: Process) -> ProcessResponse:
     return ProcessResponse(
         process_id=p.process_id,
@@ -52,7 +90,7 @@ def _to_response(p: Process) -> ProcessResponse:
     )
 
 
-def create_app(manager: ProcessManager) -> FastAPI:
+def create_app(manager: ProcessManager, events: EventBus) -> FastAPI:
     """Lớp mỏng dịch HTTP <-> Kernel API (doc 04 §1) — không chứa logic nghiệp vụ."""
     app = FastAPI(title="paosd")
 
@@ -87,6 +125,30 @@ def create_app(manager: ProcessManager) -> FastAPI:
         if process is None:
             raise HTTPException(status_code=404, detail=f"Process pid={pid} không tồn tại")
         return _to_response(process)
+
+    @app.get("/v1/processes/{pid}/explain", response_model=ExplainResponse)
+    async def explain(pid: int) -> ExplainResponse:
+        process = await manager.get_by_pid(pid)
+        if process is None:
+            raise HTTPException(status_code=404, detail=f"Process pid={pid} không tồn tại")
+        trace = await events.events_for_process(process.process_id)
+        return ExplainResponse(
+            process_id=process.process_id,
+            pid=process.pid,
+            state=process.state.value,
+            trace=[_to_event_response(e) for e in trace],
+        )
+
+    @app.get("/v1/events", response_model=list[EventResponse])
+    async def list_events(pid: int | None = None, since_seq: int = 0) -> list[EventResponse]:
+        process_id: str | None = None
+        if pid is not None:
+            process = await manager.get_by_pid(pid)
+            if process is None:
+                raise HTTPException(status_code=404, detail=f"Process pid={pid} không tồn tại")
+            process_id = process.process_id
+        trace = await events.events_since(since_seq, process_id)
+        return [_to_event_response(e) for e in trace]
 
     @app.get("/v1/health")
     async def health() -> dict[str, str]:

@@ -5,9 +5,10 @@
   "description": "doc 05 §3.1 — Process vừa được tạo.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["pid", "workflow_ref"],
+  "required": ["pid", "workflow_ref", "spec"],
   "properties": {
     "pid": { "type": "integer", "minimum": 1 },
-    "workflow_ref": { "type": "string" }
+    "workflow_ref": { "type": "string" },
+    "spec": { "type": "object" }
   }
 }
