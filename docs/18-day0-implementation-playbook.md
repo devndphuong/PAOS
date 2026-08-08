@@ -269,11 +269,23 @@ Doc 13 đã định nghĩa 4 exit criteria cho M0. Ba mục dưới đây **bổ
 | Event ghi DB trước dispatch | doc 13 M0 #2, REL-01 | test đơn vị `kernel/events/bus.py`: mock dispatch raise, kiểm event vẫn nằm trong DB |
 | CI grep: 0 import AI trong Kernel | doc 13 M0 #3, MNT-01 | `make gate1` |
 | Kill giữa chừng → resume không hỏng DB | doc 13 M0 #4, REL-02 | `scripts/ci-kernel-isolation.sh` + kịch bản chaos thủ công (SIGKILL/`taskkill /F` theo §6 R37) |
-| Deterministic 20 lần | §7.1 #5 | script riêng `tests/kernel/test_determinism.py` (mới) |
+| Deterministic 20 lần | §7.1 #5 | `tests/apps/paosd/test_determinism.py` — vị trí khác dự kiến, xem §7.3 |
 | 6 cổng CI xanh | §7.1 #6 | `make gates` trong CI |
-| `explain` sống sót qua restart | §7.1 #7 | test tích hợp mô tả ở P-M0-5 (doc 19) |
+| `explain` sống sót qua restart | §7.1 #7 | `tests/apps/paosd/test_explain_restart.py` + chaos thủ công (`taskkill /F`) |
 
-Nếu bất kỳ hàng nào trong bảng chưa có test tương ứng, M0 **chưa nghiệm thu được** dù cảm giác "đã xong" — đây chính là câu hỏi P-M0-6 mục 3 ("có bước nào tôi đã sửa tay một chút mới chạy được không?").
+Nếu bất kỳ hàng nào trong bảng chưa có test tương ứng, M0 **chưa nghiệm thu được** dù cảm giác "đã xong" — đây chính là câu hỏi P-M0-6 mục 3 ("có bước nào tôi đã sửa tay một chút mới chạy được không?"). **Cập nhật sau nghiệm thu (P-M0-6, 2026-08-08):** cả 7 hàng đã có test — hàng "Deterministic 20 lần" là hàng cuối cùng còn thiếu lúc bắt đầu nghiệm thu, đã lấp bằng `tests/apps/paosd/test_determinism.py`. M0 **đạt**.
+
+### 7.3 Hậu kiểm M0 — kế hoạch đã sai ở đâu
+
+Ba điểm playbook này đánh giá thấp hoặc bỏ sót, phát hiện lúc nghiệm thu (P-M0-6):
+
+1. **Vị trí test determinism sai tầng.** §7.2 gợi ý `tests/kernel/test_determinism.py`, nhưng bài kiểm cần chạy đủ Process + Agent + Provider (qua `apps/paosd/wiring`), không phải Kernel đơn thuần — gate2 (§6 R... , `scripts/ci-kernel-isolation.sh`) xoá `apps/`/`agents/`/`providers/` trước khi chạy `tests/kernel/`, nên đặt ở vị trí gợi ý ban đầu sẽ vỡ ngay lập tức. Bài học: một tiêu chí nói "chạy end-to-end" gần như chắc chắn cần tầng `apps/`, không riêng Kernel — nên đặt tên thư mục test theo phạm vi thật của kịch bản, không theo tầng "nghe có vẻ đúng".
+
+2. **"workflow_trace.json" là một khái niệm chưa từng thành hiện thực.** §7.1 #5 nhắc tới việc so sánh file `workflow_trace.json` sau 20 lần chạy — khái niệm này chưa từng được quyết định lúc viết playbook (Ngày 0), và thực tế hoá thành `paosctl explain` (HTTP) + `EventBus.events_for_process()`, không phải một file JSON riêng. Bài học: playbook viết ở Ngày 0 đôi khi cụ thể hoá sớm một chi tiết implementation chưa quyết — chấp nhận được nếu không khoá cứng thiết kế sau này vào chi tiết đó, nhưng nên đánh dấu rõ "tên tạm" thay vì viết như thể đã chốt.
+
+3. **"Runner" — tầng kết nối Process ↔ Agent — chưa từng được đặt tên.** §5 (M0 — Năm lát cắt) và doc 19 P-M0-5 giả định `ProcessManager.create()` (lát 3) cộng với Agent Protocol (lát 5a/5b) là đủ để "chạy" một job. Thực tế cần thêm một tầng chủ động lắng nghe `kernel.process.created` rồi tự QUEUED → RUNNING → gọi Agent → SUCCEEDED/FAILED (`apps/paosd/runner.py`, lát 5c) — playbook không hề đặt tên hay lên kế hoạch cho tầng này. Đây là gap kế hoạch thật, không phải tiểu tiết: nếu không phát hiện lúc viết P-CONTRACT cho lát 5c, `POST /v1/jobs` sẽ mãi chỉ tạo Process ở `CREATED` rồi dừng.
+
+   Hệ quả cho M1: Runner M0 hiện chạy Agent **đồng bộ** ngay trong `dispatch()` — `POST /v1/jobs` block tới khi agent chạy xong (chấp nhận được vì `StubAdapter` <1s, xem RSK-21 ở doc 14). **M1 phải thay Runner M0 (đồng bộ) bằng hàng đợi thật như một điều kiện tiên quyết của DAG Scheduler**, không phải một mục tuỳ chọn nằm đâu đó trong scope — ghi rõ ở §9 để không lặp lại kiểu "để sau" mà RSK-21 cảnh báo.
 
 ---
 
@@ -303,7 +315,7 @@ Doc 13 cho thời lượng và exit criteria mức milestone. Bảng này nối 
 |---|---|---|
 | Ngày 0 | Kiểm môi trường · khung repo · chốt ADR 0021–0024 | P-D0-1, P-D0-2, P-D0-3 |
 | M0 | State Store · Event Bus · Process SM · Capability+Provider · Agent/CLI/Trace | P-M0-1 → P-M0-6 |
-| M1 | Process SM đầy đủ · checkpoint/resume · DAG Scheduler · Event Bus retry/DLQ/replay · idempotency | P-M1-1 → P-M1-5 |
+| M1 | **Điều kiện tiên quyết:** thay Runner M0 (`apps/paosd/runner.py`, chạy Agent đồng bộ trong `dispatch()`, RSK-21) bằng hàng đợi thật · Process SM đầy đủ · checkpoint/resume · DAG Scheduler · Event Bus retry/DLQ/replay · idempotency | P-M1-1 → P-M1-5 |
 | M2 | Capability registry · Conformance Suite · Router+breaker · cache · Permission/Secret | P-M2-1 → P-M2-5 |
 | M3 | Agent Contract+SDK · Workflow YAML engine · Video plugin (planning→script, media song song, render) | P-M3-1 → P-M3-5 |
 | M4 | Rubric engine · self-correction loop · eval harness | P-M4-1 → P-M4-3 |
