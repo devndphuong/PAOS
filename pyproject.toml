@@ -16,6 +16,7 @@ dependencies = [
     "aiosqlite>=0.20",      # ADR-0024 — driver cho single-writer actor
     "pyyaml>=6.0",          # manifest, policy
     "httpx>=0.27",          # chỉ dùng trong providers/, KHÔNG trong kernel/
+    "click>=8.1",           # ADR-0025 — thư viện CLI cho paosctl
 ]
 
 [project.optional-dependencies]

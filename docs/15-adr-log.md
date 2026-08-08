@@ -188,6 +188,17 @@
 
 ---
 
+## ADR-0025 — `click` cho `paosctl`
+**Trạng thái:** Accepted · 2026-08 · Quyết định lát cắt 5c ([doc 18 D-07](18-day0-implementation-playbook.md))
+
+**Bối cảnh:** `paosctl` (doc 04 §1) cần một thư viện CLI cho 6 lệnh con (`run`, `ps`, `status`, `explain`, `events tail`, `doctor`), gọi HTTP tới `paosd` — không tự viết parser tay vì sẽ phình dần khi thêm lệnh (M1+).
+**Quyết định:** dùng `click>=8.1`. `apps/paosctl/` chỉ gọi `httpx` tới `paosd` (127.0.0.1:8787) — không bao giờ import `kernel/` trực tiếp (doc 04 §1: "CLI và UI chỉ dùng API này, không truy cập DB trực tiếp").
+**Lý do:** ổn định lâu năm, ít phụ thuộc, hỗ trợ group lệnh con (`events tail`) và test được qua `click.testing.CliRunner` mà không cần subprocess — đúng tinh thần P11 (Boring technology) hơn các framework CLI mới hơn (typer thêm phụ thuộc pydantic dù đã có sẵn, nhưng ràng buộc version-lockstep không cần thiết).
+**Hệ quả:** lệnh con mới phải thêm cả ở đây lẫn cập nhật doc 04 nếu đổi hình dạng API.
+**Đã loại:** `argparse` (đủ dùng nhưng không có ergonomics cho group lệnh con + test runner tiện như click) · `typer` (thêm ràng buộc phiên bản pydantic không cần thiết cho một CLI mỏng).
+
+---
+
 ## Backlog ADR (chưa quyết định, cần trước milestone tương ứng)
 
 | Dự kiến | Chủ đề | Cần trước |
