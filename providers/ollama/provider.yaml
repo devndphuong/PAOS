@@ -1,0 +1,10 @@
+id: ollama.qwen2.5-14b
+model: "qwen2.5:14b"
+implements: [text.generate@1]
+class: local
+privacy: private
+cost: {unit: token, in: 0, out: 0, currency: JPY}
+limits: {ctx: 32768, rpm: null, concurrent: 1}
+resources: [gpu:1]
+health_check: {type: http, url: "http://localhost:11434/api/tags", interval: 60}
+quality_hint: {default: 82}
