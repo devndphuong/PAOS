@@ -21,8 +21,10 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any, Protocol
 
 import ulid
+import yaml
 
 from sdk.provider import ErrorCode
 
@@ -55,12 +57,79 @@ class AgentError(Exception):
         self.hint = hint
 
 
+@dataclass(frozen=True)
+class AgentManifest:
+    """doc 04 §3.2. Chưa có resources/quality_rubric/max_retries — hoãn tới
+    M1 (Scheduler) / M4 (Review), chưa cần ở M0."""
+
+    agent_id: str
+    version: int
+    needs: list[str]
+    produces: list[str]
+    capabilities: list[str]  # AgentContext.call() cưỡng chế danh sách này — xem docstring class
+    emits: list[str]
+
+
+def load_agent_manifest(path: Path) -> AgentManifest:
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    return AgentManifest(
+        agent_id=data["id"],
+        version=data["version"],
+        needs=data.get("needs", []),
+        produces=data.get("produces", []),
+        capabilities=data.get("capabilities", []),
+        emits=data.get("emits", []),
+    )
+
+
+@dataclass(frozen=True)
+class ValidationResult:
+    ok: bool
+    reason: str | None = None
+
+
+@dataclass(frozen=True)
+class Plan:
+    prompt: str
+    task_class: str | None = None
+
+
+@dataclass(frozen=True)
+class ExecResult:
+    data: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ReviewResult:
+    passed: bool
+    reason: str | None = None
+
+
+class Agent(Protocol):
+    """doc 04 §3.1 — 6 bước bắt buộc. Chưa có resume() (bắt buộc nếu chạy > 60s) —
+    hoãn tới khi thật sự có agent chạy dài, tránh hình dạng chưa dùng tới (M0)."""
+
+    manifest: AgentManifest
+
+    async def initialize(self, ctx: AgentContext) -> None: ...
+    async def validate(self, inputs: dict[str, Any]) -> ValidationResult: ...
+    async def think(self, inputs: dict[str, Any]) -> Plan: ...
+    async def execute(self, plan: Plan) -> ExecResult: ...
+    async def review(self, result: ExecResult) -> ReviewResult: ...
+    async def publish(self, result: ExecResult) -> list[Artifact]: ...
+
+
 PersistArtifact = Callable[[Artifact], Awaitable[None]]
+CallCapability = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
+EmitEvent = Callable[[str, dict[str, Any]], Awaitable[None]]
 
 
 class AgentContext:
-    """Phần plumbing của lát cắt 5a: đọc prompt có version, ghi artifact an toàn.
-    `call()` (gọi Capability, cưỡng chế theo manifest) thuộc 5b."""
+    """`call()` cưỡng chế theo `manifest.capabilities` — nhưng ở M0 đây là cưỡng
+    chế PHÍA SDK, chưa phải Kernel: chưa có Capability Router (M2) làm cổng
+    chặn không thể vượt qua. Đủ dùng cho M0, KHÔNG chống được agent cố tình đi
+    vòng qua AgentContext. Cưỡng chế thật (không thể lách) là ở M2.
+    """
 
     def __init__(
         self,
@@ -70,14 +139,38 @@ class AgentContext:
         workspace_dir: Path,
         agent_id: str,
         prompts_dir: Path,
+        manifest: AgentManifest,
         persist_artifact: PersistArtifact,
+        call_capability: CallCapability,
+        emit_event: EmitEvent,
     ) -> None:
         self._process_id = process_id
         self._task_id = task_id
         self._workspace_dir = workspace_dir
         self._agent_id = agent_id
         self._prompts_dir = prompts_dir
+        self._manifest = manifest
         self._persist_artifact = persist_artifact
+        self._call_capability = call_capability
+        self._emit_event = emit_event
+
+    async def call(self, capability_ref: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if capability_ref not in self._manifest.capabilities:
+            raise AgentError(
+                ErrorCode.PERMISSION_DENIED,
+                f"Agent {self._manifest.agent_id} không khai báo capability {capability_ref}",
+                hint=f"Thêm '{capability_ref}' vào capabilities trong manifest.yaml của agent",
+            )
+        return await self._call_capability(capability_ref, payload)
+
+    async def emit(self, event_type: str, payload: dict[str, Any]) -> None:
+        if event_type not in self._manifest.emits:
+            raise AgentError(
+                ErrorCode.PERMISSION_DENIED,
+                f"Agent {self._manifest.agent_id} không khai báo emit {event_type}",
+                hint=f"Thêm '{event_type}' vào emits trong manifest.yaml của agent",
+            )
+        await self._emit_event(event_type, payload)
 
     def prompt(self, version: str) -> str:
         """Đọc agents/<agent_id>/prompts/<version>.md — không nhúng prompt trong code."""

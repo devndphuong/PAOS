@@ -18,3 +18,6 @@ class EventType(StrEnum):
     PROCESS_COMPLETED = "kernel.process.completed"
     PROCESS_FAILED = "kernel.process.failed"
     PROCESS_CANCELLED = "kernel.process.cancelled"
+
+    # Domain event do plugin/agent tự định nghĩa qua manifest.emits (doc 05 §3.4).
+    SUMMARY_CREATED = "summary.created"

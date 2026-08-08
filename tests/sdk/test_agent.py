@@ -8,8 +8,25 @@ import aiosqlite
 import pytest
 
 from kernel.state.db import StateStore
-from sdk.agent import AgentContext, AgentError, Artifact
+from sdk.agent import AgentContext, AgentError, AgentManifest, Artifact
 from sdk.provider import ErrorCode
+
+_TEST_MANIFEST = AgentManifest(
+    agent_id="summarize",
+    version=1,
+    needs=["text"],
+    produces=["summary"],
+    capabilities=[],
+    emits=[],
+)
+
+
+async def _noop_call(capability_ref: str, payload: dict) -> dict:
+    return {}
+
+
+async def _noop_emit(event_type: str, payload: dict) -> None:
+    pass
 
 
 async def _persist_via_store(store: StateStore, artifact: Artifact) -> None:
@@ -67,7 +84,10 @@ def ctx(store: StateStore, workspace: Path, prompts_dir: Path) -> AgentContext:
         workspace_dir=workspace,
         agent_id="summarize",
         prompts_dir=prompts_dir,
+        manifest=_TEST_MANIFEST,
         persist_artifact=lambda a: _persist_via_store(store, a),
+        call_capability=_noop_call,
+        emit_event=_noop_emit,
     )
 
 

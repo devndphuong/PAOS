@@ -1,0 +1,6 @@
+id: summarize.agent
+version: 1
+needs: [text]
+produces: [summary]
+capabilities: [text.generate@1]
+emits: [summary.created]

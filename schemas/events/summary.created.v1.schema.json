@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://schemas/events/summary.created.v1.schema.json",
+  "title": "summary.created payload",
+  "description": "doc 05 §3.4 — domain event do agents/summarize/ tự định nghĩa qua manifest.emits.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["artifact_id"],
+  "properties": {
+    "artifact_id": { "type": "string" }
+  }
+}
