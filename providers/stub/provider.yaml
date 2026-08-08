@@ -1,0 +1,9 @@
+id: stub.deterministic
+implements: [text.generate@1]
+class: local
+privacy: private
+cost: {unit: token, in: 0, out: 0, currency: JPY}
+limits: {ctx: 32768, rpm: null, concurrent: 1}
+resources: []
+health_check: {}
+quality_hint: {default: 50}

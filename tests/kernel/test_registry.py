@@ -1,4 +1,11 @@
-"""Kiểm Registry — nạp Capability + Provider từ file (doc 19 P-M0-4, lát 4a)."""
+"""Kiểm Registry — nạp Capability + Provider từ file (doc 19 P-M0-4, lát 4a).
+
+Dùng capability GIẢ viết ra tmp_path, KHÔNG dùng capabilities/ thật của repo —
+gate 2 (doc 17 §2) xóa capabilities/ khi kiểm Kernel độc lập; test ở đây phải
+sống sót qua việc đó (đúng khuyến nghị "chuyển provider/agent giả vào
+tests/kernel/_fakes.py" — capability giả để trực tiếp trong file vì chỉ dùng
+ở đây, không cần tách _fakes.py cho một fixture duy nhất).
+"""
 
 from pathlib import Path
 
@@ -7,19 +14,18 @@ import pytest
 from kernel.errors import ErrorCode, PaosError
 from kernel.registry.registry import Registry
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-
 
 @pytest.fixture
-def real_registry() -> Registry:
-    """Dùng capabilities/ THẬT của repo — text.generate@1 đã có sẵn."""
-    reg = Registry(_REPO_ROOT / "capabilities", _REPO_ROOT / "providers")
+def registry(tmp_path: Path) -> Registry:
+    caps_dir = tmp_path / "capabilities"
+    _write_fixture_capability(caps_dir)
+    reg = Registry(caps_dir, tmp_path / "providers")
     reg.load()
     return reg
 
 
-def test_registry_loads_text_generate_capability(real_registry: Registry) -> None:
-    spec = real_registry.get_capability("text.generate", 1)
+def test_registry_loads_text_generate_capability(registry: Registry) -> None:
+    spec = registry.get_capability("text.generate", 1)
     assert spec.capability_id == "text.generate"
     assert spec.version == 1
     assert "prompt" in spec.input_schema["required"]
@@ -27,33 +33,33 @@ def test_registry_loads_text_generate_capability(real_registry: Registry) -> Non
     assert "INVALID_INPUT" in spec.errors
 
 
-def test_get_unregistered_capability_raises_not_found(real_registry: Registry) -> None:
+def test_get_unregistered_capability_raises_not_found(registry: Registry) -> None:
     with pytest.raises(PaosError) as exc_info:
-        real_registry.get_capability("no.such.capability", 1)
+        registry.get_capability("no.such.capability", 1)
     assert exc_info.value.code == ErrorCode.NOT_FOUND
 
 
-def test_validate_input_rejects_missing_prompt(real_registry: Registry) -> None:
-    spec = real_registry.get_capability("text.generate", 1)
+def test_validate_input_rejects_missing_prompt(registry: Registry) -> None:
+    spec = registry.get_capability("text.generate", 1)
     with pytest.raises(PaosError) as exc_info:
         spec.validate_input({})
     assert exc_info.value.code == ErrorCode.INVALID_INPUT
 
 
-def test_validate_input_accepts_valid_payload(real_registry: Registry) -> None:
-    spec = real_registry.get_capability("text.generate", 1)
-    spec.validate_input({"prompt": "Tóm tắt file này", "max_tokens": 500})  # không raise
+def test_validate_input_accepts_valid_payload(registry: Registry) -> None:
+    spec = registry.get_capability("text.generate", 1)
+    spec.validate_input({"prompt": "Tóm tắt file này"})  # không raise
 
 
-def test_validate_output_rejects_missing_text(real_registry: Registry) -> None:
-    spec = real_registry.get_capability("text.generate", 1)
+def test_validate_output_rejects_missing_text(registry: Registry) -> None:
+    spec = registry.get_capability("text.generate", 1)
     with pytest.raises(PaosError) as exc_info:
         spec.validate_output({"usage": {"in_tokens": 10}})
     assert exc_info.value.code == ErrorCode.INVALID_INPUT
 
 
-def test_list_capabilities_includes_text_generate(real_registry: Registry) -> None:
-    ids = {(s.capability_id, s.version) for s in real_registry.list_capabilities()}
+def test_list_capabilities_includes_text_generate(registry: Registry) -> None:
+    ids = {(s.capability_id, s.version) for s in registry.list_capabilities()}
     assert ("text.generate", 1) in ids
 
 

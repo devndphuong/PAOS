@@ -72,6 +72,23 @@ def _capability_key(capability_id: str, version: int) -> str:
     return f"{capability_id}@{version}"
 
 
+def load_provider_manifest(path: Path) -> ProviderManifest:
+    """Đọc 1 file provider.yaml (doc 02 §5). Dùng chung bởi Registry._scan_providers()
+    và bởi chính Provider Adapter khi tự nạp manifest của mình lúc import (vd StubAdapter)."""
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    return ProviderManifest(
+        provider_id=data["id"],
+        implements=data.get("implements", []),
+        provider_class=data.get("class", "local"),
+        privacy=data.get("privacy", "private"),
+        cost=data.get("cost", {}),
+        limits=data.get("limits", {}),
+        resources=data.get("resources", []),
+        health_check=data.get("health_check", {}),
+        quality_hint=data.get("quality_hint", {}),
+    )
+
+
 class Registry:
     def __init__(self, capabilities_dir: Path, providers_dir: Path) -> None:
         self._capabilities_dir = capabilities_dir
@@ -136,20 +153,7 @@ class Registry:
             manifest_path = provider_dir / "provider.yaml"
             if not manifest_path.is_file():
                 continue
-            data = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
-            result.append(
-                ProviderManifest(
-                    provider_id=data["id"],
-                    implements=data.get("implements", []),
-                    provider_class=data.get("class", "local"),
-                    privacy=data.get("privacy", "private"),
-                    cost=data.get("cost", {}),
-                    limits=data.get("limits", {}),
-                    resources=data.get("resources", []),
-                    health_check=data.get("health_check", {}),
-                    quality_hint=data.get("quality_hint", {}),
-                )
-            )
+            result.append(load_provider_manifest(manifest_path))
         return result
 
     @staticmethod
