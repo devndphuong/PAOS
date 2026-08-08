@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "paosd-demo",
+      "runtimeExecutable": "C:\\Users\\dacph\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
+      "runtimeArgs": ["C:\\Users\\dacph\\AppData\\Local\\Temp\\claude\\D--Project-PAOS\\63d3f5d0-233e-4c2b-b115-7c6926340e5d\\scratchpad\\demo_server.py"],
+      "port": 8787
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(make ci)",
+      "Bash(make lint)",
+      "Bash(make type)",
+      "Bash(make arch)",
+      "Bash(make cov)",
+      "Bash(make gates)",
+      "Bash(make gate1)",
+      "Bash(make gate2)",
+      "Bash(make gate3)",
+      "Bash(make gate4)",
+      "Bash(make gate5)",
+      "Bash(make gate6)",
+      "Bash(ruff format --check .)",
+      "Bash(ruff check .)",
+      "Bash(mypy)",
+      "Bash(pytest tests/*)"
+    ]
+  }
+}
