@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://capabilities/text.generate/1/input.schema.json",
+  "title": "text.generate@1 input",
+  "description": "doc 04 §2.1 — Sinh văn bản từ prompt.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["prompt"],
+  "properties": {
+    "prompt": { "type": "string", "minLength": 1 },
+    "system": { "type": "string" },
+    "max_tokens": { "type": "integer", "minimum": 1, "default": 2048 },
+    "temperature": { "type": "number", "minimum": 0, "maximum": 2, "default": 0.7 },
+    "json_schema": {
+      "type": "object",
+      "description": "Nếu có, output.text phải khớp schema này"
+    },
+    "task_class": {
+      "type": "string",
+      "description": "vd script_writing_vi — dùng cho routing & thống kê (doc 06)"
+    }
+  }
+}
