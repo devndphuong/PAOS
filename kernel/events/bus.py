@@ -73,51 +73,90 @@ class EventBus:
         correlation_id: str | None = None,
         causation_id: str | None = None,
     ) -> EventEnvelope:
-        self._validate_payload(type, version, payload)
+        """Tiện ích cho trường hợp publish 1 event độc lập, không kèm ghi nào khác.
+        Nếu cần ghi event CÙNG transaction với thay đổi khác (vd process_transitions,
+        doc 19 P-M0-3), dùng build_and_insert() bên trong write() của caller rồi tự
+        gọi dispatch() sau khi transaction của caller commit.
+        """
 
         async def _insert(conn: aiosqlite.Connection) -> EventEnvelope:
-            cursor = await conn.execute(
-                "UPDATE counters SET value = value + 1 WHERE name = 'event_seq' RETURNING value"
-            )
-            row = await cursor.fetchone()
-            if row is None:
-                raise RuntimeError("counters thiếu hàng 'event_seq' — migration 002 chưa chạy đúng")
-            seq = int(row[0])
-            envelope = EventEnvelope(
-                event_id=ids.new_id("evt"),
-                type=type,
+            return await self.build_and_insert(
+                conn,
+                type,
+                source,
+                payload,
                 version=version,
-                ts=clock.now().isoformat(),
-                source=source,
                 process_id=process_id,
                 task_id=task_id,
                 correlation_id=correlation_id,
                 causation_id=causation_id,
-                payload=payload,
             )
-            await conn.execute(
-                "INSERT INTO events(event_id, seq, type, version, ts, source, process_id, "
-                "task_id, correlation_id, causation_id, payload_json) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    envelope.event_id,
-                    seq,
-                    envelope.type,
-                    envelope.version,
-                    envelope.ts,
-                    envelope.source,
-                    envelope.process_id,
-                    envelope.task_id,
-                    envelope.correlation_id,
-                    envelope.causation_id,
-                    json.dumps(payload, ensure_ascii=False),
-                ),
-            )
-            return envelope
 
         envelope = await self._store.write(_insert)
-        await self._dispatch(envelope)
+        await self.dispatch(envelope)
         return envelope
+
+    async def build_and_insert(
+        self,
+        conn: aiosqlite.Connection,
+        type: str,
+        source: str,
+        payload: dict[str, Any],
+        *,
+        version: int = 1,
+        process_id: str | None = None,
+        task_id: str | None = None,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+    ) -> EventEnvelope:
+        """Validate + ghi event vào `conn` — transaction ĐANG MỞ của caller (bên trong
+        một hàm truyền cho StateStore.write()). KHÔNG dispatch — gọi dispatch() sau khi
+        transaction của caller commit thành công.
+        """
+        self._validate_payload(type, version, payload)
+        cursor = await conn.execute(
+            "UPDATE counters SET value = value + 1 WHERE name = 'event_seq' RETURNING value"
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            raise RuntimeError("counters thiếu hàng 'event_seq' — migration 002 chưa chạy đúng")
+        seq = int(row[0])
+        envelope = EventEnvelope(
+            event_id=ids.new_id("evt"),
+            type=type,
+            version=version,
+            ts=clock.now().isoformat(),
+            source=source,
+            process_id=process_id,
+            task_id=task_id,
+            correlation_id=correlation_id,
+            causation_id=causation_id,
+            payload=payload,
+        )
+        await conn.execute(
+            "INSERT INTO events(event_id, seq, type, version, ts, source, process_id, "
+            "task_id, correlation_id, causation_id, payload_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                envelope.event_id,
+                seq,
+                envelope.type,
+                envelope.version,
+                envelope.ts,
+                envelope.source,
+                envelope.process_id,
+                envelope.task_id,
+                envelope.correlation_id,
+                envelope.causation_id,
+                json.dumps(payload, ensure_ascii=False),
+            ),
+        )
+        return envelope
+
+    async def dispatch(self, envelope: EventEnvelope) -> None:
+        """Dispatch một envelope đã ghi DB rồi — dùng sau build_and_insert() bên ngoài
+        transaction của caller (hoặc nội bộ bởi publish())."""
+        await self._dispatch(envelope)
 
     async def _dispatch(self, envelope: EventEnvelope) -> None:
         for name, (pattern, handler) in self._subscribers.items():

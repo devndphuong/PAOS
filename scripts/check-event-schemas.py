@@ -39,6 +39,7 @@ PAST_TENSE_OK = {
     "failed",
     "rejected",
     "cancelled",
+    "queued",
     "paused",
     "resumed",
     "checkpointed",

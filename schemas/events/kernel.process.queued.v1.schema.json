@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://schemas/events/kernel.process.queued.v1.schema.json",
+  "title": "kernel.process.queued payload",
+  "description": "M0 lát cắt 3 — không có trong catalog gốc doc 05 §3.1, thêm vì QUEUED có đường vào thật (doc 19 P-M0-3).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["pid"],
+  "properties": {
+    "pid": { "type": "integer", "minimum": 1 }
+  }
+}

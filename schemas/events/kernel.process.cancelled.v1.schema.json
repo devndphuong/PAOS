@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://schemas/events/kernel.process.cancelled.v1.schema.json",
+  "title": "kernel.process.cancelled payload",
+  "description": "doc 05 §3.1 — Process bị hủy.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["pid", "by"],
+  "properties": {
+    "pid": { "type": "integer", "minimum": 1 },
+    "by": { "type": "string" }
+  }
+}

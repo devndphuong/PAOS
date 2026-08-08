@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://schemas/events/kernel.process.started.v1.schema.json",
+  "title": "kernel.process.started payload",
+  "description": "doc 05 §3.1 — Process chuyển sang RUNNING.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["pid"],
+  "properties": {
+    "pid": { "type": "integer", "minimum": 1 }
+  }
+}

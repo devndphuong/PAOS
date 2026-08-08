@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://schemas/events/kernel.process.failed.v1.schema.json",
+  "title": "kernel.process.failed payload",
+  "description": "doc 05 §3.1 — Process chuyển sang FAILED.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["pid", "error_code"],
+  "properties": {
+    "pid": { "type": "integer", "minimum": 1 },
+    "error_code": { "type": "string" },
+    "error_ctx": { "type": "object" }
+  }
+}

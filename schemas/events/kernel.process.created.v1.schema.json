@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://schemas/events/kernel.process.created.v1.schema.json",
+  "title": "kernel.process.created payload",
+  "description": "doc 05 §3.1 — Process vừa được tạo.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["pid", "workflow_ref"],
+  "properties": {
+    "pid": { "type": "integer", "minimum": 1 },
+    "workflow_ref": { "type": "string" }
+  }
+}
