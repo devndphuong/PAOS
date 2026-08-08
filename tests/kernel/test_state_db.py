@@ -47,12 +47,14 @@ async def test_migration_runs_on_first_start(db_path: Path) -> None:
 
 
 async def test_migration_is_idempotent(db_path: Path) -> None:
+    n_migration_files = len(list(db._MIGRATIONS_DIR.glob("*.sql")))
+
     store1 = db.StateStore(db_path)
     await store1.start()
     await store1.stop()
 
     store2 = db.StateStore(db_path)
-    await store2.start()  # không được lỗi, không áp lại migration 1
+    await store2.start()  # không được lỗi, không áp lại migration đã áp
     try:
 
         async def _count(conn: aiosqlite.Connection) -> int:
@@ -61,7 +63,8 @@ async def test_migration_is_idempotent(db_path: Path) -> None:
             assert row is not None
             return int(row[0])
 
-        assert await store2.read(_count) == 1
+        # So với số file migration thật, không hardcode — tránh vỡ mỗi khi thêm migration mới.
+        assert await store2.read(_count) == n_migration_files
     finally:
         await store2.stop()
 
