@@ -27,7 +27,7 @@
 
 ```
 §1  PROMPT-CORE            — dán một lần, dùng mãi
-§2  Prompt vòng lặp        — 10 prompt dùng lại mỗi ngày
+§2  Prompt vòng lặp        — 11 prompt dùng lại mỗi ngày
 §3  Ngày 0                 — 3 prompt
 §4  M0 Walking Skeleton    — 6 prompt
 §5  M1 → M8 + Hardening    — 35 prompt
@@ -205,6 +205,33 @@ Cho tôi:
 3. Có gì cần thêm vào docs/backlog.md từ phiên này không?
 4. main có đang ở trạng thái chạy được không? Nếu không, cần làm gì để về đó
    TRƯỚC khi tôi đóng máy?
+```
+
+### P-PREVIEW · Giao diện xem trước sau lát cắt (nếu có API/chức năng mới)
+
+> Thêm 2026-08-08 theo yêu cầu người dùng: khó hình dung tiến độ chỉ qua báo cáo
+> chữ hoặc Swagger thô — cần một giao diện trực quan có chú thích sau mỗi lát
+> cắt trước khi coi nó xong.
+
+```
+Lát cắt vừa xong có thêm API/chức năng nhìn thấy được (không phải refactor
+nội bộ thuần túy).
+
+Trước khi coi lát cắt này xong, dựng một giao diện xem trước cơ bản (Claude
+Artifact, tiếng Việt) — KHÔNG phải Web UI thật của M8 (doc 10 §8, 4 màn hình),
+chỉ là công cụ duyệt tạm, không commit vào repo:
+
+1. Liệt kê từng API/chức năng mới: tên, TÁC DỤNG bằng tiếng Việt dễ hiểu
+   (không chỉ chép lại schema kỹ thuật), ví dụ dùng cụ thể
+2. Nếu có máy trạng thái hoặc luồng dữ liệu mới, vẽ sơ đồ minh họa
+3. Không cần nối dây sống tới paosd thật — Artifact chạy trong sandbox không
+   gọi ra ngoài được (trừ khi khai báo capability riêng); ví dụ request/response
+   tĩnh là đủ cho mục đích xem trước
+
+Nếu lát cắt này không thêm gì nhìn thấy được (vd chỉ sửa nội bộ StateStore),
+nói rõ và bỏ qua bước này — đừng dựng giao diện cho thứ chưa có gì để xem.
+
+(Bản tiếng Anh của giao diện này làm sau — chưa cần ở giai đoạn hiện tại.)
 ```
 
 ### P-DEBUG · Gỡ lỗi
