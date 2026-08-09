@@ -2,10 +2,17 @@
 
 Kernel chỉ biết capability_id/version qua đây. Không hằng số tên provider nào
 trong kernel/ — mọi thứ đọc từ file, hoàn toàn chung (P1/P3).
-"""
+
+`load_adapter()` (P-M2-1) nạp ĐỘNG instance adapter qua `importlib` theo
+`provider.yaml::adapter` (dạng `module.path:ClassName`) — Kernel không bao
+giờ có `import providers.xxx` tĩnh nào (đúng doc 02 §3.5 "Load lúc khởi động").
+Trả về `Any`, KHÔNG import `sdk.provider.ProviderAdapter` để gõ kiểu — Kernel
+không được phép biết tới `sdk/` (MNT-06); caller (`apps/`, được phép import cả
+2 tầng) tự chịu trách nhiệm instance khớp Protocol."""
 
 from __future__ import annotations
 
+import importlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -63,6 +70,7 @@ class ProviderManifest:
     resources: list[str]
     health_check: dict[str, Any]
     quality_hint: dict[str, Any]
+    adapter: str  # "module.path:ClassName" — Registry.load_adapter() nạp động (P-M2-1)
 
     def implements_capability(self, capability_id: str, version: int) -> bool:
         return f"{capability_id}@{version}" in self.implements
@@ -86,6 +94,7 @@ def load_provider_manifest(path: Path) -> ProviderManifest:
         resources=data.get("resources", []),
         health_check=data.get("health_check", {}),
         quality_hint=data.get("quality_hint", {}),
+        adapter=data.get("adapter", ""),
     )
 
 
@@ -95,12 +104,15 @@ class Registry:
         self._providers_dir = providers_dir
         self._capabilities: dict[str, CapabilitySpec] = {}
         self._providers: list[ProviderManifest] = []
+        self._providers_by_id: dict[str, ProviderManifest] = {}
+        self._adapter_cache: dict[str, Any] = {}
 
     def load(self) -> None:
         """Quét capabilities/ và providers/, nạp toàn bộ vào bộ nhớ. Gọi 1 lần lúc khởi động
         (chưa hot-reload — đó là M8 khi có Event `plugin.installed`, doc 02 §3.5)."""
         self._capabilities = dict(self._scan_capabilities())
         self._providers = list(self._scan_providers())
+        self._providers_by_id = {p.provider_id: p for p in self._providers}
 
     def get_capability(self, capability_id: str, version: int) -> CapabilitySpec:
         key = _capability_key(capability_id, version)
@@ -119,6 +131,51 @@ class Registry:
 
     def providers_for(self, capability_id: str, version: int) -> list[ProviderManifest]:
         return [p for p in self._providers if p.implements_capability(capability_id, version)]
+
+    def preload_adapter(self, provider_id: str, adapter: Any) -> None:
+        """Đặt sẵn 1 instance adapter cho `provider_id`, bỏ qua nạp động —
+        dùng cho test (thay adapter thật bằng adapter giả điều khiển được).
+        Production code không cần gọi hàm này, `load_adapter()` tự nạp động."""
+        self._adapter_cache[provider_id] = adapter
+
+    def load_adapter(self, provider_id: str) -> Any:
+        """Nạp động instance adapter theo `provider.yaml::adapter` (P-M2-1,
+        exit criteria doc 13 M2: "provider mới chỉ cần 1 file adapter + 1
+        YAML"). Cache theo provider_id — mỗi provider chỉ khởi tạo 1 lần."""
+        if provider_id in self._adapter_cache:
+            return self._adapter_cache[provider_id]
+
+        manifest = self._providers_by_id.get(provider_id)
+        if manifest is None:
+            raise PaosError(
+                ErrorCode.NOT_FOUND,
+                f"Provider {provider_id} chưa đăng ký",
+                hint="Kiểm thư mục providers/ có provider.yaml khai báo id này không",
+                context={"provider_id": provider_id},
+            )
+        if not manifest.adapter:
+            raise PaosError(
+                ErrorCode.INTERNAL,
+                f"Provider {provider_id} không khai báo 'adapter' trong provider.yaml",
+                hint="Thêm dòng adapter: module.path:ClassName vào provider.yaml",
+                context={"provider_id": provider_id},
+            )
+
+        module_path, _, class_name = manifest.adapter.partition(":")
+        try:
+            module = importlib.import_module(module_path)
+            adapter_cls = getattr(module, class_name)
+            instance = adapter_cls()
+        except (ImportError, AttributeError) as exc:
+            raise PaosError(
+                ErrorCode.INTERNAL,
+                f"Không nạp được adapter '{manifest.adapter}' cho provider {provider_id}: {exc}",
+                hint="Kiểm giá trị 'adapter' trong provider.yaml đúng dạng module.path:ClassName",
+                context={"provider_id": provider_id, "adapter": manifest.adapter},
+            ) from exc
+
+        self._adapter_cache[provider_id] = instance
+        return instance
 
     def _scan_capabilities(self) -> dict[str, CapabilitySpec]:
         result: dict[str, CapabilitySpec] = {}

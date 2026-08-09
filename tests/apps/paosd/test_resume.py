@@ -16,9 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-import pytest
 
-import apps.paosd.runner as runner_module
 from apps.paosd.wiring import build_daemon
 from kernel.events.bus import EventBus
 from kernel.process.manager import ProcessManager, ProcessState
@@ -123,16 +121,17 @@ def _read_state_and_event_count(db_path: Path, pid: int) -> tuple[str, int]:
     return row[0], int(count)
 
 
-async def test_resume_after_crash_while_running(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_resume_after_crash_while_running(tmp_path: Path) -> None:
     adapter1 = _BlockingAdapter()
-    monkeypatch.setitem(runner_module._ADAPTERS, "stub.deterministic", adapter1)
 
     db_path = tmp_path / ".paos" / "state.db"
     workspace_root = tmp_path / "workspace"
 
-    daemon1 = await build_daemon(db_path, workspace_root=workspace_root)
+    daemon1 = await build_daemon(
+        db_path,
+        workspace_root=workspace_root,
+        adapter_overrides={"stub.deterministic": adapter1},
+    )
     transport1 = httpx.ASGITransport(app=daemon1.app)
     async with httpx.AsyncClient(transport=transport1, base_url="http://test") as client:
         pid = await _post_job(client, "van ban bi crash giua chung")
@@ -150,9 +149,12 @@ async def test_resume_after_crash_while_running(
     # Adapter MỚI, không dùng lại adapter1 (đã "chết" cùng daemon1) — mô phỏng
     # daemon thật khởi động lại với provider mới nạp.
     adapter2 = _BlockingAdapter()
-    monkeypatch.setitem(runner_module._ADAPTERS, "stub.deterministic", adapter2)
 
-    daemon2 = await build_daemon(db_path, workspace_root=workspace_root)
+    daemon2 = await build_daemon(
+        db_path,
+        workspace_root=workspace_root,
+        adapter_overrides={"stub.deterministic": adapter2},
+    )
     try:
         transport2 = httpx.ASGITransport(app=daemon2.app)
         async with httpx.AsyncClient(transport=transport2, base_url="http://test") as client:
@@ -180,7 +182,7 @@ async def test_resume_after_crash_while_running(
 
 
 async def test_on_process_created_idempotent_after_crash_between_planning_and_queued(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
 ) -> None:
     """Regression — phát hiện lúc kiểm thủ công M1-4: crash đúng giữa
     on_process_created() (đã ghi PLANNING, chưa kịp QUEUED) khiến catch-up
@@ -189,10 +191,11 @@ async def test_on_process_created_idempotent_after_crash_between_planning_and_qu
     kẹt PLANNING vĩnh viễn (event đã bị đánh dấu "failed", không bao giờ
     retry lần 3). Test này gọi lại y hệt catch-up sẽ làm, xác nhận không kẹt."""
     adapter = _BlockingAdapter()
-    monkeypatch.setitem(runner_module._ADAPTERS, "stub.deterministic", adapter)
 
     daemon = await build_daemon(
-        tmp_path / ".paos" / "state.db", workspace_root=tmp_path / "workspace"
+        tmp_path / ".paos" / "state.db",
+        workspace_root=tmp_path / "workspace",
+        adapter_overrides={"stub.deterministic": adapter},
     )
     try:
         # EventBus RIÊNG, KHÔNG subscribe "runner" — để tạo process mà không tự
@@ -229,18 +232,17 @@ async def test_on_process_created_idempotent_after_crash_between_planning_and_qu
         await daemon.stop()
 
 
-async def test_duplicate_enqueue_does_not_run_agent_twice(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_duplicate_enqueue_does_not_run_agent_twice(tmp_path: Path) -> None:
     """Nếu on_process_created() được gọi lại (catch-up) SAU KHI process đã tới
     QUEUED — idempotent nên vẫn đi tới nhánh enqueue lần nữa. worker_loop()
     phải tự phát hiện process_id đã có task đang chạy và bỏ qua bản trùng,
     không chạy agent 2 lần (P9)."""
     adapter = _BlockingAdapter()
-    monkeypatch.setitem(runner_module._ADAPTERS, "stub.deterministic", adapter)
 
     daemon = await build_daemon(
-        tmp_path / ".paos" / "state.db", workspace_root=tmp_path / "workspace"
+        tmp_path / ".paos" / "state.db",
+        workspace_root=tmp_path / "workspace",
+        adapter_overrides={"stub.deterministic": adapter},
     )
     try:
         process = await daemon.manager.create(

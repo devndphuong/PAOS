@@ -12,6 +12,7 @@ import asyncio
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI
 
@@ -62,10 +63,14 @@ async def build_daemon(
     *,
     max_parallel: int = 3,
     resource_capacity: dict[str, int] | None = None,
+    adapter_overrides: dict[str, Any] | None = None,
 ) -> Daemon:
     """`workspace_root` mặc định `<repo>/workspace` cho daemon thật — test truyền
     `tmp_path` riêng để không ghi artifact vào cây thư mục repo thật.
-    `max_parallel`/`resource_capacity` xem `apps/paosd/runner.py::Runner` (M1-3a)."""
+    `max_parallel`/`resource_capacity` xem `apps/paosd/runner.py::Runner` (M1-3a).
+    `adapter_overrides` ({provider_id: instance}) chỉ dùng cho test — thay
+    adapter thật bằng adapter giả điều khiển được (`Registry.preload_adapter()`,
+    M2-1), production code không truyền tham số này."""
     started_at = time.monotonic()
     store = StateStore(db_path)
     await store.start()
@@ -73,6 +78,8 @@ async def build_daemon(
     events = EventBus(store)
     registry = Registry(_REPO_ROOT / "capabilities", _REPO_ROOT / "providers")
     registry.load()
+    for provider_id, adapter in (adapter_overrides or {}).items():
+        registry.preload_adapter(provider_id, adapter)
     manager = ProcessManager(store, events)
     runner = Runner(
         manager,

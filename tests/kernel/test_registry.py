@@ -113,6 +113,95 @@ def test_provider_not_implementing_capability_excluded(tmp_path: Path) -> None:
     assert reg.providers_for("text.generate", 1) == []
 
 
+def test_load_adapter_dynamically_imports_and_instantiates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P-M2-1, exit criteria doc 13 M2: "provider mới thêm vào chỉ bằng 1 file
+    adapter + 1 YAML" — Registry phải NẠP ĐỘNG, không có dict hardcode nào ở
+    tầng trên đọc `provider.yaml::adapter`. Module giả nằm trong `tmp_path`,
+    thêm vào `sys.path` tạm thời (pytest tự khôi phục) để không phụ thuộc
+    `providers/` thật — mô phỏng đúng "1 file adapter" từ xa."""
+    caps_dir = tmp_path / "capabilities"
+    providers_dir = tmp_path / "providers"
+    _write_fixture_capability(caps_dir)
+
+    fake_pkg = tmp_path / "fake_pkg"
+    fake_pkg.mkdir()
+    (fake_pkg / "__init__.py").write_text("", encoding="utf-8")
+    (fake_pkg / "adapter.py").write_text(
+        "class FakeAdapter:\n    def __init__(self) -> None:\n        self.created = True\n",
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    provider_dir = providers_dir / "fake_dynamic"
+    provider_dir.mkdir(parents=True)
+    (provider_dir / "provider.yaml").write_text(
+        "id: fake.dynamic\nimplements: [text.generate@1]\nclass: local\nprivacy: private\n"
+        "cost: {}\nlimits: {}\nresources: []\nhealth_check: {}\nquality_hint: {}\n"
+        "adapter: fake_pkg.adapter:FakeAdapter\n",
+        encoding="utf-8",
+    )
+
+    reg = Registry(caps_dir, providers_dir)
+    reg.load()
+
+    adapter = reg.load_adapter("fake.dynamic")
+    assert adapter.created is True
+
+    # Cache theo provider_id — gọi lại phải trả về CÙNG instance, không tạo mới.
+    assert reg.load_adapter("fake.dynamic") is adapter
+
+
+def test_load_adapter_unknown_provider_raises_not_found(tmp_path: Path) -> None:
+    caps_dir = tmp_path / "capabilities"
+    providers_dir = tmp_path / "providers"
+    _write_fixture_capability(caps_dir)
+
+    reg = Registry(caps_dir, providers_dir)
+    reg.load()
+
+    with pytest.raises(PaosError) as exc_info:
+        reg.load_adapter("khong.ton.tai")
+    assert exc_info.value.code == ErrorCode.NOT_FOUND
+
+
+def test_load_adapter_missing_adapter_field_raises_clear_error(tmp_path: Path) -> None:
+    caps_dir = tmp_path / "capabilities"
+    providers_dir = tmp_path / "providers"
+    _write_fixture_capability(caps_dir)
+
+    provider_dir = providers_dir / "no_adapter"
+    provider_dir.mkdir(parents=True)
+    (provider_dir / "provider.yaml").write_text(
+        "id: no.adapter\nimplements: [text.generate@1]\nclass: local\nprivacy: private\n"
+        "cost: {}\nlimits: {}\nresources: []\nhealth_check: {}\nquality_hint: {}\n",
+        encoding="utf-8",
+    )
+
+    reg = Registry(caps_dir, providers_dir)
+    reg.load()
+
+    with pytest.raises(PaosError) as exc_info:
+        reg.load_adapter("no.adapter")
+    assert "adapter" in exc_info.value.message.lower()
+
+
+def test_preload_adapter_bypasses_dynamic_import(tmp_path: Path) -> None:
+    """Dùng cho test (thay adapter thật bằng adapter giả) — production code
+    không cần gọi hàm này."""
+    caps_dir = tmp_path / "capabilities"
+    providers_dir = tmp_path / "providers"
+    _write_fixture_capability(caps_dir)
+
+    reg = Registry(caps_dir, providers_dir)
+    reg.load()
+
+    fake = object()
+    reg.preload_adapter("chua.dang.ky", fake)
+    assert reg.load_adapter("chua.dang.ky") is fake
+
+
 def _write_fixture_capability(caps_dir: Path) -> None:
     version_dir = caps_dir / "text.generate" / "1"
     version_dir.mkdir(parents=True)

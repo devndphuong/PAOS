@@ -2,9 +2,9 @@
 (doc 19 P-M1-3a, doc 02 §3.2).
 
 `StubAdapter` thật xong <1s — không đủ để CHỨNG MINH chồng lấn bằng đồng hồ
-tường. Mọi test ở đây dùng adapter giả (monkeypatch `apps.paosd.runner._ADAPTERS`)
-điều khiển được thời điểm `invoke()` trả về, quan sát trực tiếp qua biến đếm
-thay vì suy luận qua timing.
+tường. Mọi test ở đây dùng adapter giả truyền qua `build_daemon(adapter_overrides=...)`
+(M2-1, `Registry.preload_adapter()`) điều khiển được thời điểm `invoke()` trả
+về, quan sát trực tiếp qua biến đếm thay vì suy luận qua timing.
 """
 
 import asyncio
@@ -12,9 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-import pytest
 
-import apps.paosd.runner as runner_module
 from apps.paosd.wiring import build_daemon
 from sdk.provider import CallContext, Estimate, Health, ProviderManifest
 
@@ -135,20 +133,14 @@ async def _wait_until(predicate: Any, max_wait_s: float = 5.0) -> None:
         await asyncio.sleep(0.01)
 
 
-@pytest.fixture
-def patch_adapter(monkeypatch: pytest.MonkeyPatch) -> Any:
-    def _apply(adapter: Any) -> None:
-        monkeypatch.setitem(runner_module._ADAPTERS, "stub.deterministic", adapter)
-
-    return _apply
-
-
-async def test_three_processes_run_truly_concurrently(tmp_path: Path, patch_adapter: Any) -> None:
+async def test_three_processes_run_truly_concurrently(tmp_path: Path) -> None:
     adapter = _BlockingAdapter()
-    patch_adapter(adapter)
 
     daemon = await build_daemon(
-        tmp_path / ".paos" / "state.db", workspace_root=tmp_path / "workspace", max_parallel=3
+        tmp_path / ".paos" / "state.db",
+        workspace_root=tmp_path / "workspace",
+        max_parallel=3,
+        adapter_overrides={"stub.deterministic": adapter},
     )
     try:
         transport = httpx.ASGITransport(app=daemon.app)
@@ -172,13 +164,15 @@ async def test_three_processes_run_truly_concurrently(tmp_path: Path, patch_adap
         await daemon.stop()
 
 
-async def test_priority_queue_higher_number_runs_first(tmp_path: Path, patch_adapter: Any) -> None:
+async def test_priority_queue_higher_number_runs_first(tmp_path: Path) -> None:
     adapter = _StepAdapter()
-    patch_adapter(adapter)
 
     # max_parallel=1 để thứ tự hàng đợi lộ rõ, không lẫn với concurrency.
     daemon = await build_daemon(
-        tmp_path / ".paos" / "state.db", workspace_root=tmp_path / "workspace", max_parallel=1
+        tmp_path / ".paos" / "state.db",
+        workspace_root=tmp_path / "workspace",
+        max_parallel=1,
+        adapter_overrides={"stub.deterministic": adapter},
     )
     try:
         transport = httpx.ASGITransport(app=daemon.app)
@@ -209,19 +203,19 @@ async def test_priority_queue_higher_number_runs_first(tmp_path: Path, patch_ada
 
 
 async def test_resource_token_limits_calls_even_with_free_process_slots(
-    tmp_path: Path, patch_adapter: Any
+    tmp_path: Path,
 ) -> None:
     """3 Process có thể cùng RUNNING (max_parallel=3), nhưng nếu adapter khai
     báo cần resource "gpu" và dung lượng cấu hình chỉ 1, lượt GỌI capability
     thật sự vẫn phải xếp hàng — token gắn với lượt gọi, không phải cả Process."""
     adapter = _BlockingAdapter(resources=["gpu"])
-    patch_adapter(adapter)
 
     daemon = await build_daemon(
         tmp_path / ".paos" / "state.db",
         workspace_root=tmp_path / "workspace",
         max_parallel=3,
         resource_capacity={"gpu": 1},
+        adapter_overrides={"stub.deterministic": adapter},
     )
     try:
         transport = httpx.ASGITransport(app=daemon.app)
@@ -242,15 +236,17 @@ async def test_resource_token_limits_calls_even_with_free_process_slots(
 
 
 async def test_cancel_one_of_three_does_not_affect_others(
-    tmp_path: Path, patch_adapter: Any
+    tmp_path: Path,
 ) -> None:
     """Đúng exit criteria doc 13 M1: hủy 1 Process không ảnh hưởng 2 Process
     song song còn lại (doc 19 P-M1-3b)."""
     adapter = _BlockingAdapter()
-    patch_adapter(adapter)
 
     daemon = await build_daemon(
-        tmp_path / ".paos" / "state.db", workspace_root=tmp_path / "workspace", max_parallel=3
+        tmp_path / ".paos" / "state.db",
+        workspace_root=tmp_path / "workspace",
+        max_parallel=3,
+        adapter_overrides={"stub.deterministic": adapter},
     )
     try:
         transport = httpx.ASGITransport(app=daemon.app)
@@ -276,14 +272,16 @@ async def test_cancel_one_of_three_does_not_affect_others(
         await daemon.stop()
 
 
-async def test_cancel_queued_process_before_it_starts(tmp_path: Path, patch_adapter: Any) -> None:
+async def test_cancel_queued_process_before_it_starts(tmp_path: Path) -> None:
     """Process còn nằm trong PriorityQueue (chưa có task) vẫn hủy được — và
     khi dispatcher sau đó lấy nó ra, KHÔNG được ghi đè trạng thái CANCELLED."""
     adapter = _BlockingAdapter()
-    patch_adapter(adapter)
 
     daemon = await build_daemon(
-        tmp_path / ".paos" / "state.db", workspace_root=tmp_path / "workspace", max_parallel=1
+        tmp_path / ".paos" / "state.db",
+        workspace_root=tmp_path / "workspace",
+        max_parallel=1,
+        adapter_overrides={"stub.deterministic": adapter},
     )
     try:
         transport = httpx.ASGITransport(app=daemon.app)

@@ -7,3 +7,4 @@ limits: {ctx: 32768, rpm: null, concurrent: 1}
 resources: []
 health_check: {}
 quality_hint: {default: 50}
+adapter: providers.stub.adapter:StubAdapter

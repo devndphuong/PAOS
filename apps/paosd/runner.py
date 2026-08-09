@@ -27,6 +27,15 @@ chỉ đánh dấu "đã vào RUNNING"; nếu daemon crash giữa lúc RUNNING, 
 lại (`apps/paosd/wiring.py::build_daemon()`) đưa process đó lại vào hàng đợi
 — `_run_one()` nhận ra nó ĐÃ ở RUNNING (không phải QUEUED) nên không transition
 lại, chỉ chạy lại agent từ đầu.
+
+M2-1 (doc 19): trước lát này, adapter provider được chọn qua `_ADAPTERS` —
+dict tĩnh hardcode trong file này, vi phạm đúng exit criteria doc 13 M2
+"provider mới thêm vào chỉ bằng 1 file adapter + 1 YAML" (thêm provider mới
+còn phải SỬA CODE ở đây). Giờ dùng `Registry.load_adapter()` (nạp động qua
+`importlib`, đọc `provider.yaml::adapter`) — không còn dict hardcode nào.
+Chưa có Router/fallback/circuit breaker thật (đó là P-M2-3): vẫn chọn
+provider ĐẦU TIÊN theo thứ tự khai báo, đúng phạm vi "chưa ranking, chỉ ưu
+tiên" của M2 (doc 13).
 """
 
 from __future__ import annotations
@@ -50,9 +59,8 @@ from kernel.events.types import EventType
 from kernel.process.manager import Process, ProcessManager, ProcessState
 from kernel.registry.registry import Registry
 from kernel.state.db import StateStore
-from providers.stub.adapter import StubAdapter
 from sdk.agent import Agent, AgentContext, AgentError, Artifact, CallCapability, EmitEvent
-from sdk.provider import CallContext, ProviderAdapter, ProviderError
+from sdk.provider import CallContext, ProviderError
 from sdk.provider import ErrorCode as SdkErrorCode
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -60,21 +68,14 @@ _DEFAULT_PRIORITY = 5
 _DEFAULT_MAX_PARALLEL = 3
 
 # workflow_ref -> (agent, thư mục prompts). M0 chỉ có một agent thật — bảng
-# tra cứu tĩnh này là chỗ M1+ sẽ thay bằng nạp động theo manifest thay vì
-# hardcode (doc 18 §10).
+# tra cứu tĩnh này là chỗ M3+ sẽ thay bằng nạp động theo manifest thay vì
+# hardcode (doc 18 §10) — khi có nhiều agent thật, đúng nguyên tắc P4.
 _AGENTS: dict[str, tuple[Agent, Path]] = {
     "agent:summarize.agent@1": (
         SummarizeAgent(),
         _REPO_ROOT / "agents" / "summarize" / "prompts",
     ),
 }
-
-# provider_id -> instance adapter đã khởi tạo. Registry chỉ giữ metadata
-# (ProviderManifest), không tự khởi tạo adapter — chưa có cơ chế nạp động
-# theo provider_id ở M0. Chọn "provider đầu tiên có adapter nạp sẵn" là đơn
-# giản hoá có chủ đích (1 provider thật/capability ở M0) — Provider Ranking
-# thật là M2 (doc 13, R27).
-_ADAPTERS: dict[str, ProviderAdapter] = {"stub.deterministic": StubAdapter()}
 
 # (-priority, seq, process_id) — PriorityQueue là min-heap nên đảo dấu priority
 # (số lớn hơn phải ra trước); seq đơn điệu giữ FIFO khi priority bằng nhau.
@@ -310,9 +311,13 @@ class Runner:
         """Giữ semaphore của TỪNG resource được khai báo (bỏ qua tên không cấu
         hình dung lượng — coi như không giới hạn). Đây là nơi thật sự áp
         "resource token" (doc 02 §3.2), gắn với lượt gọi capability chứ không
-        phải cả Process."""
+        phải cả Process. `provider.yaml` khai `resources: [gpu:1]` (tên:số
+        lượng, vd `providers/ollama/provider.yaml`) — chỉ tên vế trái được
+        dùng làm khoá semaphore, số lượng CHƯA hỗ trợ (mọi resource hiện có
+        đều cần đúng 1 đơn vị; `asyncio.Semaphore` không có "acquire N")."""
         async with AsyncExitStack() as stack:
-            for name in resource_names:
+            for declared in resource_names:
+                name = declared.partition(":")[0]
                 sem = self._resource_semaphores.get(name)
                 if sem is not None:
                     await stack.enter_async_context(sem)
@@ -323,14 +328,33 @@ class Runner:
             capability_id, version_str = capability_ref.split("@")
             version = int(version_str)
             providers = self._registry.providers_for(capability_id, version)
-            adapter = next(
-                (_ADAPTERS[p.provider_id] for p in providers if p.provider_id in _ADAPTERS), None
-            )
+            if not providers:
+                raise ProviderError(
+                    SdkErrorCode.NOT_FOUND,
+                    f"Không có provider nào đăng ký cho {capability_ref}",
+                    hint="Kiểm providers/*/provider.yaml có implements đúng capability này",
+                )
+            # Chưa có Router/fallback/circuit breaker THẬT (đó là P-M2-3, doc 19 —
+            # backoff, retry theo thời gian, Decision Record). Ở đây chỉ thử LẦN
+            # LƯỢT theo thứ tự khai báo, bỏ qua provider chưa nạp được (thiếu
+            # `adapter:`, sai module...) — lọc lúc NẠP, không phải phục hồi lúc
+            # GỌI. Cần thiết ngay từ P-M2-1: nhiều provider cùng khai
+            # `implements` (vd stub + ollama) mà chỉ thử provider đầu tiên sẽ vỡ
+            # bất cứ khi nào thứ tự trả về không phải cái có adapter thật.
+            adapter = None
+            load_errors: list[str] = []
+            for manifest in providers:
+                try:
+                    adapter = self._registry.load_adapter(manifest.provider_id)
+                    break
+                except PaosError as exc:
+                    load_errors.append(f"{manifest.provider_id}: {exc.message}")
             if adapter is None:
                 raise ProviderError(
                     SdkErrorCode.PROVIDER_DOWN,
-                    f"Không có adapter đã nạp cho provider nào phục vụ {capability_ref}",
-                    hint="Xem apps/paosd/runner.py::_ADAPTERS — M0 chỉ nạp stub.deterministic",
+                    f"Không nạp được adapter cho provider nào phục vụ {capability_ref}: "
+                    + "; ".join(load_errors),
+                    hint="Kiểm provider.yaml có khai 'adapter: module.path:ClassName' đúng chưa",
                 )
             call_ctx = CallContext(
                 call_id=ids.new_id("call"),
