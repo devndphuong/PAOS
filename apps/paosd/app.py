@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
+from apps.paosd.runner import Runner
 from kernel.errors import PaosError
 from kernel.events.bus import EventBus, EventEnvelope
 from kernel.process.manager import Process, ProcessManager, ProcessState
@@ -90,7 +91,9 @@ def _to_response(p: Process) -> ProcessResponse:
     )
 
 
-def create_app(manager: ProcessManager, events: EventBus) -> FastAPI:
+def create_app(  # noqa: PLR0915 — đăng ký route tăng tuyến tính theo số endpoint, không phải độ phức tạp
+    manager: ProcessManager, events: EventBus, runner: Runner
+) -> FastAPI:
     """Lớp mỏng dịch HTTP <-> Kernel API (doc 04 §1) — không chứa logic nghiệp vụ."""
     app = FastAPI(title="paosd")
 
@@ -138,6 +141,17 @@ def create_app(manager: ProcessManager, events: EventBus) -> FastAPI:
             state=process.state.value,
             trace=[_to_event_response(e) for e in trace],
         )
+
+    @app.post("/v1/processes/{pid}/cancel", response_model=ProcessResponse)
+    async def cancel_process(pid: int) -> ProcessResponse:
+        process = await manager.get_by_pid(pid)
+        if process is None:
+            raise HTTPException(status_code=404, detail=f"Process pid={pid} không tồn tại")
+        try:
+            updated = await runner.cancel(process.process_id)
+        except PaosError as exc:
+            raise HTTPException(status_code=400, detail=exc.to_dict()) from exc
+        return _to_response(updated)
 
     @app.get("/v1/events", response_model=list[EventResponse])
     async def list_events(pid: int | None = None, since_seq: int = 0) -> list[EventResponse]:

@@ -41,7 +41,7 @@ from kernel.errors import ErrorCode as KernelErrorCode
 from kernel.errors import PaosError
 from kernel.events.bus import EventBus, EventEnvelope
 from kernel.events.types import EventType
-from kernel.process.manager import ProcessManager, ProcessState
+from kernel.process.manager import Process, ProcessManager, ProcessState
 from kernel.registry.registry import Registry
 from kernel.state.db import StateStore
 from providers.stub.adapter import StubAdapter
@@ -154,6 +154,20 @@ class Runner:
         finally:
             self._process_slots.release()
             self._running_tasks.pop(process_id, None)
+
+    async def cancel(self, process_id: str, reason: str = "user_requested") -> Process:
+        """Hủy 1 job — không ảnh hưởng job khác đang chạy song song (doc 13 M1
+        exit criteria, doc 19 P-M1-3b). Transition DB TRƯỚC (đúng đắn ngay cả
+        nếu hủy task thật có vấn đề gì), rồi mới hủy task đang chạy nếu có.
+        `ProcessManager.transition()` tự raise CONFLICT nếu process đã ở trạng
+        thái cuối — không cần tự kiểm tra lại ở đây. Process còn nằm trong
+        hàng đợi (chưa có task) chỉ cần đổi DB — guard ở `_run_one()` đã tự bỏ
+        qua khi dispatcher dequeue nó sau đó."""
+        updated = await self._manager.transition(process_id, ProcessState.CANCELLED, reason=reason)
+        task = self._running_tasks.get(process_id)
+        if task is not None:
+            task.cancel()
+        return updated
 
     async def _run_one(self, process_id: str) -> None:
         process = await self._manager.get(process_id)

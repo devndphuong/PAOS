@@ -56,9 +56,14 @@ class _BlockingAdapter:
         async with self._lock:
             self.in_flight += 1
             self.max_in_flight = max(self.max_in_flight, self.in_flight)
-        await self.release_event.wait()
-        async with self._lock:
-            self.in_flight -= 1
+        try:
+            await self.release_event.wait()
+        finally:
+            # finally, không phải sau wait() — task.cancel() (M1-3b) ngắt NGAY tại
+            # điểm wait(), nếu đếm ở ngoài try/finally thì job bị hủy không bao
+            # giờ được trừ khỏi in_flight.
+            async with self._lock:
+                self.in_flight -= 1
         return {"text": f"[blocking] {payload['prompt']}", "usage": {}, "meta": {}}
 
     async def cancel(self, call_id: str) -> None:
@@ -232,5 +237,85 @@ async def test_resource_token_limits_calls_even_with_free_process_slots(
             for pid in pids:
                 status = await _wait_for_terminal(client, pid)
                 assert status["state"] == "SUCCEEDED"
+    finally:
+        await daemon.stop()
+
+
+async def test_cancel_one_of_three_does_not_affect_others(
+    tmp_path: Path, patch_adapter: Any
+) -> None:
+    """Đúng exit criteria doc 13 M1: hủy 1 Process không ảnh hưởng 2 Process
+    song song còn lại (doc 19 P-M1-3b)."""
+    adapter = _BlockingAdapter()
+    patch_adapter(adapter)
+
+    daemon = await build_daemon(
+        tmp_path / ".paos" / "state.db", workspace_root=tmp_path / "workspace", max_parallel=3
+    )
+    try:
+        transport = httpx.ASGITransport(app=daemon.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            pids = [await _post_job(client, f"job song song {i}") for i in range(3)]
+            await _wait_until(lambda: adapter.max_in_flight >= 3)
+
+            cancel_resp = await client.post(f"/v1/processes/{pids[0]}/cancel")
+            assert cancel_resp.status_code == 200
+            assert cancel_resp.json()["state"] == "CANCELLED"
+
+            # Bị hủy phải dừng NGAY, không cần đợi release_event.set().
+            status0 = (await client.get(f"/v1/processes/{pids[0]}")).json()
+            assert status0["state"] == "CANCELLED"
+            await _wait_until(lambda: adapter.in_flight == 2)
+
+            adapter.release_event.set()
+
+            for pid in pids[1:]:
+                status = await _wait_for_terminal(client, pid)
+                assert status["state"] == "SUCCEEDED"
+    finally:
+        await daemon.stop()
+
+
+async def test_cancel_queued_process_before_it_starts(tmp_path: Path, patch_adapter: Any) -> None:
+    """Process còn nằm trong PriorityQueue (chưa có task) vẫn hủy được — và
+    khi dispatcher sau đó lấy nó ra, KHÔNG được ghi đè trạng thái CANCELLED."""
+    adapter = _BlockingAdapter()
+    patch_adapter(adapter)
+
+    daemon = await build_daemon(
+        tmp_path / ".paos" / "state.db", workspace_root=tmp_path / "workspace", max_parallel=1
+    )
+    try:
+        transport = httpx.ASGITransport(app=daemon.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            pid_a = await _post_job(client, "A chiem slot duy nhat")
+            await _wait_until(lambda: adapter.in_flight >= 1)
+
+            pid_b = await _post_job(client, "B dang xep hang")
+            await asyncio.sleep(0.05)  # chắc B đã vào hàng đợi, chưa được dispatch
+
+            cancel_resp = await client.post(f"/v1/processes/{pid_b}/cancel")
+            assert cancel_resp.status_code == 200
+            assert cancel_resp.json()["state"] == "CANCELLED"
+
+            adapter.release_event.set()
+            status_a = await _wait_for_terminal(client, pid_a)
+            assert status_a["state"] == "SUCCEEDED"
+
+            status_b = (await client.get(f"/v1/processes/{pid_b}")).json()
+            assert status_b["state"] == "CANCELLED"
+    finally:
+        await daemon.stop()
+
+
+async def test_cancel_unknown_pid_returns_404(tmp_path: Path) -> None:
+    daemon = await build_daemon(
+        tmp_path / ".paos" / "state.db", workspace_root=tmp_path / "workspace"
+    )
+    try:
+        transport = httpx.ASGITransport(app=daemon.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post("/v1/processes/999999/cancel")
+            assert resp.status_code == 404
     finally:
         await daemon.stop()

@@ -129,6 +129,21 @@ def test_ps_lists_created_process(runner: CliRunner, api_url: str) -> None:
     assert "SUCCEEDED" in result.output
 
 
+def test_cancel_unknown_pid_reports_error(runner: CliRunner, api_url: str) -> None:
+    result = runner.invoke(cli, ["--api-url", api_url, "cancel", "999999"])
+    assert result.exit_code == 1
+    assert "✗" in result.output
+
+
+def test_cancel_already_finished_pid_reports_conflict(runner: CliRunner, api_url: str) -> None:
+    run_result = runner.invoke(cli, ["--api-url", api_url, "run", "văn bản để tóm tắt"])
+    pid = run_result.output.splitlines()[0].split("pid=")[1].split(" ")[0]
+
+    result = runner.invoke(cli, ["--api-url", api_url, "cancel", pid])
+    assert result.exit_code == 1
+    assert "✗" in result.output
+
+
 def test_status_shows_process_detail(runner: CliRunner, api_url: str) -> None:
     run_result = runner.invoke(cli, ["--api-url", api_url, "run", "văn bản để tóm tắt"])
     pid = run_result.output.splitlines()[0].split("pid=")[1].split(" ")[0]

@@ -14,9 +14,13 @@ import httpx
 import pytest
 
 from apps.paosd.app import create_app
+from apps.paosd.runner import Runner
 from kernel.events.bus import EventBus
 from kernel.process.manager import ProcessManager
+from kernel.registry.registry import Registry
 from kernel.state.db import StateStore
+
+_REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 @pytest.fixture
@@ -38,8 +42,17 @@ def manager(store: StateStore, events: EventBus) -> ProcessManager:
 
 
 @pytest.fixture
-async def client(manager: ProcessManager, events: EventBus):
-    transport = httpx.ASGITransport(app=create_app(manager, events))
+def runner(manager: ProcessManager, events: EventBus, store: StateStore, tmp_path: Path) -> Runner:
+    """KHÔNG subscribe vào events ở đây — file này kiểm lớp HTTP chung, không
+    cần Agent chạy thật (đó là tests/apps/paosd/test_runner.py)."""
+    registry = Registry(_REPO_ROOT / "capabilities", _REPO_ROOT / "providers")
+    registry.load()
+    return Runner(manager, events, registry, store, tmp_path / "workspace")
+
+
+@pytest.fixture
+async def client(manager: ProcessManager, events: EventBus, runner: Runner):
+    transport = httpx.ASGITransport(app=create_app(manager, events, runner))
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
 
@@ -111,6 +124,32 @@ async def test_explain_shows_created_event(client: httpx.AsyncClient) -> None:
     assert len(body["trace"]) == 1
     assert body["trace"][0]["type"] == "kernel.process.created"
     assert body["trace"][0]["process_id"] == created["process_id"]
+
+
+async def test_cancel_not_found(client: httpx.AsyncClient) -> None:
+    resp = await client.post("/v1/processes/999999/cancel")
+    assert resp.status_code == 404
+
+
+async def test_cancel_created_process_succeeds(client: httpx.AsyncClient) -> None:
+    # Không Runner nào subscribe events ở test này (xem docstring fixture `runner`)
+    # nên process đứng yên ở CREATED — CREATED -> CANCELLED vẫn hợp lệ (doc 02 §3.1).
+    created = (
+        await client.post("/v1/jobs", json={"intent": "x", "name": "a", "workflow_ref": "wf@1"})
+    ).json()
+    resp = await client.post(f"/v1/processes/{created['pid']}/cancel")
+    assert resp.status_code == 200
+    assert resp.json()["state"] == "CANCELLED"
+
+
+async def test_cancel_already_cancelled_is_conflict(client: httpx.AsyncClient) -> None:
+    created = (
+        await client.post("/v1/jobs", json={"intent": "x", "name": "a", "workflow_ref": "wf@1"})
+    ).json()
+    await client.post(f"/v1/processes/{created['pid']}/cancel")
+
+    resp = await client.post(f"/v1/processes/{created['pid']}/cancel")
+    assert resp.status_code == 400
 
 
 async def test_events_not_found_for_unknown_pid(client: httpx.AsyncClient) -> None:

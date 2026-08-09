@@ -153,6 +153,16 @@ def explain(ctx: click.Context, pid: int) -> None:
         click.echo(f"  [{e['ts']}] seq={e['seq']} {e['type']} {payload}")
 
 
+@cli.command()
+@click.argument("pid", type=int)
+@click.pass_context
+def cancel(ctx: click.Context, pid: int) -> None:
+    """Hủy một process đang chạy hoặc đang chờ trong hàng đợi (doc 19 P-M1-3b)."""
+    with _client(ctx) as client:
+        body = _post(client, f"/v1/processes/{pid}/cancel").json()
+    click.echo(f"✓ Đã hủy pid={pid} — state={body['state']}")
+
+
 @cli.group()
 def events() -> None:
     """Xem event log."""

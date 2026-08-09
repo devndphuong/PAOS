@@ -104,7 +104,7 @@ async def build_daemon(
         payload={"version": _PAOS_VERSION, "uptime": 0},
     )
 
-    app = create_app(manager, events)
+    app = create_app(manager, events, runner)
     return Daemon(
         store=store,
         events=events,
