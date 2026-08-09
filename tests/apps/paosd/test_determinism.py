@@ -7,14 +7,20 @@ nhiều lần chạy liên tiếp cùng input.
 không phải Kernel đơn thuần — gate2 (`tests/kernel/`) xoá `apps/` trước khi
 chạy nên đặt ở đó sẽ vỡ ngay. Ghi lại như một điều chỉnh so với kế hoạch gốc
 ở báo cáo nghiệm thu M0 (P-M0-6 mục 5).
+
+Từ M1-2 (doc 19), agent chạy nền qua `worker_loop()` — `create()` chỉ đảm bảo
+QUEUED, phải poll `manager.get()` tới trạng thái cuối thay vì đọc ngay.
 """
 
+import asyncio
 from pathlib import Path
 
 import aiosqlite
 import pytest
 
 from apps.paosd.wiring import build_daemon
+
+_TERMINAL_STATES = {"SUCCEEDED", "FAILED", "CANCELLED"}
 
 _RUNS = 20
 _TEXT = "PAOS là một hệ điều hành AI cá nhân chạy local-first."
@@ -41,9 +47,16 @@ async def _run_once(tmp_path: Path, i: int) -> tuple[str, tuple[str, ...], str]:
             name="determinism-check",
             workflow_ref="agent:summarize.agent@1",
         )
-        # create() dispatch event ĐỒNG BỘ (apps/paosd/runner.py) — process đã
-        # chạy xong khi await create() ở trên trả về, không cần chờ thêm.
+        # create() chỉ dispatch tới lúc QUEUED đồng bộ (apps/paosd/runner.py, M1-2) —
+        # agent chạy nền, phải poll tới trạng thái cuối.
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + 5.0
         final = await daemon.manager.get(process.process_id)
+        while final is not None and final.state.value not in _TERMINAL_STATES:
+            if loop.time() > deadline:
+                raise TimeoutError(f"process {process.process_id} không xong sau 5s")
+            await asyncio.sleep(0.01)
+            final = await daemon.manager.get(process.process_id)
         assert final is not None
         trace = await daemon.events.events_for_process(process.process_id)
 

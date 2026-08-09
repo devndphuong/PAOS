@@ -3,8 +3,12 @@
 không từ bộ nhớ tiến trình sống. Mô phỏng restart bằng cách dựng lại toàn bộ
 `Daemon` (StateStore/EventBus/ProcessManager/Runner mới) trên CÙNG file DB —
 không có gì được giữ lại giữa `daemon1` và `daemon2` ngoài file SQLite.
+
+Từ M1-2 (doc 19), agent chạy nền qua `worker_loop()` — phải poll tới
+SUCCEEDED thay vì đọc ngay sau POST.
 """
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +16,8 @@ import httpx
 from fastapi import FastAPI
 
 from apps.paosd.wiring import build_daemon
+
+_TERMINAL_STATES = {"SUCCEEDED", "FAILED", "CANCELLED"}
 
 
 async def _run_job_to_completion(app: FastAPI) -> int:
@@ -29,8 +35,16 @@ async def _run_job_to_completion(app: FastAPI) -> int:
         created = resp.json()
         pid: int = created["pid"]
 
-        status = await client.get(f"/v1/processes/{pid}")
-        assert status.json()["state"] == "SUCCEEDED"
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + 5.0
+        state = "CREATED"
+        while state not in _TERMINAL_STATES:
+            if loop.time() > deadline:
+                raise TimeoutError(f"process pid={pid} không xong sau 5s")
+            state = (await client.get(f"/v1/processes/{pid}")).json()["state"]
+            if state not in _TERMINAL_STATES:
+                await asyncio.sleep(0.01)
+        assert state == "SUCCEEDED"
         return pid
 
 

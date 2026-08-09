@@ -199,6 +199,17 @@
 
 ---
 
+## ADR-0026 — `POST /v1/jobs` trả về khi QUEUED, không đợi Agent chạy xong
+**Trạng thái:** Accepted · 2026-08 · Quyết định M1-2 ([doc 19 P-M1-2](19-prompt-library.md)), trả nợ RSK-21 ([doc 14](14-risk-register.md))
+
+**Bối cảnh:** Runner M0 (lát 5c) chạy toàn bộ Agent — kể cả gọi provider và ghi artifact — bên trong `EventBus.dispatch()` mà `ProcessManager.create()` `await` trước khi trả về, khiến `POST /v1/jobs` block tới khi Agent xong. Chấp nhận được với `StubAdapter` (<1s) nhưng khoá cứng kiến trúc sai hướng trước khi M1-3 (3 Process song song) cần một Runner thật sự bất đồng bộ.
+**Quyết định:** `POST /v1/jobs` chỉ đảm bảo Process đã qua `CREATED → PLANNING → QUEUED` (2 lần ghi DB nhanh, vẫn đồng bộ) trước khi trả response — KHÔNG còn đảm bảo Agent đã chạy xong. Thực thi Agent chuyển sang `Runner.worker_loop()` chạy nền, tiêu thụ một `asyncio.Queue` nội bộ. Client (CLI, HTTP caller bất kỳ) phải `GET /v1/processes/{pid}` để poll, hoặc theo dõi `events tail`/`explain`.
+**Lý do:** đây là bước tối thiểu để có Runner bất đồng bộ thật mà không cần xây DAG Scheduler đầy đủ ngay (đó là M1-3) — tách rõ "job đã được nhận" khỏi "job đã xong" là tiền đề bắt buộc cho chạy song song.
+**Hệ quả:** mọi caller (kể cả `paosctl run`) phải tự poll — `paosctl run` đã viết vòng lặp poll từ M0 (phòng thủ trước khi cần tới), không cần sửa. Test nào check trạng thái ngay sau `POST` phải đổi sang poll tới terminal. `asyncio.Queue` không sống sót qua restart daemon — bù bằng quét lại `processes` ở trạng thái QUEUED lúc `build_daemon()` khởi động (không cần bảng hàng đợi bền riêng ở quy mô M1).
+**Đã loại:** giữ nguyên đồng bộ, chờ tới M1-3 mới sửa một lần (dồn 2 thay đổi lớn vào 1 lát cắt, khó review, khó tách lỗi nếu có) · dùng framework queue ngoài (Celery/RQ) — thừa cho quy mô 1 máy, vi phạm P11 (Boring technology) và ADR-0024 (SQLite qua single-writer actor đã đủ).
+
+---
+
 ## Backlog ADR (chưa quyết định, cần trước milestone tương ứng)
 
 | Dự kiến | Chủ đề | Cần trước |

@@ -1,16 +1,18 @@
-"""Bộ chạy tối giản M0 (doc 19 P-M0-5, lát 5c) — KHÔNG phải DAG Scheduler.
+"""Bộ chạy Process — KHÔNG phải DAG Scheduler thật (doc 19 P-M1-2, trả nợ RSK-21).
 
-Scope M0 (doc 13): "Process 1 task", không có hàng đợi ưu tiên hay resource
-token — đó là M1. Runner này chỉ nghe `kernel.process.created`, nếu
-`workflow_ref` khớp một agent đã biết thì tự QUEUED -> RUNNING -> chạy đủ 6
-bước vòng đời -> SUCCEEDED/FAILED. M1 sẽ thay "tự chạy ngay khi tạo" bằng
-hàng đợi + resource token thật (doc 18 §10 "chừa cột, đừng chừa code" áp
-dụng tương tự ở mức cơ chế).
+M0 (lát 5c): `on_process_created` chạy TOÀN BỘ agent đồng bộ trong dispatch(),
+khiến `POST /v1/jobs` block tới khi agent xong. M1-2 tách "đưa vào hàng đợi"
+(nhanh, vẫn đồng bộ trong dispatch — chỉ 2 lần ghi DB) khỏi "thực thi" (chạy
+nền qua `worker_loop()`, không còn nằm trên đường HTTP request/response).
 
-Vì `ProcessManager.create()` dispatch event ĐỒNG BỘ (await trước khi trả về),
-subscriber này chạy xong toàn bộ agent — kể cả gọi provider và ghi artifact —
-TRƯỚC KHI `POST /v1/jobs` trả response. Đây là đơn giản hoá có chủ đích cho
-M0 (không có gì async thật ngoài I/O), không phải hành vi cuối cùng.
+Vẫn 1 worker, 1 job một lúc — concurrency thật (nhiều worker + resource token)
+là M1-3. Đây KHÔNG phải backpressure có ngưỡng: hàng đợi không giới hạn, job
+mới tự "chờ trong QUEUED" nếu worker đang bận việc khác — đủ cho phạm vi
+M1-2 (doc 18 §10 áp dụng ở mức cơ chế, không phải chỉ schema).
+
+Hệ quả cho `POST /v1/jobs` (ADR-0026, doc 15): response giờ nghĩa là "đã tạo
+và đưa vào hàng đợi", KHÔNG còn nghĩa "đã chạy xong". Client phải poll
+`GET /v1/processes/{pid}` hoặc theo dõi `events tail`/`explain`.
 """
 
 from __future__ import annotations
@@ -27,6 +29,7 @@ from kernel import ids
 from kernel.errors import ErrorCode as KernelErrorCode
 from kernel.errors import PaosError
 from kernel.events.bus import EventBus, EventEnvelope
+from kernel.events.types import EventType
 from kernel.process.manager import ProcessManager, ProcessState
 from kernel.registry.registry import Registry
 from kernel.state.db import StateStore
@@ -73,21 +76,48 @@ class Runner:
         self._registry = registry
         self._store = store
         self._workspace_root = workspace_root
+        self._queue: asyncio.Queue[str] = asyncio.Queue()
 
     async def on_process_created(self, envelope: EventEnvelope) -> None:
+        """Chạy đồng bộ trong dispatch() — chỉ 2 lần ghi DB, đủ nhanh để không
+        đáng tách. Thực thi Agent thật sự nằm ở worker_loop()/_run_one()."""
         process_id = envelope.process_id
         if process_id is None:
             return  # không nên xảy ra — PROCESS_CREATED luôn có process_id
 
-        workflow_ref = envelope.payload["workflow_ref"]
-        spec = envelope.payload.get("spec", {})
-        match = _AGENTS.get(workflow_ref)
-
-        # doc 02 §3.1: CREATED -> PLANNING -> QUEUED -> RUNNING. PLANNING chưa có
-        # logic thật (Workflow YAML engine là M3) — chỉ đi qua để khớp bảng transition
+        # doc 02 §3.1: CREATED -> PLANNING -> QUEUED. PLANNING chưa có logic
+        # thật (Workflow YAML engine là M3) — chỉ đi qua để khớp bảng transition
         # đầy đủ (doc 19 P-M1-1).
         await self._manager.transition(process_id, ProcessState.PLANNING)
         await self._manager.transition(process_id, ProcessState.QUEUED)
+        await self._queue.put(process_id)
+
+    async def enqueue_existing(self, process_id: str) -> None:
+        """Đưa một process đã ở QUEUED từ trước khi daemon khởi động lại vào
+        hàng đợi trong bộ nhớ — bù cho việc `asyncio.Queue` không sống sót qua
+        restart. Gọi từ `apps/paosd/wiring.py::build_daemon()` (doc 19 P-M1-2).
+        Process kẹt ở RUNNING lúc crash KHÔNG được đụng tới ở đây — resume
+        thật (từ checkpoint) là M1-4, ngoài phạm vi lát này."""
+        await self._queue.put(process_id)
+
+    async def worker_loop(self) -> None:
+        """Chạy nền vô hạn tới khi bị cancel lúc daemon tắt (`Daemon.stop()`).
+        Một job lỗi không làm chết cả loop — `_run_one()` tự bắt lỗi của nó."""
+        while True:
+            process_id = await self._queue.get()
+            try:
+                await self._run_one(process_id)
+            finally:
+                self._queue.task_done()
+
+    async def _run_one(self, process_id: str) -> None:
+        process = await self._manager.get(process_id)
+        if process is None:
+            return  # không nên xảy ra — process_id luôn tồn tại khi vào hàng đợi
+
+        workflow_ref = process.workflow_ref
+        match = _AGENTS.get(workflow_ref)
+
         await self._manager.transition(process_id, ProcessState.RUNNING)
 
         if match is None:
@@ -100,6 +130,7 @@ class Runner:
             return
 
         agent, prompts_dir = match
+        spec = await self._load_spec(process_id)
         try:
             await self._run_agent(agent, prompts_dir, process_id, spec)
         except (AgentError, ProviderError, PaosError) as exc:
@@ -120,6 +151,17 @@ class Runner:
             return
 
         await self._manager.transition(process_id, ProcessState.SUCCEEDED)
+
+    async def _load_spec(self, process_id: str) -> dict[str, Any]:
+        """`spec` job gốc không nằm trên `Process` — đọc lại từ payload event
+        `kernel.process.created` (durable) thay vì thêm một cách đọc bảng
+        `jobs` riêng chỉ để phục vụ một chỗ dùng (doc 19 P-M1-2)."""
+        trace = await self._events.events_for_process(process_id)
+        for envelope in trace:
+            if envelope.type == EventType.PROCESS_CREATED.value:
+                spec: dict[str, Any] = envelope.payload.get("spec", {})
+                return spec
+        return {}
 
     async def _run_agent(
         self, agent: Agent, prompts_dir: Path, process_id: str, spec: dict[str, Any]

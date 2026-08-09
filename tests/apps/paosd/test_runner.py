@@ -1,13 +1,19 @@
 """Kiểm Runner + wiring thật — đường vàng M0 (doc 13): `paosctl run` -> artifact
--> `explain` hiện trace (doc 19 P-M0-5, lát 5c). Không mock gì — StubAdapter thật,
-Registry thật, StateStore thật."""
+-> `explain` hiện trace. Từ M1-2 (doc 19), agent chạy NỀN qua worker_loop() —
+`POST /v1/jobs` chỉ đảm bảo QUEUED, nên mọi test đợi qua `_wait_for_terminal()`
+thay vì check ngay sau POST. Không mock gì — StubAdapter thật, Registry thật,
+StateStore thật."""
 
+import asyncio
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
 
 from apps.paosd.wiring import Daemon, build_daemon
+
+_TERMINAL_STATES = {"SUCCEEDED", "FAILED", "CANCELLED"}
 
 
 @pytest.fixture
@@ -22,6 +28,20 @@ async def client(daemon: Daemon):
     transport = httpx.ASGITransport(app=daemon.app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
+
+
+async def _wait_for_terminal(
+    client: httpx.AsyncClient, pid: int, max_wait_s: float = 5.0
+) -> dict[str, Any]:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + max_wait_s
+    body: dict[str, Any] = {}
+    while loop.time() < deadline:
+        body = (await client.get(f"/v1/processes/{pid}")).json()
+        if body["state"] in _TERMINAL_STATES:
+            return body
+        await asyncio.sleep(0.01)
+    return body
 
 
 async def test_golden_path_run_produces_artifact_and_explain_trace(
@@ -39,8 +59,8 @@ async def test_golden_path_run_produces_artifact_and_explain_trace(
     assert resp.status_code == 200
     created = resp.json()
 
-    status_resp = await client.get(f"/v1/processes/{created['pid']}")
-    assert status_resp.json()["state"] == "SUCCEEDED"
+    status = await _wait_for_terminal(client, created["pid"])
+    assert status["state"] == "SUCCEEDED"
 
     explain_resp = await client.get(f"/v1/processes/{created['pid']}/explain")
     assert explain_resp.status_code == 200
@@ -57,6 +77,26 @@ async def test_golden_path_run_produces_artifact_and_explain_trace(
     assert artifact_id.startswith("art_")
 
 
+async def test_post_jobs_returns_before_agent_finishes(client: httpx.AsyncClient) -> None:
+    """ADR-0026: response POST /v1/jobs nghĩa là "đã tạo và đưa vào hàng đợi",
+    KHÔNG còn nghĩa "đã chạy xong" — đây là điểm khác biệt cốt lõi của M1-2."""
+    resp = await client.post(
+        "/v1/jobs",
+        json={
+            "intent": "summarize",
+            "spec": {"text": "văn bản để tóm tắt"},
+            "name": "cli-summarize",
+            "workflow_ref": "agent:summarize.agent@1",
+        },
+    )
+    created = resp.json()
+    immediate = (await client.get(f"/v1/processes/{created['pid']}")).json()
+    assert immediate["state"] in {"QUEUED", "RUNNING", "SUCCEEDED"}
+
+    status = await _wait_for_terminal(client, created["pid"])
+    assert status["state"] == "SUCCEEDED"
+
+
 async def test_unknown_workflow_ref_fails_clean(client: httpx.AsyncClient) -> None:
     resp = await client.post(
         "/v1/jobs",
@@ -64,8 +104,7 @@ async def test_unknown_workflow_ref_fails_clean(client: httpx.AsyncClient) -> No
     )
     created = resp.json()
 
-    status_resp = await client.get(f"/v1/processes/{created['pid']}")
-    body = status_resp.json()
+    body = await _wait_for_terminal(client, created["pid"])
     assert body["state"] == "FAILED"
     assert body["error_code"] == "NOT_FOUND"
 
@@ -82,7 +121,6 @@ async def test_empty_text_fails_with_invalid_input(client: httpx.AsyncClient) ->
     )
     created = resp.json()
 
-    status_resp = await client.get(f"/v1/processes/{created['pid']}")
-    body = status_resp.json()
+    body = await _wait_for_terminal(client, created["pid"])
     assert body["state"] == "FAILED"
     assert body["error_code"] == "INVALID_INPUT"

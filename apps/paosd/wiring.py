@@ -8,6 +8,7 @@ Dùng chung bởi `apps/paosd/__main__.py` (chạy thật) và test: gọi lại
 
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,7 +19,7 @@ from apps.paosd.app import create_app
 from apps.paosd.runner import Runner
 from kernel.events.bus import EventBus
 from kernel.events.types import EventType
-from kernel.process.manager import ProcessManager
+from kernel.process.manager import ProcessManager, ProcessState
 from kernel.registry.registry import Registry
 from kernel.state.db import StateStore
 
@@ -35,10 +36,18 @@ class Daemon:
     runner: Runner
     app: FastAPI
     started_at: float
+    worker_task: asyncio.Task[None]
 
     async def stop(self) -> None:
-        """Tắt có kiểm soát: phát kernel.shutdown TRƯỚC KHI đóng StateStore — event
-        này cần actor loop còn sống để ghi được."""
+        """Tắt có kiểm soát: hủy worker trước — KHÔNG đợi job đang chạy xong,
+        nhất quán với triết lý "kill -9 rồi phục hồi" đã kiểm ở M0/M1-1 (resume
+        thật từ checkpoint là M1-4, ngoài phạm vi M1-2) — rồi phát kernel.shutdown,
+        rồi mới đóng StateStore (event này cần actor loop còn sống để ghi được)."""
+        self.worker_task.cancel()
+        try:
+            await self.worker_task
+        except asyncio.CancelledError:
+            pass
         await self.events.publish(
             EventType.KERNEL_SHUTDOWN.value,
             source="paosd",
@@ -62,7 +71,17 @@ async def build_daemon(db_path: Path, workspace_root: Path | None = None) -> Dae
     events.subscribe("runner", "kernel.process.created", runner.on_process_created)
 
     await events.start()  # giao lại event chưa dispatch cho subscriber "runner" (REL-01) —
-    # quan trọng nếu daemon crash giữa lúc một process đang RUNNING.
+    # quan trọng nếu daemon crash giữa lúc kernel.process.created chưa kịp xử lý.
+
+    worker_task = asyncio.create_task(runner.worker_loop())
+
+    # asyncio.Queue của Runner sống trong bộ nhớ, không sống sót qua restart —
+    # khác với event catch-up ở trên (đã "delivered" nên không redeliver). Process
+    # nào còn ở QUEUED từ phiên daemon trước phải đưa lại vào hàng đợi thủ công
+    # (doc 19 P-M1-2). Process kẹt ở RUNNING lúc crash KHÔNG đụng tới — M1-4.
+    stuck_queued = await manager.list(state=ProcessState.QUEUED)
+    for process in stuck_queued:
+        await runner.enqueue_existing(process.process_id)
 
     await events.publish(
         EventType.KERNEL_STARTUP.value,
@@ -79,4 +98,5 @@ async def build_daemon(db_path: Path, workspace_root: Path | None = None) -> Dae
         runner=runner,
         app=app,
         started_at=started_at,
+        worker_task=worker_task,
     )
