@@ -206,3 +206,40 @@ async def test_dead_letters_lists_subscriber_that_exhausted_retries(
     assert body[0]["subscriber"] == "broken"
     assert body[0]["type"] == "kernel.process.created"
     assert "luôn lỗi" in body[0]["last_error"]
+
+
+async def test_replay_unknown_subscriber_is_bad_request(client: httpx.AsyncClient) -> None:
+    resp = await client.post(
+        "/v1/events/replay",
+        json={
+            "from_ts": "0001-01-01T00:00:00",
+            "to_ts": "9999-12-31T23:59:59",
+            "to_subscriber": "chua_dang_ky",
+        },
+    )
+    assert resp.status_code == 400
+
+
+async def test_replay_redelivers_events_in_range(
+    client: httpx.AsyncClient, events: EventBus
+) -> None:
+    received: list[EventEnvelope] = []
+
+    async def _handler(envelope: EventEnvelope) -> None:
+        received.append(envelope)
+
+    events.subscribe("watcher", "kernel.process.created", _handler)
+    await client.post("/v1/jobs", json={"intent": "x", "name": "a", "workflow_ref": "wf@1"})
+    assert len(received) == 1
+
+    resp = await client.post(
+        "/v1/events/replay",
+        json={
+            "from_ts": "0001-01-01T00:00:00",
+            "to_ts": "9999-12-31T23:59:59",
+            "to_subscriber": "watcher",
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json()["replayed"] == 1
+    assert len(received) == 2  # giao lại thêm 1 lần nữa

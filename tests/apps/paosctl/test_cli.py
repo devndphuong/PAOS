@@ -181,3 +181,44 @@ def test_events_dlq_empty_by_default(runner: CliRunner, api_url: str) -> None:
     result = runner.invoke(cli, ["--api-url", api_url, "events", "dlq"])
     assert result.exit_code == 0
     assert "không có event nào" in result.output
+
+
+def test_events_replay_to_runner_reports_count(runner: CliRunner, api_url: str) -> None:
+    runner.invoke(cli, ["--api-url", api_url, "run", "văn bản để tóm tắt"])
+    result = runner.invoke(
+        cli,
+        [
+            "--api-url",
+            api_url,
+            "events",
+            "replay",
+            "--from",
+            "0001-01-01T00:00:00",
+            "--to",
+            "9999-12-31T23:59:59",
+            "--to-subscriber",
+            "runner",
+        ],
+    )
+    assert result.exit_code == 0
+    assert "Đã giao lại" in result.output
+
+
+def test_events_replay_unknown_subscriber_reports_error(runner: CliRunner, api_url: str) -> None:
+    result = runner.invoke(
+        cli,
+        [
+            "--api-url",
+            api_url,
+            "events",
+            "replay",
+            "--from",
+            "0001-01-01T00:00:00",
+            "--to",
+            "9999-12-31T23:59:59",
+            "--to-subscriber",
+            "chua_dang_ky",
+        ],
+    )
+    assert result.exit_code == 1
+    assert "✗" in result.output

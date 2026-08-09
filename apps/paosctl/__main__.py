@@ -207,6 +207,22 @@ def events_dlq(ctx: click.Context) -> None:
         )
 
 
+@events.command("replay")
+@click.option("--from", "from_ts", required=True, help="Mốc thời gian bắt đầu (ISO 8601).")
+@click.option("--to", "to_ts", required=True, help="Mốc thời gian kết thúc (ISO 8601).")
+@click.option("--to-subscriber", required=True, help="Tên subscriber đã đăng ký trong daemon.")
+@click.pass_context
+def events_replay(ctx: click.Context, from_ts: str, to_ts: str, to_subscriber: str) -> None:
+    """Giao lại event trong khoảng thời gian cho một subscriber (doc 19 P-M1-5b)."""
+    with _client(ctx) as client:
+        body = _post(
+            client,
+            "/v1/events/replay",
+            json={"from_ts": from_ts, "to_ts": to_ts, "to_subscriber": to_subscriber},
+        ).json()
+    click.echo(f"✓ Đã giao lại {body['replayed']} event cho subscriber '{to_subscriber}'")
+
+
 @cli.command()
 @click.pass_context
 def doctor(ctx: click.Context) -> None:

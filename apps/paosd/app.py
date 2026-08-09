@@ -26,6 +26,16 @@ class CreateJobResponse(BaseModel):
     pid: int
 
 
+class ReplayRequest(BaseModel):
+    from_ts: str
+    to_ts: str
+    to_subscriber: str
+
+
+class ReplayResponse(BaseModel):
+    replayed: int
+
+
 class ProcessResponse(BaseModel):
     process_id: str
     pid: int
@@ -178,6 +188,14 @@ def create_app(  # noqa: PLR0915 — đăng ký route tăng tuyến tính theo s
     async def dead_letters() -> list[DeadLetterResponse]:
         rows = await events.dead_letters()
         return [DeadLetterResponse(**row) for row in rows]
+
+    @app.post("/v1/events/replay", response_model=ReplayResponse)
+    async def replay_events(body: ReplayRequest) -> ReplayResponse:
+        try:
+            count = await events.replay(body.from_ts, body.to_ts, body.to_subscriber)
+        except PaosError as exc:
+            raise HTTPException(status_code=400, detail=exc.to_dict()) from exc
+        return ReplayResponse(replayed=count)
 
     @app.get("/v1/health")
     async def health() -> dict[str, str]:

@@ -259,6 +259,39 @@ class EventBus:
 
         return await self._store.read(_query)
 
+    async def replay(self, from_ts: str, to_ts: str, to_subscriber: str) -> int:
+        """Giao lại toàn bộ event trong khoảng `[from_ts, to_ts]` cho MỘT
+        subscriber đã đăng ký (doc 02 §3.3, doc 19 P-M1-5b — trả nợ BL-002).
+        Dùng chung logic retry/backoff/DLQ với dispatch bình thường (`_deliver_one`)
+        — replay chỉ khác ở chỗ chủ động giao lại thay vì đợi event mới tới.
+
+        Ràng buộc (doc 19): subscriber PHẢI chịu được việc dựng lại từ đầu —
+        đây là điều kiện để M5 rebuild Memory/KG bằng chính cơ chế này, không
+        phải cơ chế riêng."""
+        if to_subscriber not in self._subscribers:
+            raise PaosError(
+                ErrorCode.NOT_FOUND,
+                f"Subscriber '{to_subscriber}' chưa đăng ký",
+                hint="Chỉ replay được tới subscriber đang chạy trong daemon hiện tại",
+                context={"to_subscriber": to_subscriber},
+            )
+        pattern, handler = self._subscribers[to_subscriber]
+
+        async def _query(conn: aiosqlite.Connection) -> list[EventEnvelope]:
+            cursor = await conn.execute(
+                "SELECT event_id, seq, type, version, ts, source, process_id, task_id, "
+                "correlation_id, causation_id, payload_json FROM events "
+                "WHERE ts >= ? AND ts <= ? ORDER BY seq",
+                (from_ts, to_ts),
+            )
+            return [_row_to_envelope(row) for row in await cursor.fetchall()]
+
+        envelopes = await self._store.read(_query)
+        matching = [e for e in envelopes if fnmatch.fnmatch(e.type, pattern)]
+        for envelope in matching:
+            await self._deliver_one(to_subscriber, handler, envelope)
+        return len(matching)
+
     async def _find_undelivered(
         self, conn: aiosqlite.Connection
     ) -> list[tuple[str, EventEnvelope]]:
