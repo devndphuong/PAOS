@@ -31,23 +31,30 @@ class ProcessState(StrEnum):
     CANCELLED = "CANCELLED"
 
 
-# Chuỗi có đường vào ở M0 (doc 19 P-M0-3): CREATED -> QUEUED -> RUNNING -> {kết thúc}.
-# PLANNING/WAITING/PAUSED/COMPENSATING/FAILED_FINAL có trong enum, KHÔNG có transition
-# nào dẫn tới — đúng doc 18 §10 "chừa cột, đừng chừa code", áp cho cả trạng thái.
+# Bảng đầy đủ theo doc 02 §3.1 (doc 19 P-M1-1). COMPENSATING/FAILED_FINAL có
+# đường vào HỢP LỆ trong bảng nhưng chưa ai tự động kích hoạt ở M1 — compensation
+# thật (workflow YAML `compensate: [...]`) là M3 (doc 13), không phải M1. Đây là
+# "chừa cột, đừng chừa code" áp cho transition: mở đường, chưa viết logic driver.
 _VALID_TRANSITIONS: dict[ProcessState, frozenset[ProcessState]] = {
-    ProcessState.CREATED: frozenset({ProcessState.QUEUED, ProcessState.CANCELLED}),
+    ProcessState.CREATED: frozenset({ProcessState.PLANNING, ProcessState.CANCELLED}),
+    ProcessState.PLANNING: frozenset({ProcessState.QUEUED, ProcessState.CANCELLED}),
     ProcessState.QUEUED: frozenset({ProcessState.RUNNING, ProcessState.CANCELLED}),
     ProcessState.RUNNING: frozenset(
-        {ProcessState.SUCCEEDED, ProcessState.FAILED, ProcessState.CANCELLED}
+        {
+            ProcessState.SUCCEEDED,
+            ProcessState.FAILED,
+            ProcessState.WAITING,
+            ProcessState.PAUSED,
+            ProcessState.CANCELLED,
+        }
     ),
+    ProcessState.WAITING: frozenset({ProcessState.RUNNING, ProcessState.CANCELLED}),
+    ProcessState.PAUSED: frozenset({ProcessState.RUNNING, ProcessState.CANCELLED}),
     ProcessState.SUCCEEDED: frozenset(),
-    ProcessState.FAILED: frozenset(),
-    ProcessState.CANCELLED: frozenset(),
-    ProcessState.PLANNING: frozenset(),
-    ProcessState.WAITING: frozenset(),
-    ProcessState.PAUSED: frozenset(),
-    ProcessState.COMPENSATING: frozenset(),
+    ProcessState.FAILED: frozenset({ProcessState.COMPENSATING, ProcessState.FAILED_FINAL}),
+    ProcessState.COMPENSATING: frozenset({ProcessState.FAILED_FINAL}),
     ProcessState.FAILED_FINAL: frozenset(),
+    ProcessState.CANCELLED: frozenset(),
 }
 
 _PROCESS_COLUMNS = (
@@ -104,7 +111,25 @@ def _duration_ms(started_at: str | None, ended_at: str) -> int:
     return int((end - start).total_seconds() * 1000)
 
 
+# Target state -> event có payload chỉ {pid}. Gom vào dict để _event_for_transition()
+# không vượt giới hạn số lần return (PLR0911) — các trạng thái cần payload khác
+# (RUNNING, WAITING/PAUSED, SUCCEEDED, FAILED, CANCELLED) vẫn xử lý riêng bên dưới.
+_PID_ONLY_EVENT_FOR_STATE: dict[ProcessState, EventType] = {
+    ProcessState.PLANNING: EventType.PROCESS_PLANNING,
+    ProcessState.QUEUED: EventType.PROCESS_QUEUED,
+    ProcessState.COMPENSATING: EventType.PROCESS_COMPENSATING,
+    ProcessState.FAILED_FINAL: EventType.PROCESS_FAILED_FINAL,
+}
+
+# WAITING/PAUSED đều mang payload {pid, reason} (doc 05).
+_REASON_EVENT_FOR_STATE: dict[ProcessState, EventType] = {
+    ProcessState.WAITING: EventType.PROCESS_WAITING,
+    ProcessState.PAUSED: EventType.PROCESS_PAUSED,
+}
+
+
 def _event_for_transition(
+    from_state: ProcessState,
     to_state: ProcessState,
     pid: int,
     *,
@@ -113,10 +138,17 @@ def _event_for_transition(
     error_code: str | None,
     reason: str | None,
 ) -> tuple[str, dict[str, Any]]:
-    if to_state is ProcessState.QUEUED:
-        return EventType.PROCESS_QUEUED.value, {"pid": pid}
+    pid_only = _PID_ONLY_EVENT_FOR_STATE.get(to_state)
+    if pid_only is not None:
+        return pid_only.value, {"pid": pid}
+    with_reason = _REASON_EVENT_FOR_STATE.get(to_state)
+    if with_reason is not None:
+        return with_reason.value, {"pid": pid, "reason": reason or ""}
     if to_state is ProcessState.RUNNING:
-        return EventType.PROCESS_STARTED.value, {"pid": pid}
+        # WAITING/PAUSED -> RUNNING là resume, không phải lần chạy đầu (doc 05).
+        resumed_from = from_state in (ProcessState.WAITING, ProcessState.PAUSED)
+        event_type = EventType.PROCESS_RESUMED if resumed_from else EventType.PROCESS_STARTED
+        return event_type.value, {"pid": pid}
     if to_state is ProcessState.SUCCEEDED:
         if ended_at is None:
             raise RuntimeError("ended_at phải được đặt trước khi tới SUCCEEDED — lỗi lập trình")
@@ -128,7 +160,7 @@ def _event_for_transition(
         return EventType.PROCESS_FAILED.value, {"pid": pid, "error_code": error_code or "INTERNAL"}
     if to_state is ProcessState.CANCELLED:
         return EventType.PROCESS_CANCELLED.value, {"pid": pid, "by": reason or "user"}
-    raise RuntimeError(f"Trạng thái {to_state.value} chưa có đường vào ở M0 — không thể tới đây")
+    raise RuntimeError(f"Trạng thái {to_state.value} chưa có đường vào — không thể tới đây")
 
 
 class ProcessManager:
@@ -236,7 +268,12 @@ class ProcessManager:
             ended_at = current.ended_at
             if to_state is ProcessState.RUNNING and started_at is None:
                 started_at = now
-            if to_state in (ProcessState.SUCCEEDED, ProcessState.FAILED, ProcessState.CANCELLED):
+            if to_state in (
+                ProcessState.SUCCEEDED,
+                ProcessState.FAILED,
+                ProcessState.FAILED_FINAL,
+                ProcessState.CANCELLED,
+            ):
                 ended_at = now
 
             error_json = json.dumps({"message": error_message}) if error_message else None
@@ -252,6 +289,7 @@ class ProcessManager:
             )
 
             event_type, payload = _event_for_transition(
+                current.state,
                 to_state,
                 current.pid,
                 started_at=started_at,

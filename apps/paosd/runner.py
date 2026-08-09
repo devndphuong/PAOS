@@ -83,6 +83,10 @@ class Runner:
         spec = envelope.payload.get("spec", {})
         match = _AGENTS.get(workflow_ref)
 
+        # doc 02 §3.1: CREATED -> PLANNING -> QUEUED -> RUNNING. PLANNING chưa có
+        # logic thật (Workflow YAML engine là M3) — chỉ đi qua để khớp bảng transition
+        # đầy đủ (doc 19 P-M1-1).
+        await self._manager.transition(process_id, ProcessState.PLANNING)
         await self._manager.transition(process_id, ProcessState.QUEUED)
         await self._manager.transition(process_id, ProcessState.RUNNING)
 

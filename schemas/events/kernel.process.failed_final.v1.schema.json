@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://schemas/events/kernel.process.failed_final.v1.schema.json",
+  "title": "kernel.process.failed_final payload",
+  "description": "M1 lát cắt 1 (doc 19 P-M1-1) — trạng thái cuối cùng sau (hoặc thay) COMPENSATING. Chưa ai tự động phát event này ở M1.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["pid"],
+  "properties": {
+    "pid": { "type": "integer", "minimum": 1 }
+  }
+}

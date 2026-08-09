@@ -44,13 +44,19 @@ Mọi event đều có đúng cấu trúc này:
 | Event | Payload chính | Ghi chú |
 |---|---|---|
 | `kernel.job.received` | job_id, intent, inputs | điểm khởi đầu mọi thứ |
-| `kernel.process.created` | pid, workflow_ref | |
+| `kernel.process.created` | pid, workflow_ref, spec | |
+| `kernel.process.planning` | pid | M1 P-M1-1 — không có trong bản gốc, PLANNING có đường vào thật |
+| `kernel.process.queued` | pid | M0 P-M0-3 — không có trong bản gốc, QUEUED có đường vào thật |
 | `kernel.process.started` | pid | |
-| `kernel.process.progress` | pid, progress, message | throttle ≤ 1/giây |
-| `kernel.process.paused` / `resumed` | pid, reason | |
-| `kernel.process.checkpointed` | pid, seq | |
-| `kernel.process.completed` | pid, duration_ms, cost, quality | |
-| `kernel.process.failed` | pid, error_code, error_ctx | |
+| `kernel.process.waiting` | pid, reason | M1 P-M1-1 |
+| `kernel.process.progress` | pid, progress, message | throttle ≤ 1/giây — chưa phát ở M1 |
+| `kernel.process.paused` | pid, reason | M1 P-M1-1 |
+| `kernel.process.resumed` | pid | M1 P-M1-1 — chung cho cả WAITING và PAUSED resume về RUNNING |
+| `kernel.process.checkpointed` | pid, seq | chưa phát — M1 P-M1-2 |
+| `kernel.process.completed` | pid, duration_ms | cost/quality chưa phát — hoãn tới khi có (M2/M4) |
+| `kernel.process.failed` | pid, error_code | error_ctx chưa phát |
+| `kernel.process.compensating` | pid | M1 P-M1-1 — mở transition, logic compensate[] thật là M3 |
+| `kernel.process.failed_final` | pid | M1 P-M1-1 |
 | `kernel.process.cancelled` | pid, by | |
 | `kernel.task.scheduled` / `started` / `completed` / `failed` / `retried` | task_id, step_id, attempt | |
 | `kernel.startup` / `kernel.shutdown` | version, uptime | |

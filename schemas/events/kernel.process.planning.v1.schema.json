@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://schemas/events/kernel.process.planning.v1.schema.json",
+  "title": "kernel.process.planning payload",
+  "description": "M1 lát cắt 1 (doc 19 P-M1-1) — không có schema trong catalog gốc doc 05 §3.1, thêm vì PLANNING có đường vào thật.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["pid"],
+  "properties": {
+    "pid": { "type": "integer", "minimum": 1 }
+  }
+}

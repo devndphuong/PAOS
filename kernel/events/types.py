@@ -12,11 +12,19 @@ class EventType(StrEnum):
 
     # Process (doc 05 §3.1). "queued" không có trong catalog gốc — thêm ở M0
     # lát cắt 3 vì QUEUED là trạng thái có đường vào thật (doc 19 P-M0-3).
+    # planning/waiting/resumed/compensating/failed_final thêm ở M1 lát cắt 1
+    # (doc 19 P-M1-1) cùng lý do — doc 05 gốc cũng thiếu các event này.
     PROCESS_CREATED = "kernel.process.created"
+    PROCESS_PLANNING = "kernel.process.planning"
     PROCESS_QUEUED = "kernel.process.queued"
     PROCESS_STARTED = "kernel.process.started"
+    PROCESS_WAITING = "kernel.process.waiting"
+    PROCESS_PAUSED = "kernel.process.paused"
+    PROCESS_RESUMED = "kernel.process.resumed"
     PROCESS_COMPLETED = "kernel.process.completed"
     PROCESS_FAILED = "kernel.process.failed"
+    PROCESS_COMPENSATING = "kernel.process.compensating"
+    PROCESS_FAILED_FINAL = "kernel.process.failed_final"
     PROCESS_CANCELLED = "kernel.process.cancelled"
 
     # Domain event do plugin/agent tự định nghĩa qua manifest.emits (doc 05 §3.4).

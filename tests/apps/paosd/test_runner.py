@@ -47,12 +47,13 @@ async def test_golden_path_run_produces_artifact_and_explain_trace(
     trace = explain_resp.json()["trace"]
     assert [e["type"] for e in trace] == [
         "kernel.process.created",
+        "kernel.process.planning",
         "kernel.process.queued",
         "kernel.process.started",
         "summary.created",
         "kernel.process.completed",
     ]
-    artifact_id = trace[3]["payload"]["artifact_id"]
+    artifact_id = trace[4]["payload"]["artifact_id"]
     assert artifact_id.startswith("art_")
 
 

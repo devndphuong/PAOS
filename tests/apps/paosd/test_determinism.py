@@ -20,6 +20,7 @@ _RUNS = 20
 _TEXT = "PAOS là một hệ điều hành AI cá nhân chạy local-first."
 _EXPECTED_EVENT_TYPES = (
     "kernel.process.created",
+    "kernel.process.planning",
     "kernel.process.queued",
     "kernel.process.started",
     "summary.created",

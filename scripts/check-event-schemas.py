@@ -63,6 +63,14 @@ PAST_TENSE_OK = {
     "deferred",
     "approved",
     "denied",
+    # M1-1 (doc 19 P-M1-1): event đánh dấu VỪA CHUYỂN vào một trạng thái có tên
+    # dạng -ing (PLANNING/WAITING/COMPENSATING) — tiếp tục tiền lệ đã có với
+    # "queued"/"paused"/"resumed": dùng lại tên trạng thái làm tên event, thay
+    # vì bịa một động từ quá khứ gượng ép không ai dùng trong hội thoại thật.
+    "planning",
+    "waiting",
+    "compensating",
+    "failed_final",
 }
 
 errors: list[str] = []

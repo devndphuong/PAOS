@@ -62,9 +62,10 @@ async def test_explain_survives_restart(tmp_path: Path) -> None:
         await daemon2.stop()
 
     assert trace_after_restart == trace_before_restart
-    assert len(trace_after_restart) == 5
+    assert len(trace_after_restart) == 6
     assert [e["type"] for e in trace_after_restart] == [
         "kernel.process.created",
+        "kernel.process.planning",
         "kernel.process.queued",
         "kernel.process.started",
         "summary.created",

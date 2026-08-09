@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://schemas/events/kernel.process.resumed.v1.schema.json",
+  "title": "kernel.process.resumed payload",
+  "description": "M1 lát cắt 1 (doc 19 P-M1-1) — doc 05 §3.1 có tên event này (ghép với 'paused') nhưng chưa từng có schema. Dùng chung cho cả WAITING->RUNNING và PAUSED->RUNNING.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["pid"],
+  "properties": {
+    "pid": { "type": "integer", "minimum": 1 }
+  }
+}

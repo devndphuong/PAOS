@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://schemas/events/kernel.process.waiting.v1.schema.json",
+  "title": "kernel.process.waiting payload",
+  "description": "M1 lát cắt 1 (doc 19 P-M1-1) — doc 05 §3.1 có tên event này nhưng chưa từng có schema.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["pid", "reason"],
+  "properties": {
+    "pid": { "type": "integer", "minimum": 1 },
+    "reason": { "type": "string" }
+  }
+}

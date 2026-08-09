@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://schemas/events/kernel.process.compensating.v1.schema.json",
+  "title": "kernel.process.compensating payload",
+  "description": "M1 lát cắt 1 (doc 19 P-M1-1) — mở đường transition FAILED->COMPENSATING trong state machine. Logic compensate[] thật là M3 (doc 13), chưa ai tự động phát event này ở M1.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["pid"],
+  "properties": {
+    "pid": { "type": "integer", "minimum": 1 }
+  }
+}
