@@ -80,7 +80,8 @@ Nếu Qwen 14B viết script quá tệ, toàn bộ lời hứa "chi phí 0" sụ
 | RSK-18 | Phụ thuộc thư viện bị bỏ rơi | 6 | Ưu tiên thư viện chuẩn; mỗi phụ thuộc ngoài phải có phương án thay thế ghi trong ADR |
 | RSK-19 | Chi phí lưu trữ artifact phình to | 4 | Chính sách dọn `cache/`, nén artifact cũ, báo cáo dung lượng trong `doctor` |
 | RSK-20 | Mất động lực vì không thấy tiến triển | 9 | Báo cáo tuần tự động "PAOS đã học được gì" — biến tri thức tích lũy thành thứ nhìn thấy được |
-| RSK-21 | Runner M0 (`apps/paosd/runner.py`) chạy Agent đồng bộ ngay trong `dispatch()` — `POST /v1/jobs` block tới khi agent chạy xong, mới phát hiện khi nghiệm thu M0 (P-M0-6) | 9 | Chấp nhận được ở M0 vì `StubAdapter` tất định, <1s; PHẢI thay bằng hàng đợi async thật trước khi agent chạy giây–phút (Ollama) được nối vào Runner — đúng lúc DAG Scheduler thật ra đời (M1, doc 13) |
+| RSK-21 | ~~Runner M0 chạy Agent đồng bộ ngay trong `dispatch()`~~ — **ĐÃ GIẢI QUYẾT ở M1-2/M1-3a** (2026-08-09): `POST /v1/jobs` chỉ đảm bảo `QUEUED` (ADR-0026), agent chạy nền qua `worker_loop()`, N job song song thật qua `asyncio.Semaphore` | ~~9~~ 0 | Không còn cần theo dõi |
+| RSK-22 | EventBus catch-up (REL-01) gọi lại subscriber khi crash giữa lúc xử lý — MỌI subscriber tương lai (M5 Memory Writer, M6 KG builder, ...) phải idempotent hoặc sẽ dính đúng bug đã gặp với `runner` (M1-4: process kẹt vĩnh viễn ở PLANNING vì retry gặp CONFLICT). Không có gì (test, lint, runtime check) BẮT BUỘC subscriber mới phải idempotent — chỉ là kỷ luật cá nhân | 9 | Trước khi thêm subscriber thật ở M5/M6: viết 1 test mẫu "gọi handler 2 lần liên tiếp với cùng envelope, kết quả phải giống hệt gọi 1 lần" — áp dụng cho MỌI subscriber mới, không chỉ review bằng mắt |
 
 ---
 
