@@ -56,9 +56,16 @@ class Daemon:
         await self.store.stop()
 
 
-async def build_daemon(db_path: Path, workspace_root: Path | None = None) -> Daemon:
+async def build_daemon(
+    db_path: Path,
+    workspace_root: Path | None = None,
+    *,
+    max_parallel: int = 3,
+    resource_capacity: dict[str, int] | None = None,
+) -> Daemon:
     """`workspace_root` mặc định `<repo>/workspace` cho daemon thật — test truyền
-    `tmp_path` riêng để không ghi artifact vào cây thư mục repo thật."""
+    `tmp_path` riêng để không ghi artifact vào cây thư mục repo thật.
+    `max_parallel`/`resource_capacity` xem `apps/paosd/runner.py::Runner` (M1-3a)."""
     started_at = time.monotonic()
     store = StateStore(db_path)
     await store.start()
@@ -67,7 +74,15 @@ async def build_daemon(db_path: Path, workspace_root: Path | None = None) -> Dae
     registry = Registry(_REPO_ROOT / "capabilities", _REPO_ROOT / "providers")
     registry.load()
     manager = ProcessManager(store, events)
-    runner = Runner(manager, events, registry, store, workspace_root or _REPO_ROOT / "workspace")
+    runner = Runner(
+        manager,
+        events,
+        registry,
+        store,
+        workspace_root or _REPO_ROOT / "workspace",
+        max_parallel=max_parallel,
+        resource_capacity=resource_capacity,
+    )
     events.subscribe("runner", "kernel.process.created", runner.on_process_created)
 
     await events.start()  # giao lại event chưa dispatch cho subscriber "runner" (REL-01) —

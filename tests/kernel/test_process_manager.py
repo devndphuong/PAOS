@@ -51,7 +51,12 @@ async def test_create_starts_in_created_state_emits_created_event(
 
     assert process.state is ProcessState.CREATED
     assert len(received) == 1
-    assert received[0].payload == {"pid": process.pid, "workflow_ref": "wf@1", "spec": {}}
+    assert received[0].payload == {
+        "pid": process.pid,
+        "workflow_ref": "wf@1",
+        "spec": {},
+        "priority": 5,
+    }
 
 
 async def test_full_chain_created_planning_queued_running_succeeded(

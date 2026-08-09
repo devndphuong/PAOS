@@ -1,24 +1,35 @@
-"""Bộ chạy Process — KHÔNG phải DAG Scheduler thật (doc 19 P-M1-2, trả nợ RSK-21).
+"""Bộ chạy Process — KHÔNG phải DAG Scheduler thật (doc 19 P-M1-2/P-M1-3a).
 
-M0 (lát 5c): `on_process_created` chạy TOÀN BỘ agent đồng bộ trong dispatch(),
-khiến `POST /v1/jobs` block tới khi agent xong. M1-2 tách "đưa vào hàng đợi"
-(nhanh, vẫn đồng bộ trong dispatch — chỉ 2 lần ghi DB) khỏi "thực thi" (chạy
-nền qua `worker_loop()`, không còn nằm trên đường HTTP request/response).
+M0 (lát 5c): `on_process_created` chạy TOÀN BỘ agent đồng bộ trong dispatch().
+M1-2: tách "đưa vào hàng đợi" (nhanh, đồng bộ) khỏi "thực thi" (nền, qua
+`worker_loop()`) — nhưng vẫn 1 job/lần.
 
-Vẫn 1 worker, 1 job một lúc — concurrency thật (nhiều worker + resource token)
-là M1-3. Đây KHÔNG phải backpressure có ngưỡng: hàng đợi không giới hạn, job
-mới tự "chờ trong QUEUED" nếu worker đang bận việc khác — đủ cho phạm vi
-M1-2 (doc 18 §10 áp dụng ở mức cơ chế, không phải chỉ schema).
+M1-3a (lát này): N job chạy THẬT SỰ đồng thời qua `asyncio.Semaphore(max_parallel)`
+— dispatcher lấy job khỏi hàng đợi, acquire 1 "slot", `create_task()` rồi lấy
+job tiếp theo NGAY, không đợi job trước xong. Job thứ N+1 tự "chờ trong QUEUED"
+(đúng backpressure doc 02 §3.2, không cần ngưỡng riêng).
 
-Hệ quả cho `POST /v1/jobs` (ADR-0026, doc 15): response giờ nghĩa là "đã tạo
-và đưa vào hàng đợi", KHÔNG còn nghĩa "đã chạy xong". Client phải poll
-`GET /v1/processes/{pid}` hoặc theo dõi `events tail`/`explain`.
+Priority queue: `Process.priority` (0-9, mặc định 5) có từ M0 nhưng chưa ai
+dùng — trả nợ "chừa cột" (doc 18 §10). Số LỚN HƠN = ưu tiên CAO HƠN.
+
+Resource token: `ProviderManifest.resources` có từ M0 nhưng chưa ai đọc.
+Token gắn với TỪNG LƯỢT GỌI CAPABILITY (không phải cả Process) — đúng khung
+doc 02 §3.2 "Task khai báo mình cần token nào". `StubAdapter` khai báo
+`resources: []` nên không bị giới hạn thêm ngoài `max_parallel`. KHÔNG hardcode
+4 tên resource của doc 02 (gpu/cpu_heavy/net_api/disk_io) — chưa provider nào
+cần, đó là trừu tượng hoá sớm (P4).
+
+Cancel (dừng 1 job đang chạy mà không ảnh hưởng job khác) là M1-3b, lát sau —
+cần pool song song này xong trước vì phải hủy đúng task trong pool.
 """
 
 from __future__ import annotations
 
 import asyncio
+import itertools
 import json
+from collections.abc import AsyncIterator
+from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +50,8 @@ from sdk.provider import CallContext, ProviderAdapter, ProviderError
 from sdk.provider import ErrorCode as SdkErrorCode
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+_DEFAULT_PRIORITY = 5
+_DEFAULT_MAX_PARALLEL = 3
 
 # workflow_ref -> (agent, thư mục prompts). M0 chỉ có một agent thật — bảng
 # tra cứu tĩnh này là chỗ M1+ sẽ thay bằng nạp động theo manifest thay vì
@@ -57,6 +70,10 @@ _AGENTS: dict[str, tuple[Agent, Path]] = {
 # thật là M2 (doc 13, R27).
 _ADAPTERS: dict[str, ProviderAdapter] = {"stub.deterministic": StubAdapter()}
 
+# (-priority, seq, process_id) — PriorityQueue là min-heap nên đảo dấu priority
+# (số lớn hơn phải ra trước); seq đơn điệu giữ FIFO khi priority bằng nhau.
+_QueueItem = tuple[int, int, str]
+
 
 class Runner:
     """Nối Registry + ProcessManager + EventBus + StateStore thật lại với
@@ -70,13 +87,22 @@ class Runner:
         registry: Registry,
         store: StateStore,
         workspace_root: Path,
+        *,
+        max_parallel: int = _DEFAULT_MAX_PARALLEL,
+        resource_capacity: dict[str, int] | None = None,
     ) -> None:
         self._manager = manager
         self._events = events
         self._registry = registry
         self._store = store
         self._workspace_root = workspace_root
-        self._queue: asyncio.Queue[str] = asyncio.Queue()
+        self._queue: asyncio.PriorityQueue[_QueueItem] = asyncio.PriorityQueue()
+        self._enqueue_seq = itertools.count()
+        self._process_slots = asyncio.Semaphore(max_parallel)
+        self._resource_semaphores: dict[str, asyncio.Semaphore] = {
+            name: asyncio.Semaphore(cap) for name, cap in (resource_capacity or {}).items()
+        }
+        self._running_tasks: dict[str, asyncio.Task[None]] = {}
 
     async def on_process_created(self, envelope: EventEnvelope) -> None:
         """Chạy đồng bộ trong dispatch() — chỉ 2 lần ghi DB, đủ nhanh để không
@@ -90,30 +116,49 @@ class Runner:
         # đầy đủ (doc 19 P-M1-1).
         await self._manager.transition(process_id, ProcessState.PLANNING)
         await self._manager.transition(process_id, ProcessState.QUEUED)
-        await self._queue.put(process_id)
+        priority = envelope.payload.get("priority", _DEFAULT_PRIORITY)
+        await self._enqueue(process_id, priority)
 
     async def enqueue_existing(self, process_id: str) -> None:
         """Đưa một process đã ở QUEUED từ trước khi daemon khởi động lại vào
-        hàng đợi trong bộ nhớ — bù cho việc `asyncio.Queue` không sống sót qua
-        restart. Gọi từ `apps/paosd/wiring.py::build_daemon()` (doc 19 P-M1-2).
+        hàng đợi trong bộ nhớ — bù cho việc `asyncio.PriorityQueue` không sống
+        sót qua restart. Gọi từ `apps/paosd/wiring.py::build_daemon()`.
         Process kẹt ở RUNNING lúc crash KHÔNG được đụng tới ở đây — resume
         thật (từ checkpoint) là M1-4, ngoài phạm vi lát này."""
-        await self._queue.put(process_id)
+        payload = await self._load_created_payload(process_id)
+        priority = payload.get("priority", _DEFAULT_PRIORITY)
+        await self._enqueue(process_id, priority)
+
+    async def _enqueue(self, process_id: str, priority: int) -> None:
+        seq = next(self._enqueue_seq)
+        await self._queue.put((-priority, seq, process_id))
 
     async def worker_loop(self) -> None:
-        """Chạy nền vô hạn tới khi bị cancel lúc daemon tắt (`Daemon.stop()`).
-        Một job lỗi không làm chết cả loop — `_run_one()` tự bắt lỗi của nó."""
+        """Dispatcher chạy nền vô hạn tới khi bị cancel lúc daemon tắt
+        (`Daemon.stop()`). PHẢI chờ có "slot" trống (`max_parallel`) TRƯỚC KHI
+        lấy job khỏi hàng đợi — lấy trước rồi mới chờ slot sẽ "khoá" đúng job
+        đang xếp hàng đầu tiên vào lúc lấy, phá mất thứ tự ưu tiên nếu job có
+        priority cao hơn đến sau khi job đó đã bị lấy ra nhưng chưa chạy được.
+        Giao cho một task riêng chạy song song — KHÔNG đợi job đó xong mới lấy
+        job tiếp theo."""
         while True:
-            process_id = await self._queue.get()
-            try:
-                await self._run_one(process_id)
-            finally:
-                self._queue.task_done()
+            await self._process_slots.acquire()
+            _, _, process_id = await self._queue.get()
+            task = asyncio.create_task(self._run_one_and_release(process_id))
+            self._running_tasks[process_id] = task
+            self._queue.task_done()
+
+    async def _run_one_and_release(self, process_id: str) -> None:
+        try:
+            await self._run_one(process_id)
+        finally:
+            self._process_slots.release()
+            self._running_tasks.pop(process_id, None)
 
     async def _run_one(self, process_id: str) -> None:
         process = await self._manager.get(process_id)
-        if process is None:
-            return  # không nên xảy ra — process_id luôn tồn tại khi vào hàng đợi
+        if process is None or process.state is not ProcessState.QUEUED:
+            return  # đã bị đổi trạng thái trước khi worker kịp chạy (vd cancel — M1-3b)
 
         workflow_ref = process.workflow_ref
         match = _AGENTS.get(workflow_ref)
@@ -130,7 +175,8 @@ class Runner:
             return
 
         agent, prompts_dir = match
-        spec = await self._load_spec(process_id)
+        payload = await self._load_created_payload(process_id)
+        spec = payload.get("spec", {})
         try:
             await self._run_agent(agent, prompts_dir, process_id, spec)
         except (AgentError, ProviderError, PaosError) as exc:
@@ -152,15 +198,14 @@ class Runner:
 
         await self._manager.transition(process_id, ProcessState.SUCCEEDED)
 
-    async def _load_spec(self, process_id: str) -> dict[str, Any]:
-        """`spec` job gốc không nằm trên `Process` — đọc lại từ payload event
-        `kernel.process.created` (durable) thay vì thêm một cách đọc bảng
-        `jobs` riêng chỉ để phục vụ một chỗ dùng (doc 19 P-M1-2)."""
+    async def _load_created_payload(self, process_id: str) -> dict[str, Any]:
+        """`spec`/`priority` job gốc không nằm trên `Process` — đọc lại từ
+        payload event `kernel.process.created` (durable) thay vì thêm cách đọc
+        bảng `jobs` riêng chỉ để phục vụ vài chỗ dùng (doc 19 P-M1-2/3a)."""
         trace = await self._events.events_for_process(process_id)
         for envelope in trace:
             if envelope.type == EventType.PROCESS_CREATED.value:
-                spec: dict[str, Any] = envelope.payload.get("spec", {})
-                return spec
+                return envelope.payload
         return {}
 
     async def _run_agent(
@@ -200,6 +245,19 @@ class Runner:
 
         await agent.publish(exec_result)
 
+    @asynccontextmanager
+    async def _hold_resources(self, resource_names: list[str]) -> AsyncIterator[None]:
+        """Giữ semaphore của TỪNG resource được khai báo (bỏ qua tên không cấu
+        hình dung lượng — coi như không giới hạn). Đây là nơi thật sự áp
+        "resource token" (doc 02 §3.2), gắn với lượt gọi capability chứ không
+        phải cả Process."""
+        async with AsyncExitStack() as stack:
+            for name in resource_names:
+                sem = self._resource_semaphores.get(name)
+                if sem is not None:
+                    await stack.enter_async_context(sem)
+            yield
+
     def _make_call_capability(self, process_id: str) -> CallCapability:
         async def call_capability(capability_ref: str, payload: dict[str, Any]) -> dict[str, Any]:
             capability_id, version_str = capability_ref.split("@")
@@ -223,7 +281,8 @@ class Runner:
                 privacy_class="private",
                 cancel_token=asyncio.Event(),
             )
-            return await adapter.invoke(capability_ref, payload, call_ctx)
+            async with self._hold_resources(adapter.manifest.resources):
+                return await adapter.invoke(capability_ref, payload, call_ctx)
 
         return call_capability
 
