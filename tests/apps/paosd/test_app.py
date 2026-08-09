@@ -15,7 +15,7 @@ import pytest
 
 from apps.paosd.app import create_app
 from apps.paosd.runner import Runner
-from kernel.events.bus import EventBus
+from kernel.events.bus import EventBus, EventEnvelope
 from kernel.process.manager import ProcessManager
 from kernel.registry.registry import Registry
 from kernel.state.db import StateStore
@@ -181,3 +181,28 @@ async def test_events_tail_since_seq(client: httpx.AsyncClient) -> None:
     body = resp.json()
     assert len(body) == 1
     assert body[0]["seq"] > first[0]["seq"]
+
+
+async def test_dead_letters_empty_by_default(client: httpx.AsyncClient) -> None:
+    resp = await client.get("/v1/events/dead-letters")
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+async def test_dead_letters_lists_subscriber_that_exhausted_retries(
+    client: httpx.AsyncClient, events: EventBus
+) -> None:
+    async def _always_fails(envelope: EventEnvelope) -> None:
+        raise ValueError("luôn lỗi")
+
+    events.subscribe("broken", "kernel.process.created", _always_fails)
+
+    await client.post("/v1/jobs", json={"intent": "x", "name": "a", "workflow_ref": "wf@1"})
+
+    resp = await client.get("/v1/events/dead-letters")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body) == 1
+    assert body[0]["subscriber"] == "broken"
+    assert body[0]["type"] == "kernel.process.created"
+    assert "luôn lỗi" in body[0]["last_error"]

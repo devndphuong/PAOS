@@ -53,6 +53,16 @@ class EventResponse(BaseModel):
     payload: dict[str, Any]
 
 
+class DeadLetterResponse(BaseModel):
+    event_id: str
+    subscriber: str
+    attempts: int
+    last_error: str | None
+    type: str
+    ts: str
+    process_id: str | None
+
+
 class ExplainResponse(BaseModel):
     process_id: str
     pid: int
@@ -163,6 +173,11 @@ def create_app(  # noqa: PLR0915 — đăng ký route tăng tuyến tính theo s
             process_id = process.process_id
         trace = await events.events_since(since_seq, process_id)
         return [_to_event_response(e) for e in trace]
+
+    @app.get("/v1/events/dead-letters", response_model=list[DeadLetterResponse])
+    async def dead_letters() -> list[DeadLetterResponse]:
+        rows = await events.dead_letters()
+        return [DeadLetterResponse(**row) for row in rows]
 
     @app.get("/v1/health")
     async def health() -> dict[str, str]:

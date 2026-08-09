@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import fnmatch
 import json
+import random
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -18,6 +19,9 @@ from kernel.errors import ErrorCode, PaosError
 from kernel.state.db import StateStore
 
 _DEFAULT_SCHEMA_DIR = Path(__file__).resolve().parents[2] / "schemas" / "events"
+_DEFAULT_MAX_RETRIES = 3
+_BACKOFF_BASE_S = 0.05
+_BACKOFF_JITTER_S = 0.03
 
 
 @dataclass(frozen=True)
@@ -61,10 +65,17 @@ def _row_to_envelope(row: aiosqlite.Row | tuple[Any, ...]) -> EventEnvelope:
 class EventBus:
     """Durable-first: publish() ghi vào SQLite qua StateStore rồi mới dispatch (REL-01)."""
 
-    def __init__(self, store: StateStore, schema_dir: Path = _DEFAULT_SCHEMA_DIR) -> None:
+    def __init__(
+        self,
+        store: StateStore,
+        schema_dir: Path = _DEFAULT_SCHEMA_DIR,
+        *,
+        max_retries: int = _DEFAULT_MAX_RETRIES,
+    ) -> None:
         self._store = store
         self._schema_dir = schema_dir
         self._subscribers: dict[str, tuple[str, Subscriber]] = {}
+        self._max_retries = max_retries
 
     def subscribe(self, name: str, pattern: str, handler: Subscriber) -> None:
         """`pattern` kiểu `agent.*.completed`, khớp bằng fnmatch (doc 05 §4)."""
@@ -184,20 +195,69 @@ class EventBus:
                 await self._deliver_one(name, handler, envelope)
 
     async def _deliver_one(self, name: str, handler: Subscriber, envelope: EventEnvelope) -> None:
-        try:
-            await handler(envelope)
-            state, last_error = "delivered", None
-        except Exception as exc:  # subscriber lỗi không được làm chết Bus hay subscriber khác
-            state, last_error = "failed", str(exc)
+        """Thử tối đa `max_retries` lần, chờ backoff mũ + jitter giữa các lần lỗi
+        (doc 02 §3.3, doc 19 — trả nợ BL-001). Retry ĐỒNG BỘ ngay trong dispatch(),
+        chưa phải hàng đợi nền riêng: chỉ có 1 subscriber thật (`runner`), lỗi của
+        nó là bug lập trình chứ không phải lỗi thoáng qua kiểu mạng — xây scheduler
+        nền riêng ở M1 là trừu tượng hoá sớm (P4), backoff đủ ngắn để không treo
+        HTTP request lâu trên đường lỗi. Hết retry -> `dead_letter` (BL-002), khác
+        `failed` ở chỗ: đây là "đã bỏ cuộc, cần người can thiệp" (`events replay`,
+        M1-5b), không chỉ 1 lần thử không may."""
+        last_error: str | None = None
+        for attempt in range(1, self._max_retries + 1):
+            try:
+                await handler(envelope)
+            except Exception as exc:  # subscriber lỗi không được làm chết Bus hay subscriber khác
+                last_error = str(exc)
+                if attempt < self._max_retries:
+                    backoff = _BACKOFF_BASE_S * (2 ** (attempt - 1))
+                    jitter = random.uniform(0, _BACKOFF_JITTER_S)  # noqa: S311 — jitter thời gian chờ, không phải bảo mật
+                    await asyncio.sleep(backoff + jitter)
+            else:
+                await self._record_delivery(envelope.event_id, name, "delivered", attempt, None)
+                return
 
+        await self._record_delivery(
+            envelope.event_id, name, "dead_letter", self._max_retries, last_error
+        )
+
+    async def _record_delivery(
+        self, event_id: str, subscriber: str, state: str, attempts: int, last_error: str | None
+    ) -> None:
         async def _record(conn: aiosqlite.Connection) -> None:
             await conn.execute(
                 "INSERT OR REPLACE INTO event_deliveries"
-                "(event_id, subscriber, state, attempts, last_error) VALUES (?, ?, ?, 1, ?)",
-                (envelope.event_id, name, state, last_error),
+                "(event_id, subscriber, state, attempts, last_error) VALUES (?, ?, ?, ?, ?)",
+                (event_id, subscriber, state, attempts, last_error),
             )
 
         await self._store.write(_record)
+
+    async def dead_letters(self) -> list[dict[str, Any]]:
+        """Event đã hết `max_retries` cho một subscriber cụ thể — cần
+        `events replay` (M1-5b) để giao lại thủ công."""
+
+        async def _query(conn: aiosqlite.Connection) -> list[dict[str, Any]]:
+            cursor = await conn.execute(
+                "SELECT d.event_id, d.subscriber, d.attempts, d.last_error, "
+                "e.type, e.ts, e.process_id "
+                "FROM event_deliveries d JOIN events e ON e.event_id = d.event_id "
+                "WHERE d.state = 'dead_letter' ORDER BY e.seq"
+            )
+            return [
+                {
+                    "event_id": row[0],
+                    "subscriber": row[1],
+                    "attempts": row[2],
+                    "last_error": row[3],
+                    "type": row[4],
+                    "ts": row[5],
+                    "process_id": row[6],
+                }
+                for row in await cursor.fetchall()
+            ]
+
+        return await self._store.read(_query)
 
     async def _find_undelivered(
         self, conn: aiosqlite.Connection

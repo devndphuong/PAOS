@@ -20,7 +20,7 @@ async def store(tmp_path: Path):
 
 @pytest.fixture
 def bus(store: StateStore) -> EventBus:
-    return EventBus(store)
+    return EventBus(store, max_retries=2)  # nhỏ để test nhanh, không đổi hành vi
 
 
 async def test_publish_writes_before_dispatch(bus: EventBus, store: StateStore) -> None:
@@ -86,12 +86,15 @@ async def test_subscriber_not_matching_pattern_ignored(bus: EventBus) -> None:
     assert received == []
 
 
-async def test_subscriber_exception_does_not_crash_bus_or_other_subscribers(
+async def test_subscriber_exhausting_retries_goes_to_dead_letter_others_unaffected(
     bus: EventBus, store: StateStore
 ) -> None:
     received = []
+    bad_attempts = 0
 
     async def _bad(envelope: EventEnvelope) -> None:
+        nonlocal bad_attempts
+        bad_attempts += 1
         raise ValueError("boom")
 
     async def _good(envelope: EventEnvelope) -> None:
@@ -102,14 +105,53 @@ async def test_subscriber_exception_does_not_crash_bus_or_other_subscribers(
 
     await bus.publish("kernel.startup", "test.source", {"version": "0.0.1"})
 
-    assert len(received) == 1
+    assert len(received) == 1  # subscriber tốt không bị ảnh hưởng bởi subscriber lỗi
+    assert bad_attempts == 2  # đúng max_retries=2 của fixture `bus`
 
-    async def _delivery_states(conn: aiosqlite.Connection) -> dict[str, str]:
-        cursor = await conn.execute("SELECT subscriber, state FROM event_deliveries")
-        return dict(await cursor.fetchall())
+    async def _delivery_rows(conn: aiosqlite.Connection) -> dict[str, tuple[str, int]]:
+        cursor = await conn.execute("SELECT subscriber, state, attempts FROM event_deliveries")
+        return {row[0]: (row[1], row[2]) for row in await cursor.fetchall()}
 
-    states = await store.read(_delivery_states)
-    assert states == {"bad": "failed", "good": "delivered"}
+    rows = await store.read(_delivery_rows)
+    assert rows == {"bad": ("dead_letter", 2), "good": ("delivered", 1)}
+
+    dead_letters = await bus.dead_letters()
+    assert len(dead_letters) == 1
+    assert dead_letters[0]["subscriber"] == "bad"
+    assert dead_letters[0]["type"] == "kernel.startup"
+    assert dead_letters[0]["attempts"] == 2
+    assert "boom" in dead_letters[0]["last_error"]
+
+
+async def test_subscriber_succeeding_on_retry_does_not_reach_dead_letter(
+    bus: EventBus, store: StateStore
+) -> None:
+    attempts = 0
+
+    async def _flaky(envelope: EventEnvelope) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 2:
+            raise ValueError("thoáng qua")
+
+    bus.subscribe("flaky", "kernel.*", _flaky)
+    await bus.publish("kernel.startup", "test.source", {"version": "0.0.1"})
+
+    assert attempts == 2
+
+    async def _delivery_row(conn: aiosqlite.Connection) -> tuple[str, int]:
+        cursor = await conn.execute(
+            "SELECT state, attempts FROM event_deliveries WHERE subscriber = 'flaky'"
+        )
+        row = await cursor.fetchone()
+        assert row is not None
+        return row[0], row[1]
+
+    state, recorded_attempts = await store.read(_delivery_row)
+    assert state == "delivered"
+    assert recorded_attempts == 2  # thành công ở lần thử thứ 2, không vào DLQ
+
+    assert await bus.dead_letters() == []
 
 
 async def test_startup_catchup_redelivers_undelivered_events(tmp_path: Path) -> None:

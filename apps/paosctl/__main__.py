@@ -191,6 +191,22 @@ def events_tail(ctx: click.Context, pid: int | None, since_seq: int, follow: boo
             time.sleep(0.5)
 
 
+@events.command("dlq")
+@click.pass_context
+def events_dlq(ctx: click.Context) -> None:
+    """Liệt kê event đã hết số lần thử, cần `events replay` thủ công (doc 19 P-M1-5)."""
+    with _client(ctx) as client:
+        rows = _get(client, "/v1/events/dead-letters").json()
+    if not rows:
+        click.echo("(không có event nào trong dead letter queue)")
+        return
+    for r in rows:
+        click.echo(
+            f"[{r['ts']}] {r['type']} -> subscriber={r['subscriber']} "
+            f"attempts={r['attempts']} error={r['last_error']}"
+        )
+
+
 @cli.command()
 @click.pass_context
 def doctor(ctx: click.Context) -> None:

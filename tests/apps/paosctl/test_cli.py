@@ -175,3 +175,9 @@ def test_events_tail_without_follow_returns_one_batch(runner: CliRunner, api_url
     result = runner.invoke(cli, ["--api-url", api_url, "events", "tail"])
     assert result.exit_code == 0
     assert "kernel.process.created" in result.output
+
+
+def test_events_dlq_empty_by_default(runner: CliRunner, api_url: str) -> None:
+    result = runner.invoke(cli, ["--api-url", api_url, "events", "dlq"])
+    assert result.exit_code == 0
+    assert "không có event nào" in result.output
