@@ -70,10 +70,11 @@ async def test_golden_path_run_produces_artifact_and_explain_trace(
         "kernel.process.planning",
         "kernel.process.queued",
         "kernel.process.started",
+        "kernel.process.checkpointed",
         "summary.created",
         "kernel.process.completed",
     ]
-    artifact_id = trace[4]["payload"]["artifact_id"]
+    artifact_id = trace[5]["payload"]["artifact_id"]
     assert artifact_id.startswith("art_")
 
 

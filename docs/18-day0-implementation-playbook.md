@@ -338,7 +338,7 @@ Một dạng nợ kỹ thuật **có chủ đích và rẻ**: đưa vào schema/
 
 | Thành phần | Có mặt từ M0 | Logic dùng nó đến |
 |---|---|---|
-| Bảng `checkpoints` | Schema đầy đủ (`process_id`, `seq`, `state_json`, `at`) | M1 (P-M1-2) |
+| Bảng `checkpoints` | Schema đầy đủ (`process_id`, `seq`, `state_json`, `at`) | M1 (P-M1-4 — dùng thật, xem §7.3 về sai lệch P-M1-2) |
 | Cột `tasks.attempts`, `tasks.idempotency_key` | Có mặt, `attempts` mặc định 0 | M1 (retry thật) |
 | Envelope event: `correlation_id`, `causation_id` | Đủ 10 trường (doc 05 §1) | M1+ (khi cần dựng cây nhân quả/replay) |
 | Trạng thái Process `PLANNING`/`WAITING`/`PAUSED`/`COMPENSATING`/`FAILED_FINAL` | Có trong enum + bảng chuyển trạng thái | M1 (chưa có đường vào ở M0) |

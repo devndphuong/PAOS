@@ -29,6 +29,7 @@ _EXPECTED_EVENT_TYPES = (
     "kernel.process.planning",
     "kernel.process.queued",
     "kernel.process.started",
+    "kernel.process.checkpointed",
     "summary.created",
     "kernel.process.completed",
 )

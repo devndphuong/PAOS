@@ -18,6 +18,9 @@ class EventType(StrEnum):
     PROCESS_PLANNING = "kernel.process.planning"
     PROCESS_QUEUED = "kernel.process.queued"
     PROCESS_STARTED = "kernel.process.started"
+    # doc 05 §3.1 đã có tên "checkpointed" nhưng chưa từng có schema — thêm ở
+    # M1 lát cắt 4 (doc 19 P-M1-4) khi checkpoint thật sự được ghi.
+    PROCESS_CHECKPOINTED = "kernel.process.checkpointed"
     PROCESS_WAITING = "kernel.process.waiting"
     PROCESS_PAUSED = "kernel.process.paused"
     PROCESS_RESUMED = "kernel.process.resumed"

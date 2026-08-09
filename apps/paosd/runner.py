@@ -19,8 +19,14 @@ doc 02 §3.2 "Task khai báo mình cần token nào". `StubAdapter` khai báo
 4 tên resource của doc 02 (gpu/cpu_heavy/net_api/disk_io) — chưa provider nào
 cần, đó là trừu tượng hoá sớm (P4).
 
-Cancel (dừng 1 job đang chạy mà không ảnh hưởng job khác) là M1-3b, lát sau —
-cần pool song song này xong trước vì phải hủy đúng task trong pool.
+M1-3b: Cancel (dừng 1 job đang chạy mà không ảnh hưởng job khác) — `cancel()`.
+
+M1-4: Checkpoint & resume. Process = đúng 1 agent (chưa có Task DAG nhiều
+bước — đó là M3), nên KHÔNG có tiến độ nội bộ để resume giữa chừng. Checkpoint
+chỉ đánh dấu "đã vào RUNNING"; nếu daemon crash giữa lúc RUNNING, khởi động
+lại (`apps/paosd/wiring.py::build_daemon()`) đưa process đó lại vào hàng đợi
+— `_run_one()` nhận ra nó ĐÃ ở RUNNING (không phải QUEUED) nên không transition
+lại, chỉ chạy lại agent từ đầu.
 """
 
 from __future__ import annotations
@@ -111,11 +117,27 @@ class Runner:
         if process_id is None:
             return  # không nên xảy ra — PROCESS_CREATED luôn có process_id
 
+        # PHẢI idempotent: nếu daemon crash NGAY GIỮA hàm này (giữa lúc PLANNING
+        # đã ghi DB nhưng QUEUED thì chưa), EventBus.start() catch-up (REL-01) sẽ
+        # gọi lại hàm này lần nữa lúc restart — vì event chưa kịp đánh dấu delivered.
+        # Nếu cứ transition() vô điều kiện, lần gọi lại sẽ CONFLICT (không tự
+        # transition từ chính nó) và process kẹt ở PLANNING vĩnh viễn (bug thật,
+        # phát hiện lúc kiểm thủ công M1-4) — nên phải đọc trạng thái hiện tại
+        # trước mỗi bước, chỉ transition nếu còn cần (doc 19 P-M1-4).
+        process = await self._manager.get(process_id)
+        if process is None:
+            return
+
         # doc 02 §3.1: CREATED -> PLANNING -> QUEUED. PLANNING chưa có logic
         # thật (Workflow YAML engine là M3) — chỉ đi qua để khớp bảng transition
         # đầy đủ (doc 19 P-M1-1).
-        await self._manager.transition(process_id, ProcessState.PLANNING)
-        await self._manager.transition(process_id, ProcessState.QUEUED)
+        if process.state is ProcessState.CREATED:
+            process = await self._manager.transition(process_id, ProcessState.PLANNING)
+        if process.state is ProcessState.PLANNING:
+            process = await self._manager.transition(process_id, ProcessState.QUEUED)
+        if process.state is not ProcessState.QUEUED:
+            return  # đã bị cancel hoặc đổi trạng thái khác trước khi gọi lại được tới đây
+
         priority = envelope.payload.get("priority", _DEFAULT_PRIORITY)
         await self._enqueue(process_id, priority)
 
@@ -144,6 +166,15 @@ class Runner:
         while True:
             await self._process_slots.acquire()
             _, _, process_id = await self._queue.get()
+            if process_id in self._running_tasks:
+                # Đã có task khác đang chạy CHÍNH process này — có thể xảy ra khi
+                # on_process_created() được catch-up gọi lại (REL-01, idempotent
+                # theo thiết kế) trùng lúc build_daemon() cũng requeue nó. Bỏ qua,
+                # không chạy đúp cùng 1 process (P9 — không tính tiền/side-effect
+                # hai lần).
+                self._process_slots.release()
+                self._queue.task_done()
+                continue
             task = asyncio.create_task(self._run_one_and_release(process_id))
             self._running_tasks[process_id] = task
             self._queue.task_done()
@@ -171,13 +202,18 @@ class Runner:
 
     async def _run_one(self, process_id: str) -> None:
         process = await self._manager.get(process_id)
-        if process is None or process.state is not ProcessState.QUEUED:
+        if process is None or process.state not in (ProcessState.QUEUED, ProcessState.RUNNING):
             return  # đã bị đổi trạng thái trước khi worker kịp chạy (vd cancel — M1-3b)
 
         workflow_ref = process.workflow_ref
         match = _AGENTS.get(workflow_ref)
 
-        await self._manager.transition(process_id, ProcessState.RUNNING)
+        if process.state is ProcessState.QUEUED:
+            await self._manager.transition(process_id, ProcessState.RUNNING)
+            await self._manager.write_checkpoint(process_id, {"phase": "running"})
+        # Nếu ĐÃ ở RUNNING (resume sau crash — doc 19 P-M1-4), không transition lại:
+        # đây là CÙNG một lượt RUNNING từ trước khi daemon chết, chỉ chạy lại agent
+        # từ đầu vì Process = 1 agent, không có tiến độ nội bộ để resume giữa chừng.
 
         if match is None:
             await self._manager.transition(

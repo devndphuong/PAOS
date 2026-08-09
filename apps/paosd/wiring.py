@@ -93,10 +93,13 @@ async def build_daemon(
     # asyncio.Queue của Runner sống trong bộ nhớ, không sống sót qua restart —
     # khác với event catch-up ở trên (đã "delivered" nên không redeliver). Process
     # nào còn ở QUEUED từ phiên daemon trước phải đưa lại vào hàng đợi thủ công
-    # (doc 19 P-M1-2). Process kẹt ở RUNNING lúc crash KHÔNG đụng tới — M1-4.
-    stuck_queued = await manager.list(state=ProcessState.QUEUED)
-    for process in stuck_queued:
-        await runner.enqueue_existing(process.process_id)
+    # (doc 19 P-M1-2). Process kẹt ở RUNNING lúc crash cũng đưa lại — Runner tự
+    # nhận ra đây là resume (không transition lại) và chạy lại agent từ đầu
+    # (doc 19 P-M1-4, Process = 1 agent nên không có tiến độ nội bộ để tiếp).
+    for state in (ProcessState.QUEUED, ProcessState.RUNNING):
+        stuck = await manager.list(state=state)
+        for process in stuck:
+            await runner.enqueue_existing(process.process_id)
 
     await events.publish(
         EventType.KERNEL_STARTUP.value,

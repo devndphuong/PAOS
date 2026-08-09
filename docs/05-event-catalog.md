@@ -52,7 +52,7 @@ Mọi event đều có đúng cấu trúc này:
 | `kernel.process.progress` | pid, progress, message | throttle ≤ 1/giây — chưa phát ở M1 |
 | `kernel.process.paused` | pid, reason | M1 P-M1-1 |
 | `kernel.process.resumed` | pid | M1 P-M1-1 — chung cho cả WAITING và PAUSED resume về RUNNING |
-| `kernel.process.checkpointed` | pid, seq | chưa phát — M1 P-M1-2 |
+| `kernel.process.checkpointed` | pid, seq | M1 P-M1-4 |
 | `kernel.process.completed` | pid, duration_ms | cost/quality chưa phát — hoãn tới khi có (M2/M4) |
 | `kernel.process.failed` | pid, error_code | error_ctx chưa phát |
 | `kernel.process.compensating` | pid | M1 P-M1-1 — mở transition, logic compensate[] thật là M3 |

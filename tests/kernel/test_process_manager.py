@@ -216,6 +216,51 @@ async def test_failed_can_reach_failed_final_via_compensating(manager: ProcessMa
     assert p.ended_at is not None
 
 
+async def test_write_checkpoint_increments_seq_and_emits_event(
+    manager: ProcessManager, store: StateStore
+) -> None:
+    events = EventBus(store)
+    mgr = ProcessManager(store, events)
+    received: list[EventEnvelope] = []
+
+    async def _handler(e: EventEnvelope) -> None:
+        received.append(e)
+
+    events.subscribe("watcher", "kernel.process.checkpointed", _handler)
+
+    p = await mgr.create(intent="test.intent", spec={}, name="x", workflow_ref="wf@1")
+
+    seq1 = await mgr.write_checkpoint(p.process_id, {"phase": "running"})
+    assert seq1 == 1
+    seq2 = await mgr.write_checkpoint(p.process_id, {"phase": "still running"})
+    assert seq2 == 2
+
+    assert [e.payload for e in received] == [
+        {"pid": p.pid, "seq": 1},
+        {"pid": p.pid, "seq": 2},
+    ]
+
+    async def _row_count(conn: aiosqlite.Connection) -> int:
+        cursor = await conn.execute(
+            "SELECT COUNT(*) FROM checkpoints WHERE process_id = ?", (p.process_id,)
+        )
+        row = await cursor.fetchone()
+        assert row is not None
+        return int(row[0])
+
+    assert await store.read(_row_count) == 2
+
+    updated = await mgr.get(p.process_id)
+    assert updated is not None
+    assert updated.checkpoint_seq == 2
+
+
+async def test_write_checkpoint_unknown_process_raises_not_found(manager: ProcessManager) -> None:
+    with pytest.raises(PaosError) as exc_info:
+        await manager.write_checkpoint("proc_khong_ton_tai", {})
+    assert exc_info.value.code == ErrorCode.NOT_FOUND
+
+
 async def test_get_by_pid_and_list(manager: ProcessManager) -> None:
     a = await _create(manager, name="a")
     b = await _create(manager, name="b")

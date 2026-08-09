@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://schemas/events/kernel.process.checkpointed.v1.schema.json",
+  "title": "kernel.process.checkpointed payload",
+  "description": "M1 lát cắt 4 (doc 19 P-M1-4) — doc 05 §3.1 có tên event này nhưng chưa từng có schema, chưa ai ghi checkpoint thật trước lát này.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["pid", "seq"],
+  "properties": {
+    "pid": { "type": "integer", "minimum": 1 },
+    "seq": { "type": "integer", "minimum": 1 }
+  }
+}

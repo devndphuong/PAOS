@@ -324,6 +324,49 @@ class ProcessManager:
         await self._events.dispatch(envelope)
         return process
 
+    async def write_checkpoint(self, process_id: str, state: dict[str, Any]) -> int:
+        """Ghi 1 checkpoint (doc 19 P-M1-4). `state` là dữ liệu tối thiểu để
+        resume — ở M1, Process = đúng 1 agent nên chỉ cần đánh dấu "đã vào
+        RUNNING", không có tiến độ nội bộ để ghi (Task DAG nhiều bước là M3).
+        Bảng `checkpoints` đã có schema từ M0 (doc 18 §10), lát này là lần
+        đầu có ai thật sự ghi vào đó."""
+
+        async def _write(conn: aiosqlite.Connection) -> tuple[int, Any]:
+            cursor = await conn.execute(
+                "SELECT pid, checkpoint_seq FROM processes WHERE process_id = ?", (process_id,)
+            )
+            row = await cursor.fetchone()
+            if row is None:
+                raise PaosError(
+                    ErrorCode.NOT_FOUND,
+                    f"Process {process_id} không tồn tại",
+                    hint="Kiểm lại process_id",
+                    context={"process_id": process_id},
+                )
+            pid, current_seq = int(row[0]), int(row[1])
+            seq = current_seq + 1
+
+            now = clock.now().isoformat()
+            await conn.execute(
+                "INSERT INTO checkpoints(process_id, seq, state_json, at) VALUES (?, ?, ?, ?)",
+                (process_id, seq, json.dumps(state, ensure_ascii=False), now),
+            )
+            await conn.execute(
+                "UPDATE processes SET checkpoint_seq = ? WHERE process_id = ?", (seq, process_id)
+            )
+            envelope = await self._events.build_and_insert(
+                conn,
+                EventType.PROCESS_CHECKPOINTED.value,
+                source="kernel.process",
+                payload={"pid": pid, "seq": seq},
+                process_id=process_id,
+            )
+            return seq, envelope
+
+        seq, envelope = await self._store.write(_write)
+        await self._events.dispatch(envelope)
+        return seq
+
     async def get(self, process_id: str) -> Process | None:
         async def _get(conn: aiosqlite.Connection) -> Process | None:
             cursor = await conn.execute(
