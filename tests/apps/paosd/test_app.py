@@ -139,7 +139,11 @@ async def test_cancel_created_process_succeeds(client: httpx.AsyncClient) -> Non
     ).json()
     resp = await client.post(f"/v1/processes/{created['pid']}/cancel")
     assert resp.status_code == 200
-    assert resp.json()["state"] == "CANCELLED"
+    body = resp.json()
+    assert body["state"] == "CANCELLED"
+    # error taxonomy hoàn chỉnh (M1-6): CANCELLED cũng phải có error_code, nhất
+    # quán với FAILED — trước đó process bị hủy có error_code=NULL.
+    assert body["error_code"] == "CANCELLED"
 
 
 async def test_cancel_already_cancelled_is_conflict(client: httpx.AsyncClient) -> None:

@@ -193,8 +193,18 @@ class Runner:
         `ProcessManager.transition()` tự raise CONFLICT nếu process đã ở trạng
         thái cuối — không cần tự kiểm tra lại ở đây. Process còn nằm trong
         hàng đợi (chưa có task) chỉ cần đổi DB — guard ở `_run_one()` đã tự bỏ
-        qua khi dispatcher dequeue nó sau đó."""
-        updated = await self._manager.transition(process_id, ProcessState.CANCELLED, reason=reason)
+        qua khi dispatcher dequeue nó sau đó.
+
+        `error_code=CANCELLED` được gán ở đây (phát hiện lúc soát error taxonomy
+        M1-6) — trước đó process bị hủy có `error_code=NULL`, không nhất quán
+        với FAILED (luôn có error_code). CANCELLED trong 13 mã chuẩn (doc 04 §1)
+        chưa từng được dùng ở đâu tới lát này."""
+        updated = await self._manager.transition(
+            process_id,
+            ProcessState.CANCELLED,
+            reason=reason,
+            error_code=KernelErrorCode.CANCELLED.value,
+        )
         task = self._running_tasks.get(process_id)
         if task is not None:
             task.cancel()
