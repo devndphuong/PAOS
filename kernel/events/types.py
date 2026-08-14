@@ -32,3 +32,7 @@ class EventType(StrEnum):
 
     # Domain event do plugin/agent tự định nghĩa qua manifest.emits (doc 05 §3.4).
     SUMMARY_CREATED = "summary.created"
+
+    # Router (doc 06 §2.3, doc 19 P-M2-3): 1 provider lỗi retryable, chuyển
+    # sang provider kế tiếp trong chuỗi fallback.
+    CAPABILITY_FALLBACK_TRIGGERED = "capability.fallback.triggered"

@@ -71,6 +71,7 @@ class ProviderManifest:
     health_check: dict[str, Any]
     quality_hint: dict[str, Any]
     adapter: str  # "module.path:ClassName" — Registry.load_adapter() nạp động (P-M2-1)
+    enabled: bool = True  # false = tắt thủ công, Router loại khỏi ứng viên (doc 06 §2.1, P-M2-3)
 
     def implements_capability(self, capability_id: str, version: int) -> bool:
         return f"{capability_id}@{version}" in self.implements
@@ -95,6 +96,7 @@ def load_provider_manifest(path: Path) -> ProviderManifest:
         health_check=data.get("health_check", {}),
         quality_hint=data.get("quality_hint", {}),
         adapter=data.get("adapter", ""),
+        enabled=data.get("enabled", True),
     )
 
 

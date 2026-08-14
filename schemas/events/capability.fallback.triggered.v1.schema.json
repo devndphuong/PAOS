@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://schemas/events/capability.fallback.triggered.v1.schema.json",
+  "title": "capability.fallback.triggered payload",
+  "description": "doc 06 §2.3 — 1 provider lỗi retryable, Router chuyển sang provider kế tiếp trong chuỗi fallback.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["capability", "failed_provider_id", "error_code", "next_provider_id", "decision_id"],
+  "properties": {
+    "capability": { "type": "string" },
+    "failed_provider_id": { "type": "string" },
+    "error_code": { "type": "string" },
+    "next_provider_id": { "type": "string" },
+    "decision_id": { "type": "string" }
+  }
+}

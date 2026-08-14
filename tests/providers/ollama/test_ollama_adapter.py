@@ -42,12 +42,17 @@ def test_manifest_declares_text_generate(unreachable_adapter: OllamaAdapter) -> 
 
 
 def test_load_adapter_via_registry_fails_by_design() -> None:
-    # provider.yaml CỐ Ý chưa khai `adapter:` (BL-004, doc 19 P-M2-2): nếu có, Registry
-    # có thể chọn OllamaAdapter thật thay vì stub bất cứ khi nào providers_for() trả về
-    # ollama trước — apps/paosd/runner.py::_make_call_capability() chỉ thử LẦN LƯỢT và
-    # dừng ở provider ĐẦU TIÊN nạp được, chưa có fallback thật theo kết quả invoke()
-    # (đó là Router P-M2-3). Test này khoá lại chủ đích đó — nếu ai thêm `adapter:` mà
-    # chưa có Router thật, test sẽ đỏ, nhắc quay lại BL-004 trước khi merge.
+    # provider.yaml CỐ Ý chưa khai `adapter:` (BL-004). apps/paosd/router.py::Router
+    # (P-M2-3) đã có fallback THẬT theo kết quả invoke() (không chỉ load() như trước
+    # P-M2-1) — về lý thuyết an toàn để bật `adapter:`. Đã THỬ THẬT trong lúc dựng
+    # P-M2-3: bật lên làm mọi test golden-path (dùng Registry trỏ tới providers/ thật)
+    # thử gọi Ollama thật (localhost:11434) trước khi rơi về stub — chậm, không tất
+    # định, vỡ assertion thứ tự event (`capability.fallback.triggered` xen vào). Router
+    # đúng, nhưng có 2 provider cùng đăng ký khiến test phụ thuộc network timing thật —
+    # cần hạ tầng test override CẢ HAI provider (không chỉ stub) hoặc cách khác để
+    # Registry test-mode bỏ qua provider cần dịch vụ ngoài, CHƯA có ở lát này. Revert,
+    # giữ nguyên hành vi cũ; test này khoá lại chủ đích — đỏ nếu ai bật `adapter:` lại
+    # mà chưa giải quyết vế hạ tầng test.
     registry = Registry(_REPO_ROOT / "capabilities", _REPO_ROOT / "providers")
     registry.load()
     with pytest.raises(PaosError) as exc_info:

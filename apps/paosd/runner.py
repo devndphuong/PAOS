@@ -33,9 +33,12 @@ dict tĩnh hardcode trong file này, vi phạm đúng exit criteria doc 13 M2
 "provider mới thêm vào chỉ bằng 1 file adapter + 1 YAML" (thêm provider mới
 còn phải SỬA CODE ở đây). Giờ dùng `Registry.load_adapter()` (nạp động qua
 `importlib`, đọc `provider.yaml::adapter`) — không còn dict hardcode nào.
-Chưa có Router/fallback/circuit breaker thật (đó là P-M2-3): vẫn chọn
-provider ĐẦU TIÊN theo thứ tự khai báo, đúng phạm vi "chưa ranking, chỉ ưu
-tiên" của M2 (doc 13).
+
+M2-3 (doc 19): `_make_call_capability()` không tự chọn provider nữa — giao
+hết cho `apps/paosd/router.py::Router` (ràng buộc cứng, fallback thật theo
+kết quả `invoke()`, circuit breaker, Decision Record). Resource token
+(`_hold_resources`, đoạn ghi chú ở trên) cũng chuyển sang Router cùng lúc —
+mỗi candidate trong chuỗi fallback có thể khai `resources` khác nhau.
 """
 
 from __future__ import annotations
@@ -43,15 +46,13 @@ from __future__ import annotations
 import asyncio
 import itertools
 import json
-from collections.abc import AsyncIterator
-from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 from typing import Any
 
 import aiosqlite
 
 from agents.summarize.agent import SummarizeAgent
-from kernel import ids
+from apps.paosd.router import Router
 from kernel.errors import ErrorCode as KernelErrorCode
 from kernel.errors import PaosError
 from kernel.events.bus import EventBus, EventEnvelope
@@ -60,8 +61,8 @@ from kernel.process.manager import Process, ProcessManager, ProcessState
 from kernel.registry.registry import Registry
 from kernel.state.db import StateStore
 from sdk.agent import Agent, AgentContext, AgentError, Artifact, CallCapability, EmitEvent
-from sdk.provider import CallContext, ProviderError
 from sdk.provider import ErrorCode as SdkErrorCode
+from sdk.provider import ProviderError
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _DEFAULT_PRIORITY = 5
@@ -110,6 +111,7 @@ class Runner:
             name: asyncio.Semaphore(cap) for name, cap in (resource_capacity or {}).items()
         }
         self._running_tasks: dict[str, asyncio.Task[None]] = {}
+        self._router = Router(registry, events, store, self._resource_semaphores)
 
     async def on_process_created(self, envelope: EventEnvelope) -> None:
         """Chạy đồng bộ trong dispatch() — chỉ 2 lần ghi DB, đủ nhanh để không
@@ -306,67 +308,9 @@ class Runner:
 
         await agent.publish(exec_result)
 
-    @asynccontextmanager
-    async def _hold_resources(self, resource_names: list[str]) -> AsyncIterator[None]:
-        """Giữ semaphore của TỪNG resource được khai báo (bỏ qua tên không cấu
-        hình dung lượng — coi như không giới hạn). Đây là nơi thật sự áp
-        "resource token" (doc 02 §3.2), gắn với lượt gọi capability chứ không
-        phải cả Process. `provider.yaml` khai `resources: [gpu:1]` (tên:số
-        lượng, vd `providers/ollama/provider.yaml`) — chỉ tên vế trái được
-        dùng làm khoá semaphore, số lượng CHƯA hỗ trợ (mọi resource hiện có
-        đều cần đúng 1 đơn vị; `asyncio.Semaphore` không có "acquire N")."""
-        async with AsyncExitStack() as stack:
-            for declared in resource_names:
-                name = declared.partition(":")[0]
-                sem = self._resource_semaphores.get(name)
-                if sem is not None:
-                    await stack.enter_async_context(sem)
-            yield
-
     def _make_call_capability(self, process_id: str) -> CallCapability:
         async def call_capability(capability_ref: str, payload: dict[str, Any]) -> dict[str, Any]:
-            capability_id, version_str = capability_ref.split("@")
-            version = int(version_str)
-            providers = self._registry.providers_for(capability_id, version)
-            if not providers:
-                raise ProviderError(
-                    SdkErrorCode.NOT_FOUND,
-                    f"Không có provider nào đăng ký cho {capability_ref}",
-                    hint="Kiểm providers/*/provider.yaml có implements đúng capability này",
-                )
-            # Chưa có Router/fallback/circuit breaker THẬT (đó là P-M2-3, doc 19 —
-            # backoff, retry theo thời gian, Decision Record). Ở đây chỉ thử LẦN
-            # LƯỢT theo thứ tự khai báo, bỏ qua provider chưa nạp được (thiếu
-            # `adapter:`, sai module...) — lọc lúc NẠP, không phải phục hồi lúc
-            # GỌI. Cần thiết ngay từ P-M2-1: nhiều provider cùng khai
-            # `implements` (vd stub + ollama) mà chỉ thử provider đầu tiên sẽ vỡ
-            # bất cứ khi nào thứ tự trả về không phải cái có adapter thật.
-            adapter = None
-            load_errors: list[str] = []
-            for manifest in providers:
-                try:
-                    adapter = self._registry.load_adapter(manifest.provider_id)
-                    break
-                except PaosError as exc:
-                    load_errors.append(f"{manifest.provider_id}: {exc.message}")
-            if adapter is None:
-                raise ProviderError(
-                    SdkErrorCode.PROVIDER_DOWN,
-                    f"Không nạp được adapter cho provider nào phục vụ {capability_ref}: "
-                    + "; ".join(load_errors),
-                    hint="Kiểm provider.yaml có khai 'adapter: module.path:ClassName' đúng chưa",
-                )
-            call_ctx = CallContext(
-                call_id=ids.new_id("call"),
-                process_id=process_id,
-                task_id=None,
-                deadline=None,
-                budget_left=None,
-                privacy_class="private",
-                cancel_token=asyncio.Event(),
-            )
-            async with self._hold_resources(adapter.manifest.resources):
-                return await adapter.invoke(capability_ref, payload, call_ctx)
+            return await self._router.call(capability_ref, payload, process_id)
 
         return call_capability
 
