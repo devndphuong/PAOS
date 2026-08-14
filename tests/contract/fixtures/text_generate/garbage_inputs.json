@@ -1,0 +1,11 @@
+[
+  {},
+  {"prompt": ""},
+  {"prompt": 123},
+  {"prompt": "hợp lệ", "unexpected_field": "không được phép"},
+  {"prompt": "hợp lệ", "temperature": 5},
+  {"prompt": "hợp lệ", "temperature": -1},
+  {"prompt": "hợp lệ", "max_tokens": 0},
+  {"prompt": "hợp lệ", "max_tokens": -10},
+  {"system": "thiếu prompt bắt buộc"}
+]

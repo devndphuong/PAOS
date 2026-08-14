@@ -1,0 +1,22 @@
+[
+  {"prompt": "Tóm tắt đoạn văn sau trong 3 câu"},
+  {"prompt": "Viết một email xin nghỉ phép"},
+  {"prompt": "Giải thích thuật toán quicksort", "system": "Bạn là giáo viên lập trình"},
+  {"prompt": "Dịch câu này sang tiếng Anh", "max_tokens": 128},
+  {"prompt": "Liệt kê 5 ý tưởng đặt tên dự án", "temperature": 0.9},
+  {"prompt": "Viết mô tả sản phẩm ngắn gọn", "temperature": 0.2},
+  {"prompt": "Tạo tiêu đề cho bài blog về AI cá nhân"},
+  {"prompt": "Sửa lỗi chính tả trong đoạn văn sau"},
+  {"prompt": "Giải thích khái niệm idempotency cho người mới học"},
+  {"prompt": "Viết kịch bản 30 giây quảng cáo cà phê", "task_class": "script_writing_vi"},
+  {"prompt": "x"},
+  {"prompt": "Tóm tắt cuộc họp thành gạch đầu dòng", "max_tokens": 512, "temperature": 0.5},
+  {"prompt": "So sánh SQLite và PostgreSQL"},
+  {"prompt": "Viết lời chúc sinh nhật ngắn gọn", "system": "Giọng văn thân mật"},
+  {"prompt": "Giải thích sự khác biệt giữa process và task"},
+  {"prompt": "Đề xuất 3 tên biến cho một bộ đếm retry"},
+  {"prompt": "Viết ghi chú release notes cho bản v0.2"},
+  {"prompt": "Tóm tắt rủi ro RSK-07 trong 1 câu"},
+  {"prompt": "Giải thích vì sao capability tách khỏi provider", "max_tokens": 256},
+  {"prompt": "Viết docstring tiếng Việt cho một hàm cancel()"}
+]

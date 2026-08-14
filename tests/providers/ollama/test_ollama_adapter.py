@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from kernel.errors import ErrorCode, PaosError
 from kernel.registry.registry import Registry
 from providers.ollama.adapter import OllamaAdapter
 from sdk.provider import CallContext, ProviderError
@@ -38,6 +39,20 @@ def unreachable_adapter() -> OllamaAdapter:
 def test_manifest_declares_text_generate(unreachable_adapter: OllamaAdapter) -> None:
     assert unreachable_adapter.manifest.implements_capability("text.generate", 1)
     assert unreachable_adapter.manifest.provider_id == "ollama.qwen2.5-14b"
+
+
+def test_load_adapter_via_registry_fails_by_design() -> None:
+    # provider.yaml CỐ Ý chưa khai `adapter:` (BL-004, doc 19 P-M2-2): nếu có, Registry
+    # có thể chọn OllamaAdapter thật thay vì stub bất cứ khi nào providers_for() trả về
+    # ollama trước — apps/paosd/runner.py::_make_call_capability() chỉ thử LẦN LƯỢT và
+    # dừng ở provider ĐẦU TIÊN nạp được, chưa có fallback thật theo kết quả invoke()
+    # (đó là Router P-M2-3). Test này khoá lại chủ đích đó — nếu ai thêm `adapter:` mà
+    # chưa có Router thật, test sẽ đỏ, nhắc quay lại BL-004 trước khi merge.
+    registry = Registry(_REPO_ROOT / "capabilities", _REPO_ROOT / "providers")
+    registry.load()
+    with pytest.raises(PaosError) as exc_info:
+        registry.load_adapter("ollama.qwen2.5-14b")
+    assert exc_info.value.code == ErrorCode.INTERNAL
 
 
 async def test_health_reports_down_when_unreachable(unreachable_adapter: OllamaAdapter) -> None:
