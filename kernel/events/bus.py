@@ -16,6 +16,7 @@ import jsonschema
 
 from kernel import clock, ids
 from kernel.errors import ErrorCode, PaosError
+from kernel.redact import redact_deep
 from kernel.state.db import StateStore
 
 _DEFAULT_SCHEMA_DIR = Path(__file__).resolve().parents[2] / "schemas" / "events"
@@ -142,7 +143,11 @@ class EventBus:
         """Validate + ghi event vào `conn` — transaction ĐANG MỞ của caller (bên trong
         một hàm truyền cho StateStore.write()). KHÔNG dispatch — gọi dispatch() sau khi
         transaction của caller commit thành công.
-        """
+
+        redact_deep() chạy TRƯỚC validate/ghi (doc 09 §6, SEC-01) — payload đã lọc
+        được dùng CHUNG cho cả bản ghi DB lẫn envelope dispatch cho subscriber, một
+        nguồn sự thật duy nhất thay vì lọc 2 lần có thể lệch nhau."""
+        payload = redact_deep(payload)
         self._validate_payload(type, version, payload)
         cursor = await conn.execute(
             "UPDATE counters SET value = value + 1 WHERE name = 'event_seq' RETURNING value"

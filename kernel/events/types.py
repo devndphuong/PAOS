@@ -36,3 +36,7 @@ class EventType(StrEnum):
     # Router (doc 06 §2.3, doc 19 P-M2-3): 1 provider lỗi retryable, chuyển
     # sang provider kế tiếp trong chuỗi fallback.
     CAPABILITY_FALLBACK_TRIGGERED = "capability.fallback.triggered"
+
+    # Permission Guard (doc 09 §2/§3/§4, doc 19 P-M2-5).
+    PERMISSION_VIOLATION_BLOCKED = "permission.violation.blocked"
+    PERMISSION_APPROVAL_REQUESTED = "permission.approval.requested"

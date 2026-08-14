@@ -58,6 +58,7 @@ from kernel.errors import PaosError
 from kernel.events.bus import EventBus, EventEnvelope
 from kernel.events.types import EventType
 from kernel.process.manager import Process, ProcessManager, ProcessState
+from kernel.redact import redact, redact_deep
 from kernel.registry.registry import Registry
 from kernel.state.db import StateStore
 from sdk.agent import Agent, AgentContext, AgentError, Artifact, CallCapability, EmitEvent
@@ -233,7 +234,7 @@ class Runner:
                 process_id,
                 ProcessState.FAILED,
                 error_code=KernelErrorCode.NOT_FOUND.value,
-                error_message=f"Không có agent nào khớp workflow_ref '{workflow_ref}'",
+                error_message=redact(f"Không có agent nào khớp workflow_ref '{workflow_ref}'"),
             )
             return
 
@@ -243,11 +244,14 @@ class Runner:
         try:
             await self._run_agent(agent, prompts_dir, process_id, spec)
         except (AgentError, ProviderError, PaosError) as exc:
+            # redact() ở đây (doc 09 §6, SEC-01) — error_message có thể echo lại nội
+            # dung từ provider/agent thật (vd lỗi HTTP kèm header), chưa chắc đã qua
+            # 1 lớp lọc nào trước khi tới đây.
             await self._manager.transition(
                 process_id,
                 ProcessState.FAILED,
                 error_code=exc.code.value,
-                error_message=exc.message,
+                error_message=redact(exc.message),
             )
             return
         except Exception as exc:  # an toàn cuối — process không bao giờ được kẹt ở RUNNING
@@ -255,7 +259,7 @@ class Runner:
                 process_id,
                 ProcessState.FAILED,
                 error_code=KernelErrorCode.INTERNAL.value,
-                error_message=str(exc),
+                error_message=redact(str(exc)),
             )
             return
 
@@ -326,6 +330,9 @@ class Runner:
         return emit_event
 
     async def _persist_artifact(self, artifact: Artifact) -> None:
+        # redact() cho path (tên/đường dẫn artifact — 1 vị trí doc 19 P-M2-5 nêu tên)
+        # + redact_deep() cho produced_by (dict tự do agent điền, có thể chứa prompt/
+        # tham số gọi provider) — cả 2 trước khi ghi (doc 09 §6, SEC-01).
         async def _insert(conn: aiosqlite.Connection) -> None:
             await conn.execute(
                 "INSERT INTO artifacts(artifact_id, process_id, task_id, type, path, mime, "
@@ -336,11 +343,11 @@ class Runner:
                     artifact.process_id,
                     artifact.task_id,
                     artifact.type,
-                    artifact.path,
+                    redact(artifact.path),
                     artifact.mime,
                     artifact.sha256,
                     artifact.bytes,
-                    json.dumps(artifact.produced_by, ensure_ascii=False),
+                    json.dumps(redact_deep(artifact.produced_by), ensure_ascii=False),
                     artifact.supersedes,
                     artifact.created_at,
                 ),

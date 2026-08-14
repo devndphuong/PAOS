@@ -37,6 +37,7 @@ from kernel import clock, ids
 from kernel.errors import PaosError
 from kernel.events.bus import EventBus
 from kernel.events.types import EventType
+from kernel.redact import redact
 from kernel.registry.registry import CapabilitySpec, ProviderManifest, Registry
 from kernel.state.db import StateStore
 from sdk.provider import CallContext, ProviderError
@@ -347,6 +348,10 @@ class Router:
         inputs_hash: str | None,
     ) -> None:
         async def _insert(conn: aiosqlite.Connection) -> None:
+            # redact() trên rationale/candidates_json trước khi ghi (doc 09 §6,
+            # SEC-01) — rủi ro thật thấp (đều là chuỗi nội bộ: provider_id, nhãn lỗi
+            # cố định) nhưng Decision Record là 1 trong các vị trí doc 19 P-M2-5 nêu
+            # tên rõ ("candidates_json" ~ trace attrs), phòng thủ theo chiều sâu.
             await conn.execute(
                 "INSERT INTO decisions(decision_id, process_id, scope, question, "
                 "candidates_json, chosen, rationale, policy_version, inputs_hash, created_at) "
@@ -355,9 +360,9 @@ class Router:
                     decision_id,
                     process_id,
                     f"capability={capability_ref}",
-                    json.dumps([c.to_json() for c in candidates], ensure_ascii=False),
+                    redact(json.dumps([c.to_json() for c in candidates], ensure_ascii=False)),
                     chosen,
-                    rationale,
+                    redact(rationale),
                     inputs_hash,
                     clock.now().isoformat(),
                 ),
@@ -414,7 +419,9 @@ class Router:
                     process_id,
                     f"capability={capability_ref}",
                     hit.provider_id,
-                    f"Trúng cache — kết quả gốc từ {hit.provider_id} ({hit.provider_class})",
+                    redact(
+                        f"Trúng cache — kết quả gốc từ {hit.provider_id} ({hit.provider_class})"
+                    ),
                     cache_key,
                     clock.now().isoformat(),
                 ),

@@ -436,3 +436,27 @@ async def test_non_cacheable_capability_never_caches(
     # _write_fixture_capability() mặc định cacheable=False (không cache.json) —
     # cùng payload gọi 2 lần vẫn phải chạy thật cả 2 lần.
     assert adapter.calls == 2
+
+
+async def test_decision_rationale_and_candidates_json_are_redacted(
+    tmp_path: Path, events: EventBus, store: StateStore
+) -> None:
+    """Chứng minh redact() thật sự được gọi trước khi ghi Decision Record (doc 09
+    §6, SEC-01, doc 19 P-M2-5) — không phải provider_id thật sự là secret (không
+    bao giờ nên như vậy), chỉ dựng kịch bản tổng hợp để khoá lại đường ghi này."""
+    caps_dir = tmp_path / "capabilities"
+    providers_dir = tmp_path / "providers"
+    _write_fixture_capability(caps_dir)
+    _write_provider(providers_dir, "sk-abcdefgh12345678", "leaky_one")
+    reg = Registry(caps_dir, providers_dir)
+    reg.load()
+
+    adapter = _FakeAdapter()
+    reg.preload_adapter("sk-abcdefgh12345678", adapter)
+    router = Router(reg, events, store, {}, tmp_path)
+
+    await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
+
+    decision = await _latest_decision(store)
+    assert "sk-abcdefgh12345678" not in str(decision["rationale"])
+    assert "sk-abcdefgh12345678" not in str(decision["candidates_json"])

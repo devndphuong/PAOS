@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://schemas/events/permission.violation.blocked.v1.schema.json",
+  "title": "permission.violation.blocked payload",
+  "description": "doc 09 dòng 49 — hành động FORBIDDEN bị chặn.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["action", "actor", "target"],
+  "properties": {
+    "action": { "type": "string" },
+    "actor": { "type": "string" },
+    "target": { "type": "string" }
+  }
+}

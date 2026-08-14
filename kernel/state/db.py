@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import shutil
 import sqlite3
 from collections.abc import Awaitable, Callable
@@ -19,6 +20,41 @@ T = TypeVar("T")
 
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 _BUSY_TIMEOUT_MS = 200
+_BEGIN_RE = re.compile(r"\bBEGIN\b", re.IGNORECASE)
+_END_RE = re.compile(r"\bEND\b", re.IGNORECASE)
+
+
+def _split_sql_statements(sql: str) -> list[str]:
+    """Tách statement theo dấu ; TRẦN trên toàn file .sql migration.
+
+    2 giới hạn thật đã vỡ với bộ tách thô cũ (`sql.split(";")`), phát hiện lúc
+    dựng P-M2-4/P-M2-5: (1) dấu ; NẰM TRONG comment `--...` (migration 004) —
+    xoá hẳn comment trước khi tách, không chỉ dựa vào quy ước "đừng gõ ;" trong
+    tay. (2) dấu ; nằm TRONG thân trigger `BEGIN...END` (migration 005, nhiều
+    statement 1 trigger) — gộp lại các mảnh đã tách trong lúc còn BEGIN chưa
+    khớp END, coi cả khối là 1 statement duy nhất."""
+    cleaned_lines = []
+    for line in sql.splitlines():
+        idx = line.find("--")
+        cleaned_lines.append(line[:idx] if idx != -1 else line)
+    cleaned = "\n".join(cleaned_lines)
+
+    raw_parts = [p.strip() for p in cleaned.split(";")]
+    raw_parts = [p for p in raw_parts if p]
+
+    statements: list[str] = []
+    buf: list[str] = []
+    for part in raw_parts:
+        buf.append(part)
+        combined = "; ".join(buf)
+        opens = len(_BEGIN_RE.findall(combined))
+        closes = len(_END_RE.findall(combined))
+        if opens <= closes:  # không còn BEGIN nào chưa khớp END — statement trọn vẹn
+            statements.append(combined)
+            buf = []
+    if buf:
+        statements.append("; ".join(buf))
+    return statements
 
 
 @dataclass
@@ -140,9 +176,7 @@ class StateStore:
     async def _apply_migrations(self, pending: list[tuple[int, Path]]) -> None:
         conn = self._conn()
         for version, path in pending:
-            statements = [
-                s.strip() for s in path.read_text(encoding="utf-8").split(";") if s.strip()
-            ]
+            statements = _split_sql_statements(path.read_text(encoding="utf-8"))
             for stmt in statements:
                 await conn.execute(stmt)
             await conn.execute(

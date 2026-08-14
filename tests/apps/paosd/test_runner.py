@@ -8,6 +8,7 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
+import aiosqlite
 import httpx
 import pytest
 
@@ -125,3 +126,32 @@ async def test_empty_text_fails_with_invalid_input(client: httpx.AsyncClient) ->
     body = await _wait_for_terminal(client, created["pid"])
     assert body["state"] == "FAILED"
     assert body["error_code"] == "INVALID_INPUT"
+
+
+async def test_error_message_is_redacted_before_persisted(
+    client: httpx.AsyncClient, daemon: Daemon
+) -> None:
+    """workflow_ref do caller tự do đặt — chứng minh redact() thật sự chạy trước
+    khi error_message ghi vào processes.error_json (doc 09 §6, SEC-01, doc 19
+    P-M2-5), không chỉ đúng trên lý thuyết đọc code."""
+    leaked = "sk-abcdefgh12345678"
+    resp = await client.post(
+        "/v1/jobs",
+        json={"intent": "x", "name": "a", "workflow_ref": f"agent:no_such_{leaked}@1"},
+    )
+    created = resp.json()
+
+    body = await _wait_for_terminal(client, created["pid"])
+    assert body["state"] == "FAILED"
+
+    async def _select(conn: aiosqlite.Connection) -> str:
+        cursor = await conn.execute(
+            "SELECT error_json FROM processes WHERE pid = ?", (created["pid"],)
+        )
+        row = await cursor.fetchone()
+        assert row is not None
+        return str(row[0])
+
+    error_json = await daemon.store.read(_select)
+    assert leaked not in error_json
+    assert "***REDACTED***" in error_json

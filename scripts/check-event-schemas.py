@@ -71,6 +71,10 @@ PAST_TENSE_OK = {
     "waiting",
     "compensating",
     "failed_final",
+    # P-M2-5 (doc 09 dòng 49, 56) — tên event lấy NGUYÊN VĂN từ doc 09, cả 2 đều
+    # là thì quá khứ hợp lệ ("bị chặn", "đã được yêu cầu").
+    "blocked",
+    "requested",
 }
 
 errors: list[str] = []

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://schemas/events/permission.approval.requested.v1.schema.json",
+  "title": "permission.approval.requested payload",
+  "description": "doc 09 dòng 56 — hành động CONFIRM cần người dùng duyệt.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["approval_id", "action", "actor", "target"],
+  "properties": {
+    "approval_id": { "type": "string" },
+    "action": { "type": "string" },
+    "actor": { "type": "string" },
+    "target": { "type": "string" }
+  }
+}
