@@ -52,6 +52,21 @@ class StateStore:
         self._write_conn = await aiosqlite.connect(self._db_path, isolation_level=None)
         try:
             await self._bootstrap(existed_before)
+        except sqlite3.DatabaseError as exc:
+            # aiosqlite.connect() không tự validate định dạng file — file hỏng thật
+            # ("file is not a database", "malformed") chỉ lộ ra ở thao tác đọc/ghi
+            # ĐẦU TIÊN bên trong _bootstrap(), sớm hơn _check_integrity() kịp chạy.
+            # sqlite3.DatabaseError là lớp CHA của OperationalError — nhánh
+            # OperationalError trong _bootstrap() (tranh chấp khoá) bắt trước, nhánh
+            # này chỉ còn lại các DatabaseError khác, tức là hỏng file thật (P8: không
+            # để sqlite3.DatabaseError thô rò ra ngoài kernel).
+            await self._write_conn.close()
+            self._write_conn = None
+            raise PaosError(
+                ErrorCode.INTERNAL,
+                f"state.db hỏng, không mở được: {exc}",
+                hint="Khôi phục từ .paos/backups/ hoặc chạy `paosctl doctor --fix`",
+            ) from exc
         except Exception:
             # Kết nối đã mở thành công nhưng bootstrap lỗi — PHẢI đóng lại, nếu
             # không thread nền của aiosqlite (non-daemon) treo cả tiến trình,

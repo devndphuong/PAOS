@@ -27,15 +27,17 @@ from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import timedelta
+from pathlib import Path
 from typing import Any
 
 import aiosqlite
 
+from apps.paosd.cache_store import CacheHit, CacheStore
 from kernel import clock, ids
 from kernel.errors import PaosError
 from kernel.events.bus import EventBus
 from kernel.events.types import EventType
-from kernel.registry.registry import ProviderManifest, Registry
+from kernel.registry.registry import CapabilitySpec, ProviderManifest, Registry
 from kernel.state.db import StateStore
 from sdk.provider import CallContext, ProviderError
 
@@ -87,6 +89,14 @@ class _AttemptOutcome:
     stop: bool = False
 
 
+@dataclass
+class _FallbackOutcome:
+    result: dict[str, Any] | None = None
+    chosen: str | None = None
+    chosen_class: str | None = None
+    error: ProviderError | None = None
+
+
 class Router:
     """Trách nhiệm tầng apps/ (được phép import cả kernel/ và sdk/, doc 17 §1)."""
 
@@ -96,12 +106,14 @@ class Router:
         events: EventBus,
         store: StateStore,
         resource_semaphores: dict[str, asyncio.Semaphore],
+        workspace_root: Path,
     ) -> None:
         self._registry = registry
         self._events = events
         self._store = store
         self._resource_semaphores = resource_semaphores
         self._breakers: dict[str, _BreakerState] = {}
+        self._cache = CacheStore(store, workspace_root / "cache")
 
     async def call(
         self, capability_ref: str, payload: dict[str, Any], process_id: str
@@ -116,27 +128,76 @@ class Router:
                 hint="Kiểm providers/*/provider.yaml có implements đúng capability này",
             )
 
+        spec = self._registry.get_capability(capability_id, version)
         decision_id = ids.new_id("dec")
         candidates = self._classify(manifests)
         eligible = [c for c in candidates if c.eligible]
 
-        result: dict[str, Any] | None = None
-        chosen: str | None = None
-        final_error: ProviderError | None = None
+        if spec.cacheable and spec.cache_key_fields and eligible:
+            found = await self._lookup_cache(spec, capability_id, version, payload, eligible)
+            if found is not None:
+                hit, cache_key = found
+                await self._write_cache_hit_decision(
+                    decision_id, process_id, capability_ref, hit, cache_key
+                )
+                return hit.result
 
+        fb = await self._run_fallback(eligible, decision_id, capability_ref, payload, process_id)
+
+        cache_key: str | None = None
+        if spec.cacheable and spec.cache_key_fields and fb.chosen and fb.chosen_class:
+            cache_key = CacheStore.compute_key(
+                capability_id, version, payload, spec.cache_key_fields, fb.chosen_class
+            )
+
+        rationale = self._rationale(candidates, fb.chosen, fb.error)
+        await self._write_decision(
+            decision_id,
+            process_id,
+            capability_ref,
+            candidates,
+            fb.chosen,
+            rationale,
+            inputs_hash=cache_key,
+        )
+
+        if fb.result is None:
+            raise fb.error or ProviderError(
+                "PROVIDER_DOWN",
+                f"Không có provider nào khả dụng cho {capability_ref}",
+                hint="Kiểm providers/*/provider.yaml: enabled, breaker, adapter",
+                context={"capability": capability_ref},
+            )
+
+        if cache_key is not None and fb.chosen and fb.chosen_class:
+            await self._cache.store(
+                cache_key, capability_id, version, fb.chosen_class, fb.chosen, fb.result
+            )
+        return fb.result
+
+    async def _run_fallback(
+        self,
+        eligible: list[_Candidate],
+        decision_id: str,
+        capability_ref: str,
+        payload: dict[str, Any],
+        process_id: str,
+    ) -> _FallbackOutcome:
+        outcome = _FallbackOutcome()
         for attempt, candidate in enumerate(eligible, start=1):
             if attempt > 1:
                 await self._backoff(attempt)
 
-            outcome = await self._attempt(candidate, capability_ref, payload, process_id)
-            final_error = outcome.error
-            if outcome.result is not None:
-                result = outcome.result
-                chosen = candidate.manifest.provider_id
+            attempt_outcome = await self._attempt(candidate, capability_ref, payload, process_id)
+            outcome.error = attempt_outcome.error
+            if attempt_outcome.result is not None:
+                outcome.result = attempt_outcome.result
+                outcome.chosen = candidate.manifest.provider_id
+                outcome.chosen_class = candidate.manifest.provider_class
                 break
-            if outcome.stop:
+            if attempt_outcome.stop:
                 break  # lỗi input/logic — thử provider khác không giúp gì (doc 06 §2.3)
-            if outcome.error is not None and candidate.eligible:
+            if attempt_outcome.error is not None and candidate.eligible:
                 # Chỉ phát fallback-triggered cho lỗi invoke() retryable thật (candidate
                 # còn eligible) — load thất bại đã ghi rõ LOAD_FAILED trong Decision
                 # Record, không cần thêm event (doc 06 §2.3 nói về lỗi retryable ở invoke).
@@ -146,23 +207,10 @@ class Router:
                     process_id,
                     capability_ref,
                     candidate,
-                    outcome.error,
+                    attempt_outcome.error,
                     next_candidate,
                 )
-
-        rationale = self._rationale(candidates, chosen, final_error)
-        await self._write_decision(
-            decision_id, process_id, capability_ref, candidates, chosen, rationale
-        )
-
-        if result is None:
-            raise final_error or ProviderError(
-                "PROVIDER_DOWN",
-                f"Không có provider nào khả dụng cho {capability_ref}",
-                hint="Kiểm providers/*/provider.yaml: enabled, breaker, adapter",
-                context={"capability": capability_ref},
-            )
-        return result
+        return outcome
 
     async def _attempt(
         self,
@@ -295,12 +343,14 @@ class Router:
         candidates: list[_Candidate],
         chosen: str | None,
         rationale: str,
+        *,
+        inputs_hash: str | None,
     ) -> None:
         async def _insert(conn: aiosqlite.Connection) -> None:
             await conn.execute(
                 "INSERT INTO decisions(decision_id, process_id, scope, question, "
                 "candidates_json, chosen, rationale, policy_version, inputs_hash, created_at) "
-                "VALUES (?, ?, 'provider_selection', ?, ?, ?, ?, 'declared-priority@1', NULL, ?)",
+                "VALUES (?, ?, 'provider_selection', ?, ?, ?, ?, 'declared-priority@1', ?, ?)",
                 (
                     decision_id,
                     process_id,
@@ -308,6 +358,64 @@ class Router:
                     json.dumps([c.to_json() for c in candidates], ensure_ascii=False),
                     chosen,
                     rationale,
+                    inputs_hash,
+                    clock.now().isoformat(),
+                ),
+            )
+
+        await self._store.write(_insert)
+
+    async def _lookup_cache(
+        self,
+        spec: CapabilitySpec,
+        capability_id: str,
+        version: int,
+        payload: dict[str, Any],
+        eligible: list[_Candidate],
+    ) -> tuple[CacheHit, str] | None:
+        """Tra cache theo TỪNG class khác nhau còn xuất hiện trong candidate hợp lệ,
+        đúng thứ tự ưu tiên, dừng ở lần trúng đầu tiên — không chỉ đoán theo candidate
+        #1 (nếu #1 hôm nay là local nhưng lần trước nội dung này được phục vụ bởi
+        cloud, đoán 1 lần sẽ bỏ lỡ oan; chi phí tra thêm gần như 0, PK lookup)."""
+        seen_classes: set[str] = set()
+        for candidate in eligible:
+            provider_class = candidate.manifest.provider_class
+            if provider_class in seen_classes:
+                continue
+            seen_classes.add(provider_class)
+            cache_key = CacheStore.compute_key(
+                capability_id, version, payload, spec.cache_key_fields, provider_class
+            )
+            hit = await self._cache.lookup(cache_key)
+            if hit is not None:
+                return hit, cache_key
+        return None
+
+    async def _write_cache_hit_decision(
+        self,
+        decision_id: str,
+        process_id: str,
+        capability_ref: str,
+        hit: CacheHit,
+        cache_key: str,
+    ) -> None:
+        """scope="cache_hit" mở rộng enum doc 03 dòng 139 (cột KHÔNG có CHECK constraint
+        trong SQL — chỉ là quy ước ghi trong doc). Vẫn ghi Decision Record dù không có
+        candidate nào được xét — bỏ qua sẽ để lại lỗ hổng trong `paosctl explain` cho
+        đúng lượt gọi đó, vi phạm P5/ADR-0014 ("mọi Process sinh trace đầy đủ")."""
+
+        async def _insert(conn: aiosqlite.Connection) -> None:
+            await conn.execute(
+                "INSERT INTO decisions(decision_id, process_id, scope, question, "
+                "candidates_json, chosen, rationale, policy_version, inputs_hash, created_at) "
+                "VALUES (?, ?, 'cache_hit', ?, NULL, ?, ?, 'declared-priority@1', ?, ?)",
+                (
+                    decision_id,
+                    process_id,
+                    f"capability={capability_ref}",
+                    hit.provider_id,
+                    f"Trúng cache — kết quả gốc từ {hit.provider_id} ({hit.provider_class})",
+                    cache_key,
                     clock.now().isoformat(),
                 ),
             )

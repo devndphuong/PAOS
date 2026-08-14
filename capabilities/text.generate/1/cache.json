@@ -1,0 +1,4 @@
+{
+  "cacheable": true,
+  "key_fields": ["prompt", "system", "temperature", "max_tokens", "json_schema"]
+}

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import importlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +33,10 @@ class CapabilitySpec:
     input_schema: dict[str, Any]
     output_schema: dict[str, Any]
     errors: list[str]
+    # cache.json TÙY CHỌN (doc 03 §5.2, P-M2-4) — thiếu file = mặc định KHÔNG cache
+    # (an toàn, không cache khi chưa khai báo rõ field nào tham gia key).
+    cacheable: bool = False
+    cache_key_fields: list[str] = field(default_factory=list)
 
     def validate_input(self, payload: dict[str, Any]) -> None:
         self._validate(payload, self.input_schema, "input")
@@ -196,12 +200,15 @@ class Registry:
     def _load_capability(
         self, capability_id: str, version: int, version_dir: Path
     ) -> CapabilitySpec:
+        cache_meta = self._read_optional_json(version_dir / "cache.json") or {}
         return CapabilitySpec(
             capability_id=capability_id,
             version=version,
             input_schema=self._read_json(version_dir / "input.schema.json"),
             output_schema=self._read_json(version_dir / "output.schema.json"),
             errors=self._read_json(version_dir / "errors.json"),
+            cacheable=cache_meta.get("cacheable", False),
+            cache_key_fields=cache_meta.get("key_fields", []),
         )
 
     def _scan_providers(self) -> list[ProviderManifest]:
@@ -224,4 +231,10 @@ class Registry:
                 hint="Mỗi capability cần đủ input.schema.json, output.schema.json, errors.json",
                 context={"path": str(path)},
             )
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    @staticmethod
+    def _read_optional_json(path: Path) -> Any:
+        if not path.is_file():
+            return None
         return json.loads(path.read_text(encoding="utf-8"))

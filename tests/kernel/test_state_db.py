@@ -93,13 +93,20 @@ async def test_backup_created_before_second_migration(
 
 
 async def test_integrity_check_raises_on_corrupt_db(db_path: Path) -> None:
+    """Phá HẲN toàn bộ nội dung sau trang 1 (4096 byte đầu — header + sqlite_master),
+    không phá 64 byte ở "chính giữa file": kích thước file đổi theo số migration đã
+    áp (P-M2-4 thêm bảng cache_entries khiến "chính giữa" cũ rơi vào vùng chưa dùng,
+    không hỏng gì thật — test từng "pass" mà không kiểm được gì). Phá rộng đảm bảo
+    trúng dữ liệu thật bất kể có bao nhiêu bảng, dù kết quả là mở file thất bại hẳn
+    (sqlite3.DatabaseError, StateStore.start() bọc lại) hay mở được nhưng
+    integrity_check phát hiện — cả 2 đường đều phải ra PaosError(INTERNAL)."""
     store = db.StateStore(db_path)
     await store.start()
     await store.stop()
 
     data = bytearray(db_path.read_bytes())
-    mid = len(data) // 2
-    data[mid : mid + 64] = b"\xff" * 64
+    page_size = 4096
+    data[page_size:] = b"\xff" * (len(data) - page_size)
     db_path.write_bytes(bytes(data))
 
     store2 = db.StateStore(db_path)

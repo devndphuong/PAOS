@@ -136,7 +136,7 @@ Ngoài ra Process có **PID** dạng số nguyên tăng dần (1001, 1002…) đ
   "created_at": "..."
 }
 ```
-`scope` ∈ `workflow_selection | provider_selection | retry | escalation | scheduling | budget`.
+`scope` ∈ `workflow_selection | provider_selection | retry | escalation | scheduling | budget | cache_hit` (`cache_hit` thêm ở P-M2-4 — trúng cache, không có candidate nào được xét, `chosen` = provider_id đã tạo ra kết quả gốc).
 
 ## 3. Schema SQLite
 

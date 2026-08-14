@@ -111,7 +111,7 @@ class Runner:
             name: asyncio.Semaphore(cap) for name, cap in (resource_capacity or {}).items()
         }
         self._running_tasks: dict[str, asyncio.Task[None]] = {}
-        self._router = Router(registry, events, store, self._resource_semaphores)
+        self._router = Router(registry, events, store, self._resource_semaphores, workspace_root)
 
     async def on_process_created(self, envelope: EventEnvelope) -> None:
         """Chạy đồng bộ trong dispatch() — chỉ 2 lần ghi DB, đủ nhanh để không
