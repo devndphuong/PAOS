@@ -5,7 +5,7 @@
 
 PAOS không phải một chatbot có vỏ đẹp. Model AI chỉ là một lớp mỏng (Provider Layer) bên trong một kiến trúc hệ điều hành thật: Kernel · Scheduler · Event Bus · Capability · Agent · Workflow. Đổi model không sửa Kernel. Tài sản tích lũy sau nhiều năm không phải là code, mà là **Operational Knowledge** — xem [doc 07](docs/07-memory-and-knowledge.md) và [doc 20](docs/20-vision-beyond-v1.md).
 
-**Trạng thái:** giai đoạn thiết kế / Ngày 0. Chưa có bản chạy được. Xem tiến độ ở [doc 13 — Roadmap](docs/13-roadmap-and-milestones.md).
+**Trạng thái:** đang triển khai, M0–M3 xong, M4 (Quality & Self-Correction) đang làm dở. `paosd`/`paosctl` chạy được thật — xem [Hướng dẫn sử dụng & Luồng dự án](docs/user-guide.md) và tiến độ ở [doc 13 — Roadmap](docs/13-roadmap-and-milestones.md).
 
 ## 1. Tài liệu là nguồn sự thật
 
@@ -29,12 +29,15 @@ Nguyên tắc: **code lệch tài liệu = bug** ([doc 17 §8](docs/17-contribut
 
 ## 2. Bắt đầu nhanh
 
-Dự án đang ở giai đoạn khung — chưa có gì chạy được để cài đặt. Khi Ngày 0 xong ([doc 18](docs/18-day0-implementation-playbook.md)):
-
 ```bash
-make install   # cài phụ thuộc dev
+make install   # cài phụ thuộc dev (pip install -e ".[dev]")
 make ci        # lint + type + arch + coverage + 6 cổng CI
+
+paosd          # chạy daemon nền, cổng 127.0.0.1:8787
+paosctl doctor # kiểm tra + dùng thử ở terminal khác
 ```
+
+Xem [Hướng dẫn sử dụng & Luồng dự án](docs/user-guide.md) cho danh sách đầy đủ những gì dùng được hôm nay, ví dụ lệnh cụ thể, và sơ đồ kiến trúc/luồng dữ liệu.
 
 Bốn cổng CI không thể tắt ([doc 17 §2](docs/17-contributing-and-coding-standards.md)): Kernel sạch AI · Kernel độc lập · Agent mù provider · Không secret trong log. Nếu bạn thấy mình muốn tắt tạm một cổng để merge nhanh — đó là dấu hiệu dự án bắt đầu chết, không phải dấu hiệu cổng sai.
 
