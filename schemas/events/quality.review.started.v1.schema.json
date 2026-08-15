@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://schemas/events/quality.review.started.v1.schema.json",
+  "title": "quality.review.started payload",
+  "description": "doc 08 §3, P-M4-2 — agents/review/ phát khi bắt đầu chấm 1 lượt (trước khi gọi LLM judge nào).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["rubric"],
+  "properties": {
+    "rubric": { "type": "string", "description": "rubric_id@version, vd script.rubric@1" }
+  }
+}

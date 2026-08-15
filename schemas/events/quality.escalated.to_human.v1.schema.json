@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://schemas/events/quality.escalated.to_human.v1.schema.json",
+  "title": "quality.escalated.to_human payload",
+  "description": "doc 05 §3.4, doc 08 §4 quy tắc 5, P-M4-2 — apps/paosd/workflow_runner.py::_run_self_correction phát khi vòng lặp tự sửa hết lượt/không cải thiện mà vẫn chưa đạt threshold. artifact_id LUÔN trỏ tới bản TỐT NHẤT đã có (không bao giờ trả tay trắng).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["artifact_id", "reason", "best_score", "attempts"],
+  "properties": {
+    "artifact_id": { "type": "string" },
+    "reason": { "type": "string" },
+    "best_score": { "type": "integer", "minimum": 0, "maximum": 100 },
+    "attempts": { "type": "integer", "minimum": 1 }
+  }
+}

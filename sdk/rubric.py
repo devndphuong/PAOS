@@ -452,9 +452,7 @@ async def evaluate(
     extra = extra_context or {}
 
     det_results: dict[str, bool] = {
-        c.id: evaluate_check(c.check, check_ctx)
-        for c in rubric.criteria
-        if c.check is not None
+        c.id: evaluate_check(c.check, check_ctx) for c in rubric.criteria if c.check is not None
     }
 
     fail_fast_hit = next((fid for fid in rubric.fail_fast if not det_results[fid]), None)

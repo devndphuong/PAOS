@@ -17,7 +17,8 @@ import yaml
 from kernel.errors import ErrorCode, PaosError
 from kernel.workflow import expr
 
-_VALID_KINDS = frozenset({"capability", "agent", "parallel"})
+_VALID_KINDS = frozenset({"capability", "agent", "parallel", "self_correction"})
+_SELF_CORRECTION_REQUIRED_FIELDS = ("generate", "review", "rubric", "max_loops")
 _MIN_STEPS_PATH_SEGMENTS = 2
 
 
@@ -65,6 +66,18 @@ class Step:
     # ràng, xem apps/paosd/workflow_runner.py). Step top-level (không trong
     # parallel) CHƯA có ý nghĩa cho field này — thất bại luôn lan lên Process.
     required: bool = True
+    # self_correction (doc 08 §4, P-M4-2) — vòng lặp Generate -> Review CÓ GIỚI
+    # HẠN, CHỈ có ý nghĩa khi kind == "self_correction". KHÔNG tái dùng on_fail
+    # (đó là goto ĐƠN GIẢN, đếm vòng thuần) — 5 quy tắc chống lặp vô ích của
+    # doc 08 §4 (cải thiện >=5 điểm giữa 2 vòng, vòng cuối bắt buộc đổi chiến
+    # lược...) là logic PHỨC TẠP HƠN 1 goto, ADR-0006 nói rõ thứ đó thuộc về
+    # code (apps/paosd/workflow_runner.py::_run_self_correction), không phải
+    # làm phức tạp thêm YAML.
+    generate_ref: str | None = None
+    judge_ref: str | None = None
+    rubric_ref: str | None = None
+    max_loops: int | None = None
+    min_improvement: float = 5.0
 
 
 @dataclass(frozen=True)
@@ -122,6 +135,32 @@ def _parse_step(data: dict[str, Any], *, in_parallel: bool) -> Step:
             )
         sub_steps = tuple(_parse_step(s, in_parallel=True) for s in sub_raw)
         return Step(step_id=data["id"], kind=kind, sub_steps=sub_steps)
+
+    if kind == "self_correction":
+        missing = [f for f in _SELF_CORRECTION_REQUIRED_FIELDS if f not in data]
+        if missing:
+            raise _spec_error(
+                f"Step '{data['id']}' (kind=self_correction) thiếu {missing}",
+                hint="self_correction cần đủ 'generate', 'review', 'rubric', 'max_loops' "
+                "— xem doc 08 §4",
+            )
+        max_loops = int(data["max_loops"])
+        if max_loops < 1:
+            raise _spec_error(
+                f"Step '{data['id']}': max_loops phải >= 1",
+                hint="ADR-0006: mọi vòng lặp phải có giới hạn cụ thể",
+            )
+        return Step(
+            step_id=data["id"],
+            kind=kind,
+            with_=dict(data.get("with", {})),
+            when=data.get("when"),
+            generate_ref=data["generate"],
+            judge_ref=data["review"],
+            rubric_ref=data["rubric"],
+            max_loops=max_loops,
+            min_improvement=float(data.get("min_improvement", 5.0)),
+        )
 
     if "ref" not in data:
         raise _spec_error(
@@ -320,6 +359,16 @@ def _step_to_dict(step: Step) -> dict[str, Any]:
     result: dict[str, Any] = {"id": step.step_id, "kind": step.kind}
     if step.kind == "parallel":
         result["steps"] = [_step_to_dict(s) for s in step.sub_steps]
+        return result
+    if step.kind == "self_correction":
+        result["generate"] = step.generate_ref
+        result["review"] = step.judge_ref
+        result["rubric"] = step.rubric_ref
+        result["max_loops"] = step.max_loops
+        result["min_improvement"] = step.min_improvement
+        result["with"] = step.with_
+        if step.when is not None:
+            result["when"] = step.when
         return result
     result["ref"] = step.ref
     result["with"] = step.with_

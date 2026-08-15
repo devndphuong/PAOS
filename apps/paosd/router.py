@@ -117,8 +117,17 @@ class Router:
         self._cache = CacheStore(store, workspace_root / "cache")
 
     async def call(
-        self, capability_ref: str, payload: dict[str, Any], process_id: str
-    ) -> dict[str, Any]:
+        self,
+        capability_ref: str,
+        payload: dict[str, Any],
+        process_id: str,
+        *,
+        exclude_provider: str | None = None,
+    ) -> tuple[dict[str, Any], str | None]:
+        """Trả về `(result, chosen_provider_id)` — provider_id cần lộ ra ngoài
+        từ P-M4-2 (ADR-0008): caller (`AgentContext.call()`) ghi lại provider
+        đã phục vụ, để tự loại trừ đúng provider đó khi review (`exclude_provider`
+        — "review PHẢI dùng provider khác generator", RSK-10)."""
         capability_id, version_str = capability_ref.split("@")
         version = int(version_str)
         manifests = self._registry.providers_for(capability_id, version)
@@ -131,7 +140,7 @@ class Router:
 
         spec = self._registry.get_capability(capability_id, version)
         decision_id = ids.new_id("dec")
-        candidates = self._classify(manifests)
+        candidates = self._classify(manifests, exclude_provider)
         eligible = [c for c in candidates if c.eligible]
 
         if spec.cacheable and spec.cache_key_fields and eligible:
@@ -141,7 +150,7 @@ class Router:
                 await self._write_cache_hit_decision(
                     decision_id, process_id, capability_ref, hit, cache_key
                 )
-                return hit.result
+                return hit.result, hit.provider_id
 
         fb = await self._run_fallback(eligible, decision_id, capability_ref, payload, process_id)
 
@@ -174,7 +183,7 @@ class Router:
             await self._cache.store(
                 cache_key, capability_id, version, fb.chosen_class, fb.chosen, fb.result
             )
-        return fb.result
+        return fb.result, fb.chosen
 
     async def _run_fallback(
         self,
@@ -280,11 +289,17 @@ class Router:
             },
         )
 
-    def _classify(self, manifests: list[ProviderManifest]) -> list[_Candidate]:
+    def _classify(
+        self, manifests: list[ProviderManifest], exclude_provider: str | None = None
+    ) -> list[_Candidate]:
         candidates: list[_Candidate] = []
         for i, manifest in enumerate(manifests, start=1):
             reason: str | None = None
-            if not manifest.enabled:
+            if manifest.provider_id == exclude_provider:
+                # P-M4-2 (ADR-0008, RSK-10) — review PHẢI dùng provider khác
+                # đã sinh ra artifact đang bị chấm, chống "LLM tự khen mình".
+                reason = "EXCLUDED_GENERATOR"
+            elif not manifest.enabled:
                 reason = "DISABLED"
             elif self._breaker_open(manifest.provider_id):
                 reason = "BREAKER_OPEN"

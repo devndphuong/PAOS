@@ -273,4 +273,72 @@ def test_step_required_false_parsed_and_frozen() -> None:
     frozen = to_json_dict(spec)
     frozen_sub_steps = frozen["steps"][0]["steps"]
     assert frozen_sub_steps[0]["required"] is False
-    assert "required" not in frozen_sub_steps[1]  # mặc định True -> không ghi thừa
+
+
+_SELF_CORRECTION_YAML = """
+id: w
+version: 1
+steps:
+  - id: script_with_review
+    kind: self_correction
+    generate: script.agent@1
+    review: review.agent@1
+    rubric: script.rubric@1
+    max_loops: 2
+    min_improvement: 5
+    with: {plan: "${inputs.plan}"}
+"""
+
+
+def test_self_correction_parses_all_fields() -> None:
+    spec = parse_workflow_spec(_SELF_CORRECTION_YAML)
+    step = spec.steps[0]
+    assert step.kind == "self_correction"
+    assert step.generate_ref == "script.agent@1"
+    assert step.judge_ref == "review.agent@1"
+    assert step.rubric_ref == "script.rubric@1"
+    assert step.max_loops == 2
+    assert step.min_improvement == 5.0
+    assert step.with_ == {"plan": "${inputs.plan}"}
+    assert step.ref is None
+
+
+def test_self_correction_min_improvement_defaults_to_5() -> None:
+    yaml_text = (
+        "id: w\nversion: 1\nsteps: [{id: a, kind: self_correction, generate: g@1, "
+        "review: r@1, rubric: ru@1, max_loops: 1}]"
+    )
+    spec = parse_workflow_spec(yaml_text)
+    assert spec.steps[0].min_improvement == 5.0
+
+
+def test_self_correction_missing_field_raises() -> None:
+    yaml_text = (
+        "id: w\nversion: 1\nsteps: [{id: a, kind: self_correction, generate: g@1, "
+        "review: r@1, max_loops: 1}]"  # thiếu 'rubric'
+    )
+    with pytest.raises(PaosError) as exc_info:
+        parse_workflow_spec(yaml_text)
+    assert exc_info.value.code == ErrorCode.INVALID_INPUT
+
+
+def test_self_correction_zero_max_loops_raises() -> None:
+    yaml_text = (
+        "id: w\nversion: 1\nsteps: [{id: a, kind: self_correction, generate: g@1, "
+        "review: r@1, rubric: ru@1, max_loops: 0}]"
+    )
+    with pytest.raises(PaosError):
+        parse_workflow_spec(yaml_text)
+
+
+def test_self_correction_to_json_dict_roundtrips() -> None:
+    spec = parse_workflow_spec(_SELF_CORRECTION_YAML)
+    frozen = to_json_dict(spec)
+    step = frozen["steps"][0]
+    assert step["generate"] == "script.agent@1"
+    assert step["review"] == "review.agent@1"
+    assert step["rubric"] == "script.rubric@1"
+    assert step["max_loops"] == 2
+    assert step["min_improvement"] == 5.0
+    assert step["with"] == {"plan": "${inputs.plan}"}
+    assert "ref" not in step

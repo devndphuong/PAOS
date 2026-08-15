@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://schemas/events/quality.review.passed.v1.schema.json",
+  "title": "quality.review.passed payload",
+  "description": "doc 05 §3.4, doc 08 §3, P-M4-2 — agents/review/ phát khi score >= rubric.threshold.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["score", "breakdown"],
+  "properties": {
+    "score": { "type": "integer", "minimum": 0, "maximum": 100 },
+    "breakdown": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["criterion", "score", "skipped"],
+        "properties": {
+          "criterion": { "type": "string" },
+          "score": { "type": "number", "minimum": 0, "maximum": 100 },
+          "skipped": { "type": "boolean" }
+        }
+      }
+    }
+  }
+}

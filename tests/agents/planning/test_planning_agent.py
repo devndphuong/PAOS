@@ -36,8 +36,10 @@ async def _noop_persist(artifact: Artifact) -> None:
     pass
 
 
-async def _noop_call(capability_ref: str, payload: dict) -> dict:
-    return {"text": "kết quả giả"}
+async def _noop_call(
+    capability_ref: str, payload: dict, exclude_provider: str | None = None
+) -> tuple[dict, str | None]:
+    return {"text": "kết quả giả"}, None
 
 
 async def _noop_emit(event_type: str, payload: dict) -> None:
@@ -122,7 +124,9 @@ async def test_planning_full_lifecycle_all_6_steps(store: StateStore, tmp_path: 
     registry.load()
     stub = StubAdapter()
 
-    async def call_capability(capability_ref: str, payload: dict) -> dict:
+    async def call_capability(
+        capability_ref: str, payload: dict, exclude_provider: str | None = None
+    ) -> tuple[dict, str | None]:
         cap_id, version = capability_ref.split("@")
         providers = registry.providers_for(cap_id, int(version))
         assert any(p.provider_id == "stub.deterministic" for p in providers)
@@ -135,7 +139,7 @@ async def test_planning_full_lifecycle_all_6_steps(store: StateStore, tmp_path: 
             privacy_class="private",
             cancel_token=asyncio.Event(),
         )
-        return await stub.invoke(capability_ref, payload, call_ctx)
+        return await stub.invoke(capability_ref, payload, call_ctx), None
 
     events = EventBus(store)
     received = []

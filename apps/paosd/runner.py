@@ -436,8 +436,12 @@ class Runner:
         await agent.publish(exec_result)
 
     def _make_call_capability(self, process_id: str) -> CallCapability:
-        async def call_capability(capability_ref: str, payload: dict[str, Any]) -> dict[str, Any]:
-            return await self._router.call(capability_ref, payload, process_id)
+        async def call_capability(
+            capability_ref: str, payload: dict[str, Any], exclude_provider: str | None
+        ) -> tuple[dict[str, Any], str | None]:
+            return await self._router.call(
+                capability_ref, payload, process_id, exclude_provider=exclude_provider
+            )
 
         return call_capability
 

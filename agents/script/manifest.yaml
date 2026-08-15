@@ -5,4 +5,5 @@ produces: [script]
 capabilities: [text.generate@1]
 emits: [script.created]
 checkpointable: false
+quality_rubric: script.rubric@1
 entry: agents.script.agent:ScriptAgent

@@ -21,8 +21,10 @@ _TEST_MANIFEST = AgentManifest(
 )
 
 
-async def _noop_call(capability_ref: str, payload: dict) -> dict:
-    return {}
+async def _noop_call(
+    capability_ref: str, payload: dict, exclude_provider: str | None = None
+) -> tuple[dict, str | None]:
+    return {}, None
 
 
 async def _noop_emit(event_type: str, payload: dict) -> None:

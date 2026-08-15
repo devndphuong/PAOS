@@ -32,8 +32,10 @@ async def _noop_persist(artifact: Artifact) -> None:
     pass
 
 
-async def _noop_call(capability_ref: str, payload: dict) -> dict:
-    return {"audio": {"placeholder_text": "kết quả giả", "duration_sec": 1.0}}
+async def _noop_call(
+    capability_ref: str, payload: dict, exclude_provider: str | None = None
+) -> tuple[dict, str | None]:
+    return {"audio": {"placeholder_text": "kết quả giả", "duration_sec": 1.0}}, None
 
 
 async def _noop_emit(event_type: str, payload: dict) -> None:
@@ -111,7 +113,9 @@ async def test_voice_full_lifecycle_all_6_steps(store: StateStore, tmp_path: Pat
     registry.load()
     stub = StubVoiceAdapter()
 
-    async def call_capability(capability_ref: str, payload: dict) -> dict:
+    async def call_capability(
+        capability_ref: str, payload: dict, exclude_provider: str | None = None
+    ) -> tuple[dict, str | None]:
         cap_id, version = capability_ref.split("@")
         providers = registry.providers_for(cap_id, int(version))
         assert any(p.provider_id == "stub.voice" for p in providers)
@@ -124,7 +128,7 @@ async def test_voice_full_lifecycle_all_6_steps(store: StateStore, tmp_path: Pat
             privacy_class="private",
             cancel_token=asyncio.Event(),
         )
-        return await stub.invoke(capability_ref, payload, call_ctx)
+        return await stub.invoke(capability_ref, payload, call_ctx), None
 
     events = EventBus(store)
     received = []

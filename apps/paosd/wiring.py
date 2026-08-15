@@ -81,6 +81,7 @@ async def build_daemon(
         _REPO_ROOT / "providers",
         _REPO_ROOT / "workflows",
         _REPO_ROOT / "agents",
+        rubrics_dir=_REPO_ROOT / "rubrics",
     )
     registry.load()
     for provider_id, adapter in (adapter_overrides or {}).items():

@@ -166,13 +166,55 @@ async def test_call_succeeds_and_records_decision(
     # provider còn lại CỐ Ý không preload — không được thử vì cái đầu đã thành công.
 
     router = Router(two_provider_registry, events, store, {}, tmp_path)
-    result = await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
+    result, _ = await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
 
     assert result == {"text": "ok-1"}
     decision = await _latest_decision(store)
     assert decision["chosen"] == first_id
     assert decision["scope"] == "provider_selection"
     assert "ưu tiên #1" in decision["rationale"]
+
+
+async def test_exclude_provider_routes_to_next_candidate(
+    two_provider_registry: Registry, events: EventBus, store: StateStore, tmp_path: Path
+) -> None:
+    """P-M4-2 (ADR-0008, RSK-10) — exclude_provider loại candidate đó ra khỏi
+    ứng viên, KHÔNG cần nó lỗi/breaker mở, để Review Agent tránh dùng cùng
+    provider đã sinh artifact đang chấm."""
+    manifests = two_provider_registry.providers_for("text.generate", 1)
+    first_id, second_id = manifests[0].provider_id, manifests[1].provider_id
+    two_provider_registry.preload_adapter(first_id, _FakeAdapter())
+    two_provider_registry.preload_adapter(second_id, _FakeAdapter())
+
+    router = Router(two_provider_registry, events, store, {}, tmp_path)
+    _, chosen = await router.call(
+        "text.generate@1", {"prompt": "x"}, "proc_1", exclude_provider=first_id
+    )
+
+    assert chosen == second_id
+    decision = await _latest_decision(store)
+    candidates = json.loads(decision["candidates_json"])
+    excluded = next(c for c in candidates if c["id"] == first_id)
+    assert excluded["eligible"] is False
+    assert excluded["reason"] == "EXCLUDED_GENERATOR"
+
+
+async def test_exclude_provider_leaving_zero_candidates_raises(
+    events: EventBus, store: StateStore, tmp_path: Path
+) -> None:
+    caps_dir = tmp_path / "capabilities"
+    providers_dir = tmp_path / "providers"
+    _write_fixture_capability(caps_dir)
+    _write_provider(providers_dir, "provider.solo", "provider_solo")
+    reg = Registry(caps_dir, providers_dir)
+    reg.load()
+    reg.preload_adapter("provider.solo", _FakeAdapter())
+
+    router = Router(reg, events, store, {}, tmp_path)
+    with pytest.raises(ProviderError):
+        await router.call(
+            "text.generate@1", {"prompt": "x"}, "proc_1", exclude_provider="provider.solo"
+        )
 
 
 async def test_fallback_to_second_provider_on_retryable_error(
@@ -194,7 +236,7 @@ async def test_fallback_to_second_provider_on_retryable_error(
     events.subscribe("test", "capability.fallback.triggered", _on_fallback)
 
     router = Router(two_provider_registry, events, store, {}, tmp_path)
-    result = await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
+    result, _ = await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
 
     assert result == {"text": "ok-1"}
     assert failing.calls == 1
@@ -243,7 +285,7 @@ async def test_load_failure_falls_through_to_next_candidate(
     # first_id CỐ Ý không preload -> Registry.load_adapter() raise thật (thiếu adapter:).
 
     router = Router(two_provider_registry, events, store, {}, tmp_path)
-    result = await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
+    result, _ = await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
 
     assert result == {"text": "ok-1"}
     assert succeeding.calls == 1
@@ -270,7 +312,7 @@ async def test_disabled_provider_is_excluded_as_candidate(
     reg.preload_adapter("provider.ok", ok_adapter)
 
     router = Router(reg, events, store, {}, tmp_path)
-    result = await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
+    result, _ = await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
 
     assert result == {"text": "ok-1"}
     assert ok_adapter.calls == 1
@@ -369,7 +411,7 @@ async def test_breaker_opens_after_3_failures_then_recovers(
     # Qua mốc 60s: HALF_OPEN — cho thử lại 1 lần, lần này cho thành công.
     fake_clock.advance(61)
     adapter.fail_times = 0
-    result = await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
+    result, _ = await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
     assert result == {"text": "ok-4"}
     assert adapter.calls == 4
 
@@ -388,8 +430,8 @@ async def test_cache_hit_skips_provider_and_records_cache_hit_decision(
     reg.preload_adapter("provider.solo", adapter)
     router = Router(reg, events, store, {}, tmp_path)
 
-    first = await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
-    second = await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
+    first, _ = await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
+    second, _ = await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
 
     assert first == second == {"text": "ok-1"}
     assert adapter.calls == 1  # lần 2 KHÔNG gọi adapter — trúng cache

@@ -1,0 +1,26 @@
+# Script Agent tự sửa có giám sát (doc 08 §4, P-M4-2): Review Agent chấm điểm
+# bằng script.rubric@1, tối đa 3 lần thử, dùng để chứng minh cơ chế
+# self_correction hoạt động thật — KHÔNG phải nhánh chính thức của UC1 (đó vẫn
+# là workflows/video.plan_and_script/, chưa nối self_correction vào đó ở lát
+# này, xem docs/backlog.md BL-008).
+id: script_with_review
+version: 1
+description: >
+  Script Agent -> Review Agent, vòng lặp tự sửa có giới hạn (doc 08 §4).
+inputs:
+  plan: {type: string, required: true}
+
+steps:
+  - id: script_with_review
+    kind: self_correction
+    generate: script.agent@1
+    review: review.agent@1
+    rubric: script.rubric@1
+    max_loops: 2
+    min_improvement: 5
+    with: {plan: "${inputs.plan}"}
+
+outputs:
+  text: "${steps.script_with_review.output.text}"
+  score: "${steps.script_with_review.output.score}"
+  escalated: "${steps.script_with_review.output.escalated}"

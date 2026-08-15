@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://schemas/events/quality.review.rejected.v1.schema.json",
+  "title": "quality.review.rejected payload",
+  "description": "doc 05 §3.4, doc 08 §3, P-M4-2 — agents/review/ phát khi score < rubric.threshold. feedback theo đúng hình dạng doc 08 §3 (score/verdict/failed/keep).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["score", "failed_criteria", "feedback"],
+  "properties": {
+    "score": { "type": "integer", "minimum": 0, "maximum": 100 },
+    "failed_criteria": { "type": "array", "items": { "type": "string" } },
+    "feedback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["score", "verdict", "failed", "keep"],
+      "properties": {
+        "score": { "type": "integer" },
+        "verdict": { "type": "string", "enum": ["pass", "reject"] },
+        "failed": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["criterion", "score", "issue", "suggestion", "location"],
+            "properties": {
+              "criterion": { "type": "string" },
+              "score": { "type": "number" },
+              "issue": { "type": ["string", "null"] },
+              "suggestion": { "type": ["string", "null"] },
+              "location": { "type": ["string", "null"] }
+            }
+          }
+        },
+        "keep": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}

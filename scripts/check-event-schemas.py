@@ -83,6 +83,12 @@ PAST_TENSE_OK = {
     # P-M3-5 — "rendered" (video.rendered), thì quá khứ hợp lệ, lấy nguyên văn
     # từ doc 05 §3.4 (đã định sẵn từ đầu dự án).
     "rendered",
+    # P-M4-2 — "to_human" (quality.escalated.to_human), lấy NGUYÊN VĂN từ doc 05
+    # §3.4 (đã định sẵn từ đầu dự án, cùng tiền lệ "progress"/"planning"): mô tả
+    # ĐÍCH ĐẾN của hành động escalate (giao cho người), không phải bản thân hành
+    # động (đó là "escalated", đã có sẵn trong danh sách) — bịa một động từ quá
+    # khứ khác cho riêng cụm "to_human" sẽ gượng ép hơn giữ nguyên.
+    "to_human",
 }
 
 errors: list[str] = []

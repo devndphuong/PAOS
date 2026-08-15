@@ -73,3 +73,13 @@ class EventType(StrEnum):
     # Permission Guard (doc 09 §2/§3/§4, doc 19 P-M2-5).
     PERMISSION_VIOLATION_BLOCKED = "permission.violation.blocked"
     PERMISSION_APPROVAL_REQUESTED = "permission.approval.requested"
+
+    # Quality & Self-Correction (doc 05 §3.4, doc 08 §3/§4, doc 19 P-M4-2) —
+    # agents/review/ (Review Agent) là caller thật đầu tiên cho 3 event đầu;
+    # QUALITY_ESCALATED_TO_HUMAN do apps/paosd/workflow_runner.py::_run_self_correction
+    # phát (quyết định VÒNG LẶP, không phải 1 lượt chấm — không thuộc về Review
+    # Agent, xem docstring agents/review/agent.py).
+    QUALITY_REVIEW_STARTED = "quality.review.started"
+    QUALITY_REVIEW_PASSED = "quality.review.passed"
+    QUALITY_REVIEW_REJECTED = "quality.review.rejected"
+    QUALITY_ESCALATED_TO_HUMAN = "quality.escalated.to_human"

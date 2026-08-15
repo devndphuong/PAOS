@@ -132,14 +132,21 @@ class Registry:
         providers_dir: Path,
         workflows_dir: Path | None = None,
         agents_dir: Path | None = None,
+        rubrics_dir: Path | None = None,
     ) -> None:
-        """`workflows_dir`/`agents_dir` tùy chọn (mặc định None = chưa cấu hình)
-        — thêm sau capabilities/providers (P-M3-2, P-M3-4), giữ optional để
-        không phá vỡ 20+ chỗ gọi `Registry(caps_dir, providers_dir)` đã có từ M0-M2."""
+        """`workflows_dir`/`agents_dir`/`rubrics_dir` tùy chọn (mặc định None =
+        chưa cấu hình) — thêm sau capabilities/providers (P-M3-2, P-M3-4, P-M4-2),
+        giữ optional để không phá vỡ 20+ chỗ gọi `Registry(caps_dir, providers_dir)`
+        đã có từ M0-M2. `rubrics_dir` KHÔNG quét lúc `load()` như capabilities/
+        providers/agents — rubric YAML nạp LAZY qua `rubric_path()` (giống
+        `get_workflow()`, doc 19 P-M3-2: số lượng rubric nhỏ, parse rẻ) và
+        Registry chỉ trả về `Path`, KHÔNG parse (đó là `sdk.rubric.load_rubric()`
+        — Kernel không được import `sdk/`, xem MNT-06)."""
         self._capabilities_dir = capabilities_dir
         self._providers_dir = providers_dir
         self._workflows_dir = workflows_dir
         self._agents_dir = agents_dir
+        self._rubrics_dir = rubrics_dir
         self._capabilities: dict[str, CapabilitySpec] = {}
         self._providers: list[ProviderManifest] = []
         self._providers_by_id: dict[str, ProviderManifest] = {}
@@ -194,6 +201,28 @@ class Registry:
                 context={"workflow_id": workflow_id, "version": version},
             )
         return parse_workflow_spec(path.read_text(encoding="utf-8"))
+
+    def rubric_path(self, rubric_id: str, version: int) -> Path:
+        """Trả về đường dẫn `rubrics/<id>.v<version>.yaml` (doc 08 §2 ví dụ
+        đường dẫn) — CHỈ trả `Path`, không parse (parse là `sdk.rubric.load_rubric()`,
+        Kernel không được import `sdk/`, xem docstring `__init__`). LAZY, không
+        cache — cùng lý do `get_workflow()`."""
+        if self._rubrics_dir is None:
+            raise PaosError(
+                ErrorCode.NOT_FOUND,
+                f"Registry chưa cấu hình rubrics_dir — không tìm được rubric {rubric_id}@{version}",
+                hint="Truyền rubrics_dir cho Registry(...) nếu Process này cần chấm điểm rubric",
+                context={"rubric_id": rubric_id, "version": version},
+            )
+        path = self._rubrics_dir / f"{rubric_id}.v{version}.yaml"
+        if not path.is_file():
+            raise PaosError(
+                ErrorCode.NOT_FOUND,
+                f"Rubric {rubric_id}@{version} chưa đăng ký",
+                hint=f"Kiểm file rubrics/{rubric_id}.v{version}.yaml có tồn tại không",
+                context={"rubric_id": rubric_id, "version": version},
+            )
+        return path
 
     def providers_for(self, capability_id: str, version: int) -> list[ProviderManifest]:
         return [p for p in self._providers if p.implements_capability(capability_id, version)]

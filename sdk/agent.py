@@ -124,6 +124,12 @@ class ValidationResult:
 class Plan:
     prompt: str
     task_class: str | None = None
+    # "chừa cột" (doc 18 §10, cùng tiền lệ AgentManifest.resources ở M0) — dữ
+    # liệu có cấu trúc cần mang từ think() sang execute() mà không gói gọn
+    # được trong 1 chuỗi prompt (P-M4-2, agents/review/: cần cả RubricSpec lẫn
+    # text gốc, không chỉ 1 prompt). Agent cũ không set field này, mặc định
+    # rỗng — hoàn toàn tương thích ngược.
+    context: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -156,7 +162,15 @@ class Agent(Protocol):
 
 
 PersistArtifact = Callable[[Artifact], Awaitable[None]]
-CallCapability = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
+# (capability_ref, payload, exclude_provider) -> (result, chosen_provider_id).
+# `exclude_provider` thêm ở P-M4-2 (ADR-0008, RSK-10) — Router cưỡng chế LLM
+# judge không được dùng CÙNG provider đã sinh ra artifact đang bị chấm.
+# `chosen_provider_id` cho AgentContext biết ai đã phục vụ lượt gọi vừa rồi
+# (AgentContext.last_provider_id) — cần để Script Agent tự ghi lại provider
+# đã sinh ra mình, cho Review Agent loại trừ đúng ở lượt review kế tiếp.
+CallCapability = Callable[
+    [str, dict[str, Any], "str | None"], Awaitable[tuple[dict[str, Any], "str | None"]]
+]
 EmitEvent = Callable[[str, dict[str, Any]], Awaitable[None]]
 ReportProgress = Callable[[float, str], Awaitable[None]]
 WriteCheckpoint = Callable[[dict[str, Any]], Awaitable[int]]
@@ -203,15 +217,28 @@ class AgentContext:
         self._emit_event = emit_event
         self._report_progress = report_progress
         self._write_checkpoint = write_checkpoint
+        self._last_provider_id: str | None = None
 
-    async def call(self, capability_ref: str, payload: dict[str, Any]) -> dict[str, Any]:
+    async def call(
+        self, capability_ref: str, payload: dict[str, Any], *, exclude_provider: str | None = None
+    ) -> dict[str, Any]:
         if capability_ref not in self._manifest.capabilities:
             raise AgentError(
                 ErrorCode.PERMISSION_DENIED,
                 f"Agent {self._manifest.agent_id} không khai báo capability {capability_ref}",
                 hint=f"Thêm '{capability_ref}' vào capabilities trong manifest.yaml của agent",
             )
-        return await self._call_capability(capability_ref, payload)
+        result, provider_id = await self._call_capability(capability_ref, payload, exclude_provider)
+        self._last_provider_id = provider_id
+        return result
+
+    @property
+    def last_provider_id(self) -> str | None:
+        """Provider đã phục vụ lượt `call()` gần nhất (P-M4-2) — Script Agent
+        dùng để tự ghi lại `generator_provider` vào `ExecResult.data`, cho
+        Review Agent loại trừ đúng provider đó (ADR-0008, `exclude_provider`).
+        `None` nếu chưa gọi `call()` lần nào."""
+        return self._last_provider_id
 
     async def emit(self, event_type: str, payload: dict[str, Any]) -> None:
         if event_type not in self._manifest.emits:
