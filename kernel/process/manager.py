@@ -57,6 +57,9 @@ _VALID_TRANSITIONS: dict[ProcessState, frozenset[ProcessState]] = {
     ProcessState.CANCELLED: frozenset(),
 }
 
+_PROGRESS_MAX = 100.0
+_PROGRESS_THROTTLE_SEC = 1.0
+
 _PROCESS_COLUMNS = (
     "process_id, pid, job_id, name, workflow_ref, state, progress, "
     "checkpoint_seq, started_at, ended_at, error_code, error_json"
@@ -167,6 +170,11 @@ class ProcessManager:
     def __init__(self, store: StateStore, events: EventBus) -> None:
         self._store = store
         self._events = events
+        # Throttle progress event ≤1/giây/process (doc 05 §3.1). Bộ nhớ trong
+        # tiến trình, KHÔNG bền — reset qua restart là chấp nhận được, đây chỉ
+        # là throttle UX, không phải nguồn sự thật (cột processes.progress mới
+        # là nguồn sự thật, luôn cập nhật đồng bộ với event, xem report_progress()).
+        self._last_progress_emit: dict[str, datetime] = {}
 
     async def create(
         self, *, intent: str, spec: dict[str, Any], name: str, workflow_ref: str, priority: int = 5
@@ -324,6 +332,52 @@ class ProcessManager:
         await self._events.dispatch(envelope)
         return process
 
+    async def report_progress(self, process_id: str, pct: float, message: str) -> None:
+        """AgentContext.progress() (P-M3-1, doc 04 §3.3 quy tắc 4) nối tới đây qua
+        Runner. Cột `processes.progress` LUÔN cập nhật ngay trong transaction —
+        GET /v1/processes/{pid} luôn thấy % mới nhất. Event `kernel.process.progress`
+        bị throttle ≤1/giây/process (doc 05 §3.1) — bỏ bớt event không làm mất
+        thông tin vì cột progress đã là nguồn sự thật; luôn phát ở mốc 100% dù
+        có throttle, để subscriber không bỏ lỡ tín hiệu "xong"."""
+        now = clock.now()
+        last = self._last_progress_emit.get(process_id)
+        should_emit = (
+            last is None
+            or pct >= _PROGRESS_MAX
+            or (now - last).total_seconds() >= _PROGRESS_THROTTLE_SEC
+        )
+
+        async def _report(conn: aiosqlite.Connection) -> Any:
+            cursor = await conn.execute(
+                "SELECT pid FROM processes WHERE process_id = ?", (process_id,)
+            )
+            row = await cursor.fetchone()
+            if row is None:
+                raise PaosError(
+                    ErrorCode.NOT_FOUND,
+                    f"Process {process_id} không tồn tại",
+                    hint="Kiểm lại process_id",
+                    context={"process_id": process_id},
+                )
+            pid = int(row[0])
+            await conn.execute(
+                "UPDATE processes SET progress = ? WHERE process_id = ?", (pct, process_id)
+            )
+            if not should_emit:
+                return None
+            return await self._events.build_and_insert(
+                conn,
+                EventType.PROCESS_PROGRESS.value,
+                source="kernel.process",
+                payload={"pid": pid, "progress": pct, "message": message},
+                process_id=process_id,
+            )
+
+        envelope = await self._store.write(_report)
+        if envelope is not None:
+            self._last_progress_emit[process_id] = now
+            await self._events.dispatch(envelope)
+
     async def write_checkpoint(self, process_id: str, state: dict[str, Any]) -> int:
         """Ghi 1 checkpoint (doc 19 P-M1-4). `state` là dữ liệu tối thiểu để
         resume — ở M1, Process = đúng 1 agent nên chỉ cần đánh dấu "đã vào
@@ -366,6 +420,25 @@ class ProcessManager:
         seq, envelope = await self._store.write(_write)
         await self._events.dispatch(envelope)
         return seq
+
+    async def get_latest_checkpoint(self, process_id: str) -> dict[str, Any] | None:
+        """Đọc checkpoint mới nhất — Runner (P-M3-1, doc 04 §3.1) dùng để quyết
+        định gọi `agent.resume()` hay chạy lại từ đầu. seq=1 luôn là mốc
+        "phase: running" ghi lúc QUEUED->RUNNING (`_run_one()`), KHÔNG phải
+        trạng thái agent tự ghi — caller tự phân biệt qua `seq > 1`."""
+
+        async def _get(conn: aiosqlite.Connection) -> dict[str, Any] | None:
+            cursor = await conn.execute(
+                "SELECT seq, state_json FROM checkpoints WHERE process_id = ? "
+                "ORDER BY seq DESC LIMIT 1",
+                (process_id,),
+            )
+            row = await cursor.fetchone()
+            if row is None:
+                return None
+            return {"seq": int(row[0]), "state": json.loads(row[1])}
+
+        return await self._store.read(_get)
 
     async def get(self, process_id: str) -> Process | None:
         async def _get(conn: aiosqlite.Connection) -> Process | None:

@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://schemas/events/kernel.process.progress.v1.schema.json",
+  "title": "kernel.process.progress payload",
+  "description": "P-M3-1 (doc 19) — doc 05 §3.1 có tên event này từ đầu nhưng ghi rõ 'chưa phát ở M1'; AgentContext.progress() là caller thật đầu tiên. Throttle ≤1 event/giây/process ở kernel/process/manager.py::report_progress — cột processes.progress luôn cập nhật, chỉ event bị bỏ bớt.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["pid", "progress", "message"],
+  "properties": {
+    "pid": { "type": "integer", "minimum": 1 },
+    "progress": { "type": "number", "minimum": 0, "maximum": 100 },
+    "message": { "type": "string" }
+  }
+}

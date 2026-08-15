@@ -61,7 +61,17 @@ from kernel.process.manager import Process, ProcessManager, ProcessState
 from kernel.redact import redact, redact_deep
 from kernel.registry.registry import Registry
 from kernel.state.db import StateStore
-from sdk.agent import Agent, AgentContext, AgentError, Artifact, CallCapability, EmitEvent
+from sdk.agent import (
+    Agent,
+    AgentContext,
+    AgentError,
+    Artifact,
+    CallCapability,
+    EmitEvent,
+    ExecResult,
+    ReportProgress,
+    WriteCheckpoint,
+)
 from sdk.provider import ErrorCode as SdkErrorCode
 from sdk.provider import ProviderError
 
@@ -221,13 +231,16 @@ class Runner:
 
         workflow_ref = process.workflow_ref
         match = _AGENTS.get(workflow_ref)
+        # Đã ở RUNNING TRƯỚC khi vào đây == vừa được đưa lại hàng đợi sau crash
+        # (`enqueue_existing()`, doc 19 P-M1-4), KHÔNG phải job mới. Đây là điều
+        # kiện DUY NHẤT để cân nhắc resume() thay vì chạy lại từ đầu (P-M3-1).
+        was_resuming = process.state is ProcessState.RUNNING
 
         if process.state is ProcessState.QUEUED:
             await self._manager.transition(process_id, ProcessState.RUNNING)
             await self._manager.write_checkpoint(process_id, {"phase": "running"})
         # Nếu ĐÃ ở RUNNING (resume sau crash — doc 19 P-M1-4), không transition lại:
-        # đây là CÙNG một lượt RUNNING từ trước khi daemon chết, chỉ chạy lại agent
-        # từ đầu vì Process = 1 agent, không có tiến độ nội bộ để resume giữa chừng.
+        # đây là CÙNG một lượt RUNNING từ trước khi daemon chết.
 
         if match is None:
             await self._manager.transition(
@@ -242,7 +255,21 @@ class Runner:
         payload = await self._load_created_payload(process_id)
         spec = payload.get("spec", {})
         try:
-            await self._run_agent(agent, prompts_dir, process_id, spec)
+            # checkpoint_seq=1 là mốc "phase: running" ghi ở trên (không phải
+            # trạng thái nội bộ thật của agent) — chỉ resume() thật khi agent tự
+            # ghi checkpoint (seq > 1) qua ctx.checkpoint() VÀ khai báo
+            # checkpointable: true. Không đủ cả hai -> chạy lại từ đầu như M1-4,
+            # đúng "an toàn hơn là sai" (agent không checkpointable không có gì
+            # để resume từ đó).
+            checkpoint = (
+                await self._manager.get_latest_checkpoint(process_id)
+                if was_resuming and agent.manifest.checkpointable
+                else None
+            )
+            if checkpoint is not None and checkpoint["seq"] > 1:
+                await self._resume_agent(agent, prompts_dir, process_id, checkpoint["state"])
+            else:
+                await self._run_agent(agent, prompts_dir, process_id, spec)
         except (AgentError, ProviderError, PaosError) as exc:
             # redact() ở đây (doc 09 §6, SEC-01) — error_message có thể echo lại nội
             # dung từ provider/agent thật (vd lỗi HTTP kèm header), chưa chắc đã qua
@@ -275,10 +302,10 @@ class Runner:
                 return envelope.payload
         return {}
 
-    async def _run_agent(
-        self, agent: Agent, prompts_dir: Path, process_id: str, spec: dict[str, Any]
-    ) -> None:
-        ctx = AgentContext(
+    def _build_agent_context(
+        self, agent: Agent, prompts_dir: Path, process_id: str
+    ) -> AgentContext:
+        return AgentContext(
             process_id=process_id,
             task_id=None,
             workspace_dir=self._workspace_root,
@@ -288,7 +315,14 @@ class Runner:
             persist_artifact=self._persist_artifact,
             call_capability=self._make_call_capability(process_id),
             emit_event=self._make_emit_event(process_id, agent.manifest.agent_id),
+            report_progress=self._make_report_progress(process_id),
+            write_checkpoint=self._make_write_checkpoint(process_id),
         )
+
+    async def _run_agent(
+        self, agent: Agent, prompts_dir: Path, process_id: str, spec: dict[str, Any]
+    ) -> None:
+        ctx = self._build_agent_context(agent, prompts_dir, process_id)
         await agent.initialize(ctx)
 
         validation = await agent.validate(spec)
@@ -301,7 +335,20 @@ class Runner:
 
         plan = await agent.think(spec)
         exec_result = await agent.execute(plan)
+        await self._finish_agent(agent, exec_result)
 
+    async def _resume_agent(
+        self, agent: Agent, prompts_dir: Path, process_id: str, checkpoint_state: dict[str, Any]
+    ) -> None:
+        """Chỉ gọi khi `agent.manifest.checkpointable` và có checkpoint seq > 1
+        (doc 04 §3.1, P-M3-1) — bỏ qua validate()/think()/execute(), agent tự
+        biết cách dựng lại ExecResult từ trạng thái đã checkpoint."""
+        ctx = self._build_agent_context(agent, prompts_dir, process_id)
+        await agent.initialize(ctx)
+        exec_result = await agent.resume(checkpoint_state)
+        await self._finish_agent(agent, exec_result)
+
+    async def _finish_agent(self, agent: Agent, exec_result: ExecResult) -> None:
         review = await agent.review(exec_result)
         if not review.passed:
             raise AgentError(
@@ -328,6 +375,18 @@ class Runner:
             )
 
         return emit_event
+
+    def _make_report_progress(self, process_id: str) -> ReportProgress:
+        async def report_progress(pct: float, message: str) -> None:
+            await self._manager.report_progress(process_id, pct, message)
+
+        return report_progress
+
+    def _make_write_checkpoint(self, process_id: str) -> WriteCheckpoint:
+        async def write_checkpoint(state: dict[str, Any]) -> int:
+            return await self._manager.write_checkpoint(process_id, state)
+
+        return write_checkpoint
 
     async def _persist_artifact(self, artifact: Artifact) -> None:
         # redact() cho path (tên/đường dẫn artifact — 1 vị trí doc 19 P-M2-5 nêu tên)

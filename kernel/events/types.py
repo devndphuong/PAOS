@@ -29,6 +29,9 @@ class EventType(StrEnum):
     PROCESS_COMPENSATING = "kernel.process.compensating"
     PROCESS_FAILED_FINAL = "kernel.process.failed_final"
     PROCESS_CANCELLED = "kernel.process.cancelled"
+    # doc 05 §3.1 dòng "throttle ≤1/giây — chưa phát ở M1" — thêm thật ở
+    # P-M3-1 khi AgentContext.progress() có caller đầu tiên.
+    PROCESS_PROGRESS = "kernel.process.progress"
 
     # Domain event do plugin/agent tự định nghĩa qua manifest.emits (doc 05 §3.4).
     SUMMARY_CREATED = "summary.created"

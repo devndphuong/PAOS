@@ -1,15 +1,38 @@
 """Kiểm ProcessManager — máy trạng thái, transition+event cùng transaction
-(doc 19 P-M0-3, mở rộng đầy đủ ở P-M1-1)."""
+(doc 19 P-M0-3, mở rộng đầy đủ ở P-M1-1, report_progress()/get_latest_checkpoint() ở P-M3-1)."""
 
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import aiosqlite
 import pytest
 
+from kernel import clock as clock_module
 from kernel.errors import ErrorCode, PaosError
 from kernel.events.bus import EventBus, EventEnvelope
 from kernel.process.manager import _VALID_TRANSITIONS, Process, ProcessManager, ProcessState
 from kernel.state.db import StateStore
+
+
+class _FakeClock:
+    def __init__(self, start: datetime) -> None:
+        self._now = start
+
+    def now(self) -> datetime:
+        return self._now
+
+    def advance(self, seconds: float) -> None:
+        self._now += timedelta(seconds=seconds)
+
+
+@pytest.fixture
+def fake_clock() -> Any:
+    fc = _FakeClock(datetime(2026, 1, 1, tzinfo=UTC))
+    old = clock_module.get_clock()
+    clock_module.set_clock(fc)
+    yield fc
+    clock_module.set_clock(old)
 
 
 @pytest.fixture
@@ -275,3 +298,68 @@ async def test_get_by_pid_and_list(manager: ProcessManager) -> None:
     assert [p.process_id for p in queued] == [b.process_id]
 
     assert await manager.get_by_pid(999999) is None
+
+
+async def test_report_progress_updates_column_always(
+    manager: ProcessManager, store: StateStore
+) -> None:
+    p = await _create(manager)
+    await manager.report_progress(p.process_id, 33.0, "đang chạy")
+    updated = await manager.get(p.process_id)
+    assert updated is not None
+    assert updated.progress == 33.0
+
+
+async def test_report_progress_throttles_event_to_one_per_second(
+    store: StateStore, fake_clock: Any
+) -> None:
+    events = EventBus(store)
+    mgr = ProcessManager(store, events)
+    received: list[EventEnvelope] = []
+
+    async def _handler(e: EventEnvelope) -> None:
+        received.append(e)
+
+    events.subscribe("watcher", "kernel.process.progress", _handler)
+    p = await mgr.create(intent="test.intent", spec={}, name="x", workflow_ref="wf@1")
+
+    await mgr.report_progress(p.process_id, 10.0, "bước 1")  # emit — lần đầu
+    await mgr.report_progress(p.process_id, 20.0, "bước 2")  # bỏ qua — < 1s
+    fake_clock.advance(1.1)
+    await mgr.report_progress(p.process_id, 30.0, "bước 3")  # emit — đã đủ 1s
+
+    assert [e.payload["progress"] for e in received] == [10.0, 30.0]
+    updated = await mgr.get(p.process_id)
+    assert updated is not None
+    assert updated.progress == 30.0  # cột luôn cập nhật kể cả khi event bị bỏ
+
+
+async def test_report_progress_always_emits_at_100_pct(store: StateStore, fake_clock: Any) -> None:
+    events = EventBus(store)
+    mgr = ProcessManager(store, events)
+    received: list[EventEnvelope] = []
+
+    async def _handler(e: EventEnvelope) -> None:
+        received.append(e)
+
+    events.subscribe("watcher", "kernel.process.progress", _handler)
+    p = await mgr.create(intent="test.intent", spec={}, name="x", workflow_ref="wf@1")
+
+    await mgr.report_progress(p.process_id, 10.0, "bước 1")
+    await mgr.report_progress(p.process_id, 100.0, "xong")  # < 1s nhưng vẫn emit vì =100%
+
+    assert [e.payload["progress"] for e in received] == [10.0, 100.0]
+
+
+async def test_get_latest_checkpoint_returns_none_when_absent(manager: ProcessManager) -> None:
+    p = await _create(manager)
+    assert await manager.get_latest_checkpoint(p.process_id) is None
+
+
+async def test_get_latest_checkpoint_returns_most_recent_seq(manager: ProcessManager) -> None:
+    p = await _create(manager)
+    await manager.write_checkpoint(p.process_id, {"phase": "running"})
+    await manager.write_checkpoint(p.process_id, {"phase": "step2", "n": 2})
+
+    latest = await manager.get_latest_checkpoint(p.process_id)
+    assert latest == {"seq": 2, "state": {"phase": "step2", "n": 2}}

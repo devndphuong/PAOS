@@ -12,9 +12,67 @@ import aiosqlite
 import httpx
 import pytest
 
+from apps.paosd import runner as runner_module
 from apps.paosd.wiring import Daemon, build_daemon
+from kernel.events.bus import EventBus
+from kernel.process.manager import ProcessManager, ProcessState
+from kernel.registry.registry import Registry
+from kernel.state.db import StateStore
+from sdk.agent import (
+    AgentContext,
+    AgentManifest,
+    Artifact,
+    ExecResult,
+    Plan,
+    ReviewResult,
+    ValidationResult,
+)
 
 _TERMINAL_STATES = {"SUCCEEDED", "FAILED", "CANCELLED"}
+
+
+class _CheckpointableAgent:
+    """Test double cho resume() (P-M3-1) — Runner chỉ có SummarizeAgent thật,
+    manifest.checkpointable=False, không tự chứng minh được đường resume()."""
+
+    manifest = AgentManifest(
+        agent_id="resume_test.agent",
+        version=1,
+        needs=[],
+        produces=["x"],
+        capabilities=[],
+        emits=[],
+        checkpointable=True,
+    )
+
+    def __init__(self) -> None:
+        self.resume_called_with: dict[str, Any] | None = None
+        self.validate_called = False
+        self._ctx: AgentContext | None = None
+
+    async def initialize(self, ctx: AgentContext) -> None:
+        self._ctx = ctx
+
+    async def validate(self, inputs: dict[str, Any]) -> ValidationResult:
+        self.validate_called = True
+        return ValidationResult(ok=True)
+
+    async def think(self, inputs: dict[str, Any]) -> Plan:
+        return Plan(prompt="")
+
+    async def execute(self, plan: Plan) -> ExecResult:
+        return ExecResult(data={"out": "from_execute"})
+
+    async def review(self, result: ExecResult) -> ReviewResult:
+        return ReviewResult(passed=True)
+
+    async def publish(self, result: ExecResult) -> list[Artifact]:
+        assert self._ctx is not None
+        return [await self._ctx.write_artifact("x", "out.txt", result.data["out"])]
+
+    async def resume(self, checkpoint: dict[str, Any]) -> ExecResult:
+        self.resume_called_with = checkpoint
+        return ExecResult(data={"out": f"resumed:{checkpoint.get('n')}"})
 
 
 @pytest.fixture
@@ -155,3 +213,79 @@ async def test_error_message_is_redacted_before_persisted(
     error_json = await daemon.store.read(_select)
     assert leaked not in error_json
     assert "***REDACTED***" in error_json
+
+
+@pytest.fixture
+async def bare_runner(tmp_path: Path):
+    """Runner KHÔNG subscribe on_process_created, KHÔNG chạy worker_loop() —
+    khác `daemon` fixture. Test resume() cần tự tay đưa Process qua từng
+    trạng thái + tự ghi checkpoint TRƯỚC khi gọi `_run_one()` một lần duy
+    nhất, không muốn đua với dispatcher nền thật (doc 19 P-M3-1)."""
+    store = StateStore(tmp_path / ".paos" / "state.db")
+    await store.start()
+    events = EventBus(store)
+    registry = Registry(tmp_path / "capabilities", tmp_path / "providers")
+    registry.load()
+    manager = ProcessManager(store, events)
+    runner = runner_module.Runner(manager, events, registry, store, tmp_path / "workspace")
+    yield manager, runner
+    await store.stop()
+
+
+async def test_resume_called_when_running_process_has_agent_checkpoint(
+    bare_runner: tuple[Any, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mô phỏng daemon restart giữa lúc RUNNING với agent checkpointable=True đã
+    tự ghi checkpoint (seq > 1, qua ctx.checkpoint()) — Runner (P-M3-1) phải gọi
+    resume() thay vì chạy lại validate()/think()/execute() từ đầu."""
+    manager, runner = bare_runner
+    agent = _CheckpointableAgent()
+    monkeypatch.setitem(
+        runner_module._AGENTS, "agent:resume_test.agent@1", (agent, tmp_path / "prompts")
+    )
+
+    process = await manager.create(
+        intent="x", spec={}, name="r", workflow_ref="agent:resume_test.agent@1"
+    )
+    await manager.transition(process.process_id, ProcessState.PLANNING)
+    await manager.transition(process.process_id, ProcessState.QUEUED)
+    await manager.transition(process.process_id, ProcessState.RUNNING)
+    await manager.write_checkpoint(process.process_id, {"phase": "running"})  # seq 1
+    await manager.write_checkpoint(process.process_id, {"n": 5})  # seq 2 — agent tự ghi
+
+    await runner._run_one(process.process_id)
+
+    assert agent.resume_called_with == {"n": 5}
+    assert agent.validate_called is False
+    final = await manager.get(process.process_id)
+    assert final is not None
+    assert final.state == ProcessState.SUCCEEDED
+
+
+async def test_resume_not_called_when_only_placeholder_checkpoint_exists(
+    bare_runner: tuple[Any, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cùng kịch bản restart nhưng agent CHƯA tự ghi checkpoint nào (chỉ có mốc
+    "phase: running" seq=1 do Runner ghi sẵn) — không đủ để resume(), phải chạy
+    lại từ đầu (đúng hành vi M1-4 cho tới khi agent thật sự checkpoint)."""
+    manager, runner = bare_runner
+    agent = _CheckpointableAgent()
+    monkeypatch.setitem(
+        runner_module._AGENTS, "agent:resume_test.agent@1", (agent, tmp_path / "prompts")
+    )
+
+    process = await manager.create(
+        intent="x", spec={}, name="r", workflow_ref="agent:resume_test.agent@1"
+    )
+    await manager.transition(process.process_id, ProcessState.PLANNING)
+    await manager.transition(process.process_id, ProcessState.QUEUED)
+    await manager.transition(process.process_id, ProcessState.RUNNING)
+    await manager.write_checkpoint(process.process_id, {"phase": "running"})  # seq 1 duy nhất
+
+    await runner._run_one(process.process_id)
+
+    assert agent.resume_called_with is None
+    assert agent.validate_called is True
+    final = await manager.get(process.process_id)
+    assert final is not None
+    assert final.state == ProcessState.SUCCEEDED

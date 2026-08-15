@@ -29,6 +29,10 @@ async def _noop_emit(event_type: str, payload: dict) -> None:
     pass
 
 
+async def _noop_persist(artifact: Artifact) -> None:
+    pass
+
+
 async def _persist_via_store(store: StateStore, artifact: Artifact) -> None:
     async def _insert(conn: aiosqlite.Connection) -> None:
         await conn.execute(
@@ -135,3 +139,63 @@ def test_prompt_missing_file_raises_not_found(ctx: AgentContext) -> None:
     with pytest.raises(AgentError) as exc_info:
         ctx.prompt("v99")
     assert exc_info.value.code == ErrorCode.NOT_FOUND
+
+
+async def test_progress_rejects_out_of_range_pct(ctx: AgentContext) -> None:
+    with pytest.raises(AgentError) as exc_info:
+        await ctx.progress(101.0, "quá 100%")
+    assert exc_info.value.code == ErrorCode.INVALID_INPUT
+
+
+async def test_progress_forwards_to_callback(workspace: Path, prompts_dir: Path) -> None:
+    received: list[tuple[float, str]] = []
+
+    async def report_progress(pct: float, message: str) -> None:
+        received.append((pct, message))
+
+    ctx = AgentContext(
+        process_id="proc_test",
+        task_id="task_test",
+        workspace_dir=workspace,
+        agent_id="summarize",
+        prompts_dir=prompts_dir,
+        manifest=_TEST_MANIFEST,
+        persist_artifact=_noop_persist,
+        call_capability=_noop_call,
+        emit_event=_noop_emit,
+        report_progress=report_progress,
+    )
+    await ctx.progress(42.0, "đang xử lý")
+    assert received == [(42.0, "đang xử lý")]
+
+
+async def test_checkpoint_forwards_state_to_callback(workspace: Path, prompts_dir: Path) -> None:
+    received: list[dict] = []
+
+    async def write_checkpoint(state: dict) -> int:
+        received.append(state)
+        return 7
+
+    ctx = AgentContext(
+        process_id="proc_test",
+        task_id="task_test",
+        workspace_dir=workspace,
+        agent_id="summarize",
+        prompts_dir=prompts_dir,
+        manifest=_TEST_MANIFEST,
+        persist_artifact=_noop_persist,
+        call_capability=_noop_call,
+        emit_event=_noop_emit,
+        write_checkpoint=write_checkpoint,
+    )
+    seq = await ctx.checkpoint({"step": 2})
+    assert seq == 7
+    assert received == [{"step": 2}]
+
+
+async def test_default_progress_and_checkpoint_are_noop_when_not_wired(ctx: AgentContext) -> None:
+    """ctx (fixture) không truyền report_progress/write_checkpoint — vẫn phải
+    gọi được mà không raise, để chỗ khởi tạo AgentContext cũ không cần sửa
+    theo mỗi khi thêm callback mới (doc 04 §6: field optional = không tăng version)."""
+    await ctx.progress(10.0)
+    assert await ctx.checkpoint({}) == 0

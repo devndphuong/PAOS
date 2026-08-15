@@ -1,24 +1,36 @@
-"""SDK cho người viết Agent (doc 04 §3, doc 12 §3) — lát cắt 5a, doc 19 P-M0-5.
+"""SDK cho người viết Agent (doc 04 §3, doc 12 §3) — lát cắt 5a (doc 19 P-M0-5),
+mở rộng đầy đủ ở P-M3-1 (doc 19).
 
 Độc lập hoàn toàn với kernel/ — cùng lý do đã áp dụng cho sdk/provider.py:
 agents/ bị cấm import kernel/ kể cả GIÁN TIẾP qua sdk/ (.importlinter
 "agent-chi-dung-sdk" kiểm đường phụ thuộc bắc cầu). Việc nối AgentContext
 với StateStore thật là trách nhiệm của apps/ (tầng cao nhất, được phép
-import mọi tầng) — AgentContext chỉ nhận một callback đã cấu hình sẵn
-(`persist_artifact`), không tự import kernel.state.db.
+import mọi tầng) — AgentContext chỉ nhận các callback đã cấu hình sẵn
+(`persist_artifact`, `report_progress`, `write_checkpoint`...), không tự
+import kernel.state.db.
 
 ID artifact dùng thẳng thư viện `ulid` (không qua kernel/ids.py — bản đó có
 thêm StrictMonotonicPolicy cho event_seq, không cần thiết ở đây). Timestamp
 dùng datetime.now(UTC) trực tiếp, không qua kernel/clock.py — artifact
 không nằm trên đường quyết định tính-tất-định như Event (doc 08 §7.3), nên
 không cần injectable clock ở M0.
+
+P-M3-1: manifest thêm resources/quality_rubric/max_retries/timeout_sec/
+checkpointable/listens (doc 04 §3.2, "chừa cột" — cùng tiền lệ đã áp dụng
+cho ProviderManifest.resources ở M0, Router mới thật sự ĐỌC resources ở
+M2-3). Protocol thêm resume() (bắt buộc có mặt, chỉ agent có checkpointable:
+true mới thực sự được Runner gọi tới — agent không checkpoint được có thể
+raise AgentError NOT_IMPLEMENTED trong thân resume(), xem SummarizeAgent).
+AgentContext thêm progress()/checkpoint() — 2 callback mới có giá trị mặc
+định no-op để không phá vỡ chỗ khởi tạo AgentContext trực tiếp trong test
+cũ (tests/sdk, tests/agents/summarize) chưa quan tâm tới progress/checkpoint.
 """
 
 from __future__ import annotations
 
 import hashlib
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
@@ -27,6 +39,9 @@ import ulid
 import yaml
 
 from sdk.provider import ErrorCode
+
+_PROGRESS_MIN = 0.0
+_PROGRESS_MAX = 100.0
 
 
 @dataclass(frozen=True)
@@ -59,8 +74,13 @@ class AgentError(Exception):
 
 @dataclass(frozen=True)
 class AgentManifest:
-    """doc 04 §3.2. Chưa có resources/quality_rubric/max_retries — hoãn tới
-    M1 (Scheduler) / M4 (Review), chưa cần ở M0."""
+    """doc 04 §3.2, đầy đủ từ P-M3-1. resources/max_retries/timeout_sec đã
+    khai báo nhưng CHƯA có caller enforce ở lát này (Runner hiện không đọc
+    timeout_sec, Scheduler hiện không giữ resources riêng cho Agent — chỉ
+    Provider/Router mới giữ resource token, doc 19 P-M1-3a) — "chừa cột,
+    đừng chừa code" (doc 18 §10), cùng tiền lệ ProviderManifest.resources.
+    checkpointable=True là điều kiện DUY NHẤT để Runner gọi resume() thay vì
+    chạy lại initialize()..execute() từ đầu (doc 04 §3.1)."""
 
     agent_id: str
     version: int
@@ -68,6 +88,12 @@ class AgentManifest:
     produces: list[str]
     capabilities: list[str]  # AgentContext.call() cưỡng chế danh sách này — xem docstring class
     emits: list[str]
+    listens: list[str] = field(default_factory=list)
+    resources: list[str] = field(default_factory=list)
+    quality_rubric: str | None = None
+    max_retries: int = 3
+    timeout_sec: int = 600
+    checkpointable: bool = False
 
 
 def load_agent_manifest(path: Path) -> AgentManifest:
@@ -79,6 +105,12 @@ def load_agent_manifest(path: Path) -> AgentManifest:
         produces=data.get("produces", []),
         capabilities=data.get("capabilities", []),
         emits=data.get("emits", []),
+        listens=data.get("listens", []),
+        resources=data.get("resources", []),
+        quality_rubric=data.get("quality_rubric"),
+        max_retries=data.get("max_retries", 3),
+        timeout_sec=data.get("timeout_sec", 600),
+        checkpointable=data.get("checkpointable", False),
     )
 
 
@@ -106,8 +138,11 @@ class ReviewResult:
 
 
 class Agent(Protocol):
-    """doc 04 §3.1 — 6 bước bắt buộc. Chưa có resume() (bắt buộc nếu chạy > 60s) —
-    hoãn tới khi thật sự có agent chạy dài, tránh hình dạng chưa dùng tới (M0)."""
+    """doc 04 §3.1 — 6 bước bắt buộc + resume() (P-M3-1). resume() chỉ được
+    Runner gọi khi `manifest.checkpointable` là True VÀ có checkpoint từ lần
+    chạy trước (process crash giữa RUNNING, restart) — agent không checkpoint
+    được (mặc định) không cần resume() thật, có thể raise ngay (xem
+    SummarizeAgent.resume)."""
 
     manifest: AgentManifest
 
@@ -117,11 +152,22 @@ class Agent(Protocol):
     async def execute(self, plan: Plan) -> ExecResult: ...
     async def review(self, result: ExecResult) -> ReviewResult: ...
     async def publish(self, result: ExecResult) -> list[Artifact]: ...
+    async def resume(self, checkpoint: dict[str, Any]) -> ExecResult: ...
 
 
 PersistArtifact = Callable[[Artifact], Awaitable[None]]
 CallCapability = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
 EmitEvent = Callable[[str, dict[str, Any]], Awaitable[None]]
+ReportProgress = Callable[[float, str], Awaitable[None]]
+WriteCheckpoint = Callable[[dict[str, Any]], Awaitable[int]]
+
+
+async def _noop_report_progress(pct: float, message: str) -> None:
+    pass
+
+
+async def _noop_write_checkpoint(state: dict[str, Any]) -> int:
+    return 0
 
 
 class AgentContext:
@@ -143,6 +189,8 @@ class AgentContext:
         persist_artifact: PersistArtifact,
         call_capability: CallCapability,
         emit_event: EmitEvent,
+        report_progress: ReportProgress = _noop_report_progress,
+        write_checkpoint: WriteCheckpoint = _noop_write_checkpoint,
     ) -> None:
         self._process_id = process_id
         self._task_id = task_id
@@ -153,6 +201,8 @@ class AgentContext:
         self._persist_artifact = persist_artifact
         self._call_capability = call_capability
         self._emit_event = emit_event
+        self._report_progress = report_progress
+        self._write_checkpoint = write_checkpoint
 
     async def call(self, capability_ref: str, payload: dict[str, Any]) -> dict[str, Any]:
         if capability_ref not in self._manifest.capabilities:
@@ -171,6 +221,24 @@ class AgentContext:
                 hint=f"Thêm '{event_type}' vào emits trong manifest.yaml của agent",
             )
         await self._emit_event(event_type, payload)
+
+    async def progress(self, pct: float, message: str = "") -> None:
+        """doc 04 §3.3 quy tắc 4 — bắt buộc gọi nếu agent chạy > 30s. Runner nối
+        callback này tới `ProcessManager.report_progress()` (throttle ≤1
+        event/giây, doc 05 §3.1) — bản thân AgentContext không throttle, chỉ
+        chuyển tiếp, tránh trùng logic 2 nơi."""
+        if not _PROGRESS_MIN <= pct <= _PROGRESS_MAX:
+            raise AgentError(
+                ErrorCode.INVALID_INPUT,
+                f"progress {pct} ngoài khoảng [0, 100]",
+                hint="Gọi ctx.progress(pct, message) với pct trong khoảng 0-100",
+            )
+        await self._report_progress(pct, message)
+
+    async def checkpoint(self, state: dict[str, Any]) -> int:
+        """Ghi trạng thái nội bộ để `resume()` đọc lại sau crash — chỉ có ý
+        nghĩa khi `manifest.checkpointable` là True (doc 04 §3.1/§3.2)."""
+        return await self._write_checkpoint(state)
 
     def prompt(self, version: str) -> str:
         """Đọc agents/<agent_id>/prompts/<version>.md — không nhúng prompt trong code."""
