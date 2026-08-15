@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://capabilities/image.generate/1/input.schema.json",
+  "title": "image.generate@1 input",
+  "description": "doc 02 §1 L4 — sinh ảnh minh hoạ từ mô tả (P-M3-4). Chưa hỗ trợ tham số ảnh hưởng tới model thật (steps/sampler/...) — provider cục bộ duy nhất hôm nay là stub, thêm khi có ComfyUI thật (BL-004 cùng tinh thần Ollama).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["prompt"],
+  "properties": {
+    "prompt": { "type": "string", "minLength": 1 },
+    "count": { "type": "integer", "minimum": 1, "maximum": 8, "default": 1 }
+  }
+}

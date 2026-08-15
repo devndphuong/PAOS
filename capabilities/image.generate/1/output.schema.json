@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://capabilities/image.generate/1/output.schema.json",
+  "title": "image.generate@1 output",
+  "description": "doc 02 §1 L4 (P-M3-4). `placeholder_text` thay cho byte ảnh thật — provider stub hôm nay không sinh pixel, chỉ mô phỏng tất định để test DAG/song song; provider ComfyUI thật (khi cài) sẽ trả thêm `path` trỏ vào cache/.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["images"],
+  "properties": {
+    "images": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "placeholder_text": { "type": "string" },
+          "path": { "type": "string" },
+          "seed": { "type": "integer" }
+        }
+      }
+    },
+    "meta": { "type": "object" }
+  }
+}

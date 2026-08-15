@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://capabilities/audio.tts/1/input.schema.json",
+  "title": "audio.tts@1 input",
+  "description": "doc 02 §1 L4 — chuyển văn bản thành lời nói (P-M3-4).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["text"],
+  "properties": {
+    "text": { "type": "string", "minLength": 1 },
+    "voice": { "type": "string", "default": "default" }
+  }
+}

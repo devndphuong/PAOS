@@ -14,12 +14,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import aiosqlite
 
 from apps.paosd.router import Router
+from kernel import clock
 from kernel.errors import ErrorCode as KernelErrorCode
 from kernel.errors import PaosError
 from kernel.events.bus import EventBus
@@ -32,7 +34,6 @@ from kernel.state.db import StateStore
 from kernel.workflow import expr
 from kernel.workflow.spec import Step, WorkflowSpec, to_json_dict, topological_order
 from sdk.agent import (
-    Agent,
     AgentContext,
     AgentError,
     Artifact,
@@ -59,6 +60,14 @@ class StepExecutionFailed(Exception):
         self.context: dict[str, Any] = {}
 
 
+def _duration_ms_between(start: datetime, end: datetime) -> int:
+    return int((end - start).total_seconds() * 1000)
+
+
+def _iso_duration_ms(start_iso: str, end_iso: str) -> int:
+    return _duration_ms_between(datetime.fromisoformat(start_iso), datetime.fromisoformat(end_iso))
+
+
 class WorkflowRunner:
     def __init__(
         self,
@@ -68,19 +77,17 @@ class WorkflowRunner:
         store: StateStore,
         router: Router,
         workspace_root: Path,
-        *,
-        agents: dict[str, tuple[Agent, Path]],
     ) -> None:
-        """`agents`: bảng tra cứu `agent:<ref>` -> (instance, prompts_dir) — TRUYỀN
-        VÀO thay vì tự import `apps.paosd.runner._AGENTS` để tránh import vòng
-        (runner.py sẽ tạo WorkflowRunner, không thể bị WorkflowRunner import ngược)."""
+        """P-M3-4 (trả nợ BL-006): agent cho step `kind: agent` nạp qua
+        `registry.load_agent()`/`agent_extra_dir()` — không còn dict `agents`
+        truyền tay như P-M3-2/3 (dict đó tồn tại chỉ để né import vòng, giờ
+        không cần nữa vì Registry đã biết cách nạp Agent, giống Provider)."""
         self._manager = manager
         self._events = events
         self._registry = registry
         self._store = store
         self._router = router
         self._workspace_root = workspace_root
-        self._agents = agents
         self._tasks = TaskStore(store, events)
 
     async def run(
@@ -173,6 +180,16 @@ class WorkflowRunner:
         await self._run_single_step_with_retry(process_id, step, context)
 
     async def _run_parallel(self, process_id: str, group: Step, context: dict[str, Any]) -> None:
+        """`group` cũng là 1 Task (kind="parallel") — không chỉ các sub-step —
+        để có chỗ ghi lại "tiết kiệm bao nhiêu so với tuần tự" (doc 10 §3, P-M3-4)
+        vào Event Log, không bịa số: `sequential_ms` = TỔNG thời gian đo được
+        thật của từng sub-step (started_at/ended_at trong `tasks`, không phải
+        hằng số giả định); `wall_ms` = thời gian thật đã trôi qua của cả nhóm."""
+        group_task, _ = await self._schedule_or_retry_task(
+            process_id, group.step_id, "parallel", "", {}
+        )
+        await self._tasks.start(group_task.task_id)
+        wall_start = clock.now()
         results = await asyncio.gather(
             *(
                 self._run_single_step_with_retry(process_id, sub, context)
@@ -180,35 +197,64 @@ class WorkflowRunner:
             ),
             return_exceptions=True,
         )
+        wall_ms = _duration_ms_between(wall_start, clock.now())
         for result in results:
             if isinstance(result, BaseException):
+                await self._tasks.fail(
+                    group_task.task_id, error_code=KernelErrorCode.DEPENDENCY_FAILED.value
+                )
                 raise result
         context["steps"][group.step_id] = {
             sub.step_id: context["steps"][sub.step_id] for sub in group.sub_steps
         }
 
+        sequential_ms = 0
+        for sub in group.sub_steps:
+            sub_task = await self._tasks.get_by_step(process_id, sub.step_id)
+            if sub_task is not None and sub_task.started_at and sub_task.ended_at:
+                sequential_ms += _iso_duration_ms(sub_task.started_at, sub_task.ended_at)
+        saved_ms = max(0, sequential_ms - wall_ms)
+        await self._tasks.succeed(
+            group_task.task_id,
+            extra={
+                "parallel": {
+                    "wall_ms": wall_ms,
+                    "sequential_ms": sequential_ms,
+                    "saved_ms": saved_ms,
+                }
+            },
+        )
+
+    async def _schedule_or_retry_task(
+        self, process_id: str, step_id: str, kind: str, ref: str, inputs: dict[str, Any]
+    ) -> tuple[Task, int]:
+        """`idempotency_key` (process_id:step_id) là UNIQUE (doc 03 §3) — step
+        này có thể đã có Task từ lượt chạy TRƯỚC trong CÙNG Process (on_fail.goto
+        quay lại một step đã qua, hoặc compensate() chạy 1 step đã chạy rồi).
+        Phải retry() Task CŨ, không schedule() Task mới, nếu không vi phạm
+        UNIQUE. Dùng chung cho step đơn (`_run_single_step_with_retry`) VÀ
+        group `parallel` (`_run_parallel`) — cả hai đều là 1 Task trong DAG."""
+        existing = await self._tasks.get_by_step(process_id, step_id)
+        if existing is None:
+            task = await self._tasks.schedule(
+                process_id=process_id,
+                step_id=step_id,
+                kind=kind,
+                ref=ref,
+                depends_on=[],
+                inputs=inputs,
+            )
+            return task, 0
+        task = await self._tasks.retry(existing.task_id)
+        return task, task.attempts
+
     async def _run_single_step_with_retry(
         self, process_id: str, step: Step, context: dict[str, Any]
     ) -> None:
         resolved_inputs = expr.resolve_deep(step.with_, context)
-        # `idempotency_key` (process_id:step_id) là UNIQUE (doc 03 §3) — step này
-        # có thể đã có Task từ lượt chạy TRƯỚC trong CÙNG Process (on_fail.goto
-        # quay lại một step đã qua, hoặc compensate() chạy 1 step đã chạy rồi).
-        # Phải retry() Task CŨ, không schedule() Task mới, nếu không vi phạm UNIQUE.
-        existing = await self._tasks.get_by_step(process_id, step.step_id)
-        if existing is None:
-            task = await self._tasks.schedule(
-                process_id=process_id,
-                step_id=step.step_id,
-                kind=step.kind,
-                ref=step.ref or "",
-                depends_on=[],
-                inputs=resolved_inputs,
-            )
-            attempt = 0
-        else:
-            task = await self._tasks.retry(existing.task_id)
-            attempt = task.attempts
+        task, attempt = await self._schedule_or_retry_task(
+            process_id, step.step_id, step.kind, step.ref or "", resolved_inputs
+        )
         while True:
             await self._tasks.start(task.task_id)
             try:
@@ -242,15 +288,26 @@ class WorkflowRunner:
     async def _run_agent_step(
         self, process_id: str, step: Step, task: Task, resolved_inputs: dict[str, Any]
     ) -> dict[str, Any]:
-        match = self._agents.get(f"agent:{step.ref}")
-        if match is None:
+        agent_id, _, version_str = (step.ref or "").partition("@")
+        if not version_str.isdigit():
             raise PaosError(
-                KernelErrorCode.NOT_FOUND,
-                f"Không có agent nào khớp ref '{step.ref}' cho step '{step.step_id}'",
-                hint="Kiểm 'ref' trong workflow.yaml khớp đúng agent đã đăng ký",
+                KernelErrorCode.INVALID_INPUT,
+                f"Step '{step.step_id}': ref '{step.ref}' không đúng dạng agent_id@version",
+                hint="ref của step kind=agent phải dạng '<agent_id>@<version>', vd script.agent@1",
                 context={"step_id": step.step_id, "ref": step.ref},
             )
-        agent, prompts_dir = match
+        version = int(version_str)
+        try:
+            agent = self._registry.load_agent(agent_id, version)
+            prompts_dir = self._registry.agent_extra_dir(agent_id, version) / "prompts"
+        except PaosError as exc:
+            raise PaosError(
+                KernelErrorCode.NOT_FOUND,
+                f"Không có agent nào khớp ref '{step.ref}' cho step "
+                f"'{step.step_id}': {exc.message}",
+                hint="Kiểm 'ref' trong workflow.yaml khớp đúng agent_id@version đã đăng ký",
+                context={"step_id": step.step_id, "ref": step.ref},
+            ) from exc
         ctx = AgentContext(
             process_id=process_id,
             task_id=task.task_id,

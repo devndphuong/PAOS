@@ -55,6 +55,13 @@ class EventType(StrEnum):
     # (P-M3-3) là caller thật đầu tiên.
     PLAN_CREATED = "plan.created"
     SCRIPT_CREATED = "script.created"
+    # doc 05 §3.4 đã liệt "image.batch.created"/"voice.created" từ đầu dự án —
+    # agents/image/, agents/voice/ (P-M3-4) là caller thật đầu tiên.
+    # "subtitle.created" KHÔNG có trong doc 05 gốc — thêm mới ở P-M3-4, đã bổ
+    # sung vào bảng doc 05 §3.4 (cùng tiền lệ "queued" ở M0, "planning" ở M1-1).
+    IMAGE_BATCH_CREATED = "image.batch.created"
+    VOICE_CREATED = "voice.created"
+    SUBTITLE_CREATED = "subtitle.created"
 
     # Router (doc 06 §2.3, doc 19 P-M2-3): 1 provider lỗi retryable, chuyển
     # sang provider kế tiếp trong chuỗi fallback.

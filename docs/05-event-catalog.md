@@ -88,6 +88,7 @@ Ví dụ theo luồng video: `agent.planning.completed` → `plan.created` → S
 | `script.created` / `script.revised` | |
 | `image.batch.created` | |
 | `voice.created` | |
+| `subtitle.created` | thêm ở P-M3-4 (doc 19) — không có trong bản gốc, agents/subtitle/ là caller thật đầu tiên |
 | `video.rendered` | |
 
 **Quy ước:** plugin chỉ được phát domain event mà nó khai báo trong manifest (`emits`). Kernel từ chối event không khai báo.

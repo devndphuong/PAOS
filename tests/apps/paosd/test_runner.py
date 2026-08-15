@@ -173,8 +173,9 @@ async def test_video_plan_and_script_golden_path_runs_two_real_agents(
 ) -> None:
     """P-M3-3: Video plugin phần 1 — PlanningAgent -> ScriptAgent, 2 agent THẬT
     (không phải capability giả lập như demo.pipeline), chứng minh P4: thêm
-    ScriptAgent không sửa PlanningAgent, thêm cả 2 chỉ sửa Runner._AGENTS
-    (BL-006) chứ không sửa WorkflowRunner."""
+    ScriptAgent không sửa PlanningAgent, không sửa WorkflowRunner. Agent nạp
+    động qua Registry.load_agent() (P-M3-4, trả nợ BL-006) — không còn dict
+    tĩnh nào trong Runner để "thêm 1 dòng" nữa."""
     resp = await client.post(
         "/v1/jobs",
         json={
@@ -198,6 +199,44 @@ async def test_video_plan_and_script_golden_path_runs_two_real_agents(
     assert "script.created" in types
     assert types.index("plan.created") < types.index("script.created")
     assert types[-1] == "kernel.process.completed"
+
+
+async def test_video_plan_script_media_golden_path_runs_parallel_branch(
+    client: httpx.AsyncClient,
+) -> None:
+    """P-M3-4: version 2 của `video.plan_and_script` thêm nhánh song song
+    Image ∥ Voice ∥ Subtitle sau Script — version 1 (P-M3-3) giữ nguyên,
+    không sửa (doc 04 §6: đóng băng bản đã chạy). Kiểm luôn "explain" (Event
+    Log) mang được thông tin tiết kiệm thời gian, không cần công cụ nào khác."""
+    resp = await client.post(
+        "/v1/jobs",
+        json={
+            "intent": "video",
+            "spec": {"text": "MongoDB là cơ sở dữ liệu NoSQL hướng tài liệu."},
+            "name": "cli-video-media",
+            "workflow_ref": "workflow:video.plan_and_script@2",
+        },
+    )
+    assert resp.status_code == 200
+    created = resp.json()
+
+    status = await _wait_for_terminal(client, created["pid"], max_wait_s=10.0)
+    assert status["state"] == "SUCCEEDED"
+
+    explain_resp = await client.get(f"/v1/processes/{created['pid']}/explain")
+    trace = explain_resp.json()["trace"]
+    types = [e["type"] for e in trace]
+    assert "image.batch.created" in types
+    assert "voice.created" in types
+    assert "subtitle.created" in types
+
+    media_completed = next(
+        e
+        for e in trace
+        if e["type"] == "kernel.task.completed" and e["payload"]["step_id"] == "media"
+    )
+    parallel = media_completed["payload"]["parallel"]
+    assert parallel["saved_ms"] == max(0, parallel["sequential_ms"] - parallel["wall_ms"])
 
 
 async def test_unknown_workflow_id_fails_clean(client: httpx.AsyncClient) -> None:
@@ -303,21 +342,19 @@ async def bare_runner(tmp_path: Path):
     registry.load()
     manager = ProcessManager(store, events)
     runner = runner_module.Runner(manager, events, registry, store, tmp_path / "workspace")
-    yield manager, runner
+    yield manager, runner, registry
     await store.stop()
 
 
 async def test_resume_called_when_running_process_has_agent_checkpoint(
-    bare_runner: tuple[Any, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    bare_runner: tuple[Any, Any, Registry], tmp_path: Path
 ) -> None:
     """Mô phỏng daemon restart giữa lúc RUNNING với agent checkpointable=True đã
     tự ghi checkpoint (seq > 1, qua ctx.checkpoint()) — Runner (P-M3-1) phải gọi
     resume() thay vì chạy lại validate()/think()/execute() từ đầu."""
-    manager, runner = bare_runner
+    manager, runner, registry = bare_runner
     agent = _CheckpointableAgent()
-    monkeypatch.setitem(
-        runner_module._AGENTS, "agent:resume_test.agent@1", (agent, tmp_path / "prompts")
-    )
+    registry.preload_agent("resume_test.agent", 1, agent, tmp_path)
 
     process = await manager.create(
         intent="x", spec={}, name="r", workflow_ref="agent:resume_test.agent@1"
@@ -338,16 +375,14 @@ async def test_resume_called_when_running_process_has_agent_checkpoint(
 
 
 async def test_resume_not_called_when_only_placeholder_checkpoint_exists(
-    bare_runner: tuple[Any, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    bare_runner: tuple[Any, Any, Registry], tmp_path: Path
 ) -> None:
     """Cùng kịch bản restart nhưng agent CHƯA tự ghi checkpoint nào (chỉ có mốc
     "phase: running" seq=1 do Runner ghi sẵn) — không đủ để resume(), phải chạy
     lại từ đầu (đúng hành vi M1-4 cho tới khi agent thật sự checkpoint)."""
-    manager, runner = bare_runner
+    manager, runner, registry = bare_runner
     agent = _CheckpointableAgent()
-    monkeypatch.setitem(
-        runner_module._AGENTS, "agent:resume_test.agent@1", (agent, tmp_path / "prompts")
-    )
+    registry.preload_agent("resume_test.agent", 1, agent, tmp_path)
 
     process = await manager.create(
         intent="x", spec={}, name="r", workflow_ref="agent:resume_test.agent@1"

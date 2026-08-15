@@ -5,3 +5,4 @@ produces: [plan]
 capabilities: [text.generate@1]
 emits: [plan.created]
 checkpointable: false
+entry: agents.planning.agent:PlanningAgent

@@ -145,7 +145,19 @@ class TaskStore:
         await self._events.dispatch(envelope)
         return await self._require(task_id)
 
-    async def succeed(self, task_id: str, *, quality_score: float | None = None) -> Task:
+    async def succeed(
+        self,
+        task_id: str,
+        *,
+        quality_score: float | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> Task:
+        """`extra` gộp thêm field TÙY CHỌN vào payload event `kernel.task.completed`
+        (KHÔNG ghi vào cột SQL nào — bảng `tasks`, doc 03 §3, là hợp đồng cố định).
+        Dùng cho Task loại "parallel" ghi lại thời gian tiết kiệm được so với
+        chạy tuần tự (P-M3-4, doc 10 §3 "media (song song, tiết kiệm ...)") mà
+        không cần thêm cột hay bảng mới — đúng nguyên tắc "mọi thứ dựng từ
+        Event Log" (doc 10 §2)."""
         task = await self._require(task_id)
         now = clock.now().isoformat()
 
@@ -154,11 +166,13 @@ class TaskStore:
                 "UPDATE tasks SET state = ?, ended_at = ?, quality_score = ? WHERE task_id = ?",
                 (TaskState.SUCCEEDED.value, now, quality_score, task_id),
             )
+            payload = {"task_id": task_id, "step_id": task.step_id, "attempt": task.attempts}
+            payload.update(extra or {})
             return await self._events.build_and_insert(
                 conn,
                 EventType.TASK_COMPLETED.value,
                 source="kernel.process",
-                payload={"task_id": task_id, "step_id": task.step_id, "attempt": task.attempts},
+                payload=payload,
                 process_id=task.process_id,
                 task_id=task_id,
             )

@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://schemas/events/subtitle.created.v1.schema.json",
+  "title": "subtitle.created payload",
+  "description": "doc 05 §3.4 (thêm ở P-M3-4, không có trong bản gốc) — domain event do agents/subtitle/ tự định nghĩa qua manifest.emits.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["artifact_id"],
+  "properties": {
+    "artifact_id": { "type": "string" }
+  }
+}

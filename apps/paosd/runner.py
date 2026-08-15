@@ -39,6 +39,13 @@ hết cho `apps/paosd/router.py::Router` (ràng buộc cứng, fallback thật t
 kết quả `invoke()`, circuit breaker, Decision Record). Resource token
 (`_hold_resources`, đoạn ghi chú ở trên) cũng chuyển sang Router cùng lúc —
 mỗi candidate trong chuỗi fallback có thể khai `resources` khác nhau.
+
+P-M3-4 (trả nợ BL-006): trước lát này, agent được chọn qua `_AGENTS` — dict
+tĩnh hardcode trong file này, import trực tiếp từng agent, vi phạm đúng exit
+criteria doc 13 M3 "thêm agent mới không sửa Runner". Giờ dùng
+`Registry.load_agent()` (nạp động qua `importlib`, đọc `manifest.yaml::entry`)
+— không còn dict hardcode, không còn `from agents.xxx.agent import ...` tĩnh
+nào ở file này (cùng hình dạng `load_adapter()` cho provider, M2-1).
 """
 
 from __future__ import annotations
@@ -51,9 +58,6 @@ from typing import Any
 
 import aiosqlite
 
-from agents.planning.agent import PlanningAgent
-from agents.script.agent import ScriptAgent
-from agents.summarize.agent import SummarizeAgent
 from apps.paosd.router import Router
 from apps.paosd.workflow_runner import StepExecutionFailed, WorkflowRunner
 from kernel.errors import ErrorCode as KernelErrorCode
@@ -82,28 +86,29 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _DEFAULT_PRIORITY = 5
 _DEFAULT_MAX_PARALLEL = 3
 
-# workflow_ref/step ref -> (agent, thư mục prompts). Bảng tra cứu tĩnh — chỗ
-# M3+ sẽ thay bằng nạp động theo manifest (doc 18 §10, giống
-# Registry.load_adapter() cho provider). 3 agent thật từ P-M3-3 (BL-006,
-# docs/backlog.md) — đủ bằng chứng P4 để trả nợ này sớm, chưa làm ở lát này.
-_AGENTS: dict[str, tuple[Agent, Path]] = {
-    "agent:summarize.agent@1": (
-        SummarizeAgent(),
-        _REPO_ROOT / "agents" / "summarize" / "prompts",
-    ),
-    "agent:planning.agent@1": (
-        PlanningAgent(),
-        _REPO_ROOT / "agents" / "planning" / "prompts",
-    ),
-    "agent:script.agent@1": (
-        ScriptAgent(),
-        _REPO_ROOT / "agents" / "script" / "prompts",
-    ),
-}
-
 # (-priority, seq, process_id) — PriorityQueue là min-heap nên đảo dấu priority
 # (số lớn hơn phải ra trước); seq đơn điệu giữ FIFO khi priority bằng nhau.
 _QueueItem = tuple[int, int, str]
+
+
+def _resolve_agent(registry: Registry, workflow_ref: str) -> tuple[Agent, Path] | None:
+    """`workflow_ref` dạng "agent:<id>@<version>" -> (instance, prompts_dir)
+    qua `Registry.load_agent()` (P-M3-4, trả nợ BL-006) — thay hoàn toàn dict
+    tĩnh `_AGENTS` cũ. Trả None nếu không đăng ký, để caller tự quyết định mã
+    lỗi/hint (không phải trách nhiệm của hàm tra cứu thuần này)."""
+    if not workflow_ref.startswith("agent:"):
+        return None
+    ref = workflow_ref.removeprefix("agent:")
+    agent_id, _, version_str = ref.partition("@")
+    if not version_str.isdigit():
+        return None
+    version = int(version_str)
+    try:
+        agent = registry.load_agent(agent_id, version)
+        prompts_dir = registry.agent_extra_dir(agent_id, version) / "prompts"
+    except PaosError:
+        return None
+    return agent, prompts_dir
 
 
 class Runner:
@@ -136,7 +141,7 @@ class Runner:
         self._running_tasks: dict[str, asyncio.Task[None]] = {}
         self._router = Router(registry, events, store, self._resource_semaphores, workspace_root)
         self._workflow_runner = WorkflowRunner(
-            manager, events, registry, store, self._router, workspace_root, agents=_AGENTS
+            manager, events, registry, store, self._router, workspace_root
         )
 
     async def on_process_created(self, envelope: EventEnvelope) -> None:
@@ -259,12 +264,12 @@ class Runner:
         # P-M3-2: workflow_ref "workflow:<id>@<version>" đi đường DAG nhiều step
         # (WorkflowRunner), khác hẳn "agent:<id>@<version>" (1 agent = cả Process,
         # M0-M2). WorkflowRunner tự quyết định SUCCEEDED/FAILED/COMPENSATING —
-        # return ngay, không rơi xuống nhánh _AGENTS bên dưới.
+        # return ngay, không rơi xuống nhánh agent đơn bên dưới.
         if workflow_ref.startswith("workflow:"):
             await self._run_workflow(process_id, workflow_ref)
             return
 
-        match = _AGENTS.get(workflow_ref)
+        match = _resolve_agent(self._registry, workflow_ref)
         if match is None:
             await self._manager.transition(
                 process_id,

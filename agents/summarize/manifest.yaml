@@ -5,3 +5,4 @@ produces: [summary]
 capabilities: [text.generate@1]
 emits: [summary.created]
 checkpointable: false
+entry: agents.summarize.agent:SummarizeAgent

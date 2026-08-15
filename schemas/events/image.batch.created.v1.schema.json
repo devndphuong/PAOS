@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://schemas/events/image.batch.created.v1.schema.json",
+  "title": "image.batch.created payload",
+  "description": "doc 05 §3.4 — domain event do agents/image/ tự định nghĩa qua manifest.emits (P-M3-4). 'batch' vì 1 lượt gọi image.generate@1 có thể sinh nhiều ảnh.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["artifact_ids"],
+  "properties": {
+    "artifact_ids": { "type": "array", "items": { "type": "string" } }
+  }
+}

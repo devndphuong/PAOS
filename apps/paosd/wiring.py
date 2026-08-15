@@ -77,7 +77,10 @@ async def build_daemon(
 
     events = EventBus(store)
     registry = Registry(
-        _REPO_ROOT / "capabilities", _REPO_ROOT / "providers", _REPO_ROOT / "workflows"
+        _REPO_ROOT / "capabilities",
+        _REPO_ROOT / "providers",
+        _REPO_ROOT / "workflows",
+        _REPO_ROOT / "agents",
     )
     registry.load()
     for provider_id, adapter in (adapter_overrides or {}).items():

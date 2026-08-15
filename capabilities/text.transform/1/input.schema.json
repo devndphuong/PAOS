@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://capabilities/text.transform/1/input.schema.json",
+  "title": "text.transform@1 input",
+  "description": "doc 02 §1 L4 (P-M3-4) — biến đổi văn bản thuần cục bộ, không cần model. Dùng đầu tiên cho phụ đề: cắt lời thoại thành các đoạn ngắn (cue) đúng độ dài đọc được, đánh số thứ tự.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["text"],
+  "properties": {
+    "text": { "type": "string", "minLength": 1 },
+    "format": { "type": "string", "enum": ["srt"], "default": "srt" },
+    "max_chars_per_cue": { "type": "integer", "minimum": 10, "default": 42 }
+  }
+}

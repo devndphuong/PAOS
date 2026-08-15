@@ -1,0 +1,8 @@
+id: voice.agent
+version: 1
+needs: [script]
+produces: [voice]
+capabilities: [audio.tts@1]
+emits: [voice.created]
+checkpointable: false
+entry: agents.voice.agent:VoiceAgent

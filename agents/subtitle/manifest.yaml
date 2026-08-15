@@ -1,0 +1,8 @@
+id: subtitle.agent
+version: 1
+needs: [script]
+produces: [subtitle]
+capabilities: [text.transform@1]
+emits: [subtitle.created]
+checkpointable: false
+entry: agents.subtitle.agent:SubtitleAgent

@@ -1,0 +1,8 @@
+id: image.agent
+version: 1
+needs: [script]
+produces: [image]
+capabilities: [image.generate@1]
+emits: [image.batch.created]
+checkpointable: false
+entry: agents.image.agent:ImageAgent

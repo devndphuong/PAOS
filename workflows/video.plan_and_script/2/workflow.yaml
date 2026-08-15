@@ -1,0 +1,44 @@
+# Video plugin phần 2 (doc 01 §3 UC1, doc 13 M3, doc 19 P-M3-4): thêm nhánh
+# song song Image ∥ Voice ∥ Subtitle sau Script. version=2 vì đổi SHAPE của
+# DAG (thêm bước) — doc 04 §6: "Workflow: đóng băng bản đã chạy, không sửa
+# ngược". version=1 (plan -> script, P-M3-3) GIỮ NGUYÊN, không đụng.
+id: video.plan_and_script
+version: 2
+description: >
+  Planning -> Script -> (Image ∥ Voice ∥ Subtitle). Render (P-M3-5) sẽ nối
+  tiếp ở version=3 khi Render Agent tồn tại — cùng nguyên tắc P4 (thêm bước
+  không sửa bước cũ).
+inputs:
+  text: {type: string, required: true}
+
+steps:
+  - id: plan
+    kind: agent
+    ref: planning.agent@1
+    with: {text: "${inputs.text}"}
+
+  - id: script
+    kind: agent
+    ref: script.agent@1
+    with: {plan: "${steps.plan.output.plan}"}
+
+  - id: media
+    kind: parallel
+    steps:
+      - id: image
+        kind: agent
+        ref: image.agent@1
+        with: {script: "${steps.script.output.text}"}
+      - id: voice
+        kind: agent
+        ref: voice.agent@1
+        with: {script: "${steps.script.output.text}"}
+      - id: subtitle
+        kind: agent
+        ref: subtitle.agent@1
+        with: {script: "${steps.script.output.text}"}
+
+outputs:
+  images: "${steps.media.image.output}"
+  voice: "${steps.media.voice.output}"
+  subtitle: "${steps.media.subtitle.output}"

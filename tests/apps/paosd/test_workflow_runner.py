@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -22,7 +23,6 @@ from kernel.registry.registry import Registry
 from kernel.state.db import StateStore
 from kernel.workflow.spec import parse_workflow_spec
 from sdk.agent import (
-    Agent,
     AgentContext,
     AgentManifest,
     Artifact,
@@ -135,9 +135,7 @@ class Harness:
     echo_agent: _EchoAgent
 
     def runner(self) -> WorkflowRunner:
-        agents: dict[str, tuple[Agent, Path]] = {
-            "agent:echo.agent@1": (self.echo_agent, self.tmp_path / "prompts")
-        }
+        self.registry.preload_agent("echo.agent", 1, self.echo_agent, self.tmp_path)
         return WorkflowRunner(
             self.manager,
             self.events,
@@ -145,7 +143,6 @@ class Harness:
             self.store,
             self.router,
             self.tmp_path / "workspace",
-            agents=agents,
         )
 
     async def new_process(self, workflow_ref: str = "workflow:test@1") -> str:
@@ -316,6 +313,60 @@ async def test_parallel_runs_sub_steps_and_merges_into_group_namespace(harness: 
     assert set(context["steps"]["media"].keys()) == {"a", "b"}
     assert context["steps"]["media"]["a"]["output"]["text"].startswith("ok-")
     assert context["steps"]["after"]["output"]["text"] is not None
+
+
+async def test_parallel_group_records_honest_time_saved_vs_sequential(
+    harness: Harness,
+) -> None:
+    """P-M3-4: group 'parallel' cũng là 1 Task, sự kiện `kernel.task.completed`
+    của nó mang thêm `parallel: {wall_ms, sequential_ms, saved_ms}` — kiểm
+    `sequential_ms` KHỚP ĐÚNG tổng thời gian đo thật của từng sub-task (không
+    phải hằng số bịa ra), đúng yêu cầu "đo và ghi vào explain, đừng bịa"
+    (doc 19 P-M3-4)."""
+    events_received: list[EventEnvelope] = []
+
+    async def _handler(e: EventEnvelope) -> None:
+        events_received.append(e)
+
+    harness.events.subscribe("watcher", "kernel.task.completed", _handler)
+
+    spec = parse_workflow_spec(
+        """
+        id: t
+        version: 1
+        steps:
+          - id: media
+            kind: parallel
+            steps:
+              - {id: a, kind: capability, ref: text.generate@1, with: {prompt: a}}
+              - {id: b, kind: capability, ref: text.generate@1, with: {prompt: b}}
+        """
+    )
+    process_id = await harness.new_process()
+    await harness.runner().run(process_id, spec, {})
+
+    group_events = [e for e in events_received if e.payload["step_id"] == "media"]
+    assert len(group_events) == 1
+    parallel = group_events[0].payload["parallel"]
+    assert parallel["wall_ms"] >= 0
+    assert parallel["sequential_ms"] >= 0
+    assert parallel["saved_ms"] == max(0, parallel["sequential_ms"] - parallel["wall_ms"])
+
+    tasks = TaskStore(harness.store, harness.events)
+    a_task = await tasks.get_by_step(process_id, "a")
+    b_task = await tasks.get_by_step(process_id, "b")
+    assert a_task is not None and a_task.started_at and a_task.ended_at
+    assert b_task is not None and b_task.started_at and b_task.ended_at
+
+    def _duration_ms(start_iso: str, end_iso: str) -> int:
+        start = datetime.fromisoformat(start_iso)
+        end = datetime.fromisoformat(end_iso)
+        return int((end - start).total_seconds() * 1000)
+
+    expected_sequential = _duration_ms(a_task.started_at, a_task.ended_at) + _duration_ms(
+        b_task.started_at, b_task.ended_at
+    )
+    assert parallel["sequential_ms"] == expected_sequential
 
 
 async def test_on_fail_loop_reruns_target_step_then_succeeds(

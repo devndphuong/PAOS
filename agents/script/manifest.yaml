@@ -5,3 +5,4 @@ produces: [script]
 capabilities: [text.generate@1]
 emits: [script.created]
 checkpointable: false
+entry: agents.script.agent:ScriptAgent

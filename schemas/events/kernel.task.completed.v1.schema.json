@@ -2,13 +2,23 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "paos://schemas/events/kernel.task.completed.v1.schema.json",
   "title": "kernel.task.completed payload",
-  "description": "P-M3-2 (doc 19) — doc 05 §3.1 định sẵn tên/payload, TaskStore.succeed() là caller thật đầu tiên.",
+  "description": "P-M3-2 (doc 19) — doc 05 §3.1 định sẵn tên/payload, TaskStore.succeed() là caller thật đầu tiên. `parallel` thêm ở P-M3-4 (optional, field mới không tăng version — doc 04 §6): chỉ có mặt khi Task này là 1 group 'parallel', ghi lại thời gian tiết kiệm được so với chạy tuần tự (doc 10 §3).",
   "type": "object",
   "additionalProperties": false,
   "required": ["task_id", "step_id", "attempt"],
   "properties": {
     "task_id": { "type": "string" },
     "step_id": { "type": "string" },
-    "attempt": { "type": "integer", "minimum": 0 }
+    "attempt": { "type": "integer", "minimum": 0 },
+    "parallel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["wall_ms", "sequential_ms", "saved_ms"],
+      "properties": {
+        "wall_ms": { "type": "integer", "minimum": 0 },
+        "sequential_ms": { "type": "integer", "minimum": 0 },
+        "saved_ms": { "type": "integer", "minimum": 0 }
+      }
+    }
   }
 }

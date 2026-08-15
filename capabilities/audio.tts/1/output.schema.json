@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://capabilities/audio.tts/1/output.schema.json",
+  "title": "audio.tts@1 output",
+  "description": "doc 02 §1 L4 (P-M3-4). `duration_sec` ước lượng thật từ số từ / tốc độ đọc trung bình tiếng Việt (KHÔNG bịa — xem providers/stub_voice/adapter.py) — hữu ích cho Render (P-M3-5) căn thời lượng dù chưa có audio thật.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["audio"],
+  "properties": {
+    "audio": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["duration_sec"],
+      "properties": {
+        "placeholder_text": { "type": "string" },
+        "path": { "type": "string" },
+        "duration_sec": { "type": "number", "minimum": 0 }
+      }
+    },
+    "meta": { "type": "object" }
+  }
+}

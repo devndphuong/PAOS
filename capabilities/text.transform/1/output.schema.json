@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://capabilities/text.transform/1/output.schema.json",
+  "title": "text.transform@1 output",
+  "description": "doc 02 §1 L4 (P-M3-4).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["text"],
+  "properties": {
+    "text": { "type": "string" },
+    "meta": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cue_count": { "type": "integer", "minimum": 0 },
+        "duration_sec": { "type": "number", "minimum": 0 }
+      }
+    }
+  }
+}
