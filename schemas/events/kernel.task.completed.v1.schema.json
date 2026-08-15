@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://schemas/events/kernel.task.completed.v1.schema.json",
+  "title": "kernel.task.completed payload",
+  "description": "P-M3-2 (doc 19) — doc 05 §3.1 định sẵn tên/payload, TaskStore.succeed() là caller thật đầu tiên.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["task_id", "step_id", "attempt"],
+  "properties": {
+    "task_id": { "type": "string" },
+    "step_id": { "type": "string" },
+    "attempt": { "type": "integer", "minimum": 0 }
+  }
+}

@@ -22,6 +22,7 @@ import jsonschema
 import yaml
 
 from kernel.errors import ErrorCode, PaosError
+from kernel.workflow.spec import WorkflowSpec, parse_workflow_spec
 
 
 @dataclass(frozen=True)
@@ -105,9 +106,15 @@ def load_provider_manifest(path: Path) -> ProviderManifest:
 
 
 class Registry:
-    def __init__(self, capabilities_dir: Path, providers_dir: Path) -> None:
+    def __init__(
+        self, capabilities_dir: Path, providers_dir: Path, workflows_dir: Path | None = None
+    ) -> None:
+        """`workflows_dir` tùy chọn (mặc định None = chưa cấu hình workflow nào)
+        — thêm ở P-M3-2 SAU capabilities/providers, giữ optional để không phá
+        vỡ 20+ chỗ gọi `Registry(caps_dir, providers_dir)` đã có từ M0-M2."""
         self._capabilities_dir = capabilities_dir
         self._providers_dir = providers_dir
+        self._workflows_dir = workflows_dir
         self._capabilities: dict[str, CapabilitySpec] = {}
         self._providers: list[ProviderManifest] = []
         self._providers_by_id: dict[str, ProviderManifest] = {}
@@ -134,6 +141,30 @@ class Registry:
 
     def list_capabilities(self) -> list[CapabilitySpec]:
         return list(self._capabilities.values())
+
+    def get_workflow(self, workflow_id: str, version: int) -> WorkflowSpec:
+        """Đọc + parse `workflows/<id>/<version>/workflow.yaml` — LAZY, không
+        cache (khác capabilities/providers): số lượng workflow nhỏ, parse rẻ,
+        và mỗi Process chỉ đọc 1 lần lúc PLANNING (P-M3-2). Thêm cache nếu đo
+        được đây là nút thắt thật (P4 — chưa có bằng chứng cần)."""
+        if self._workflows_dir is None:
+            raise PaosError(
+                ErrorCode.NOT_FOUND,
+                f"Registry chưa cấu hình workflows_dir — không tìm được workflow "
+                f"{workflow_id}@{version}",
+                hint="Truyền workflows_dir cho Registry(...) nếu Process này cần chạy "
+                "workflow YAML",
+                context={"workflow_id": workflow_id, "version": version},
+            )
+        path = self._workflows_dir / workflow_id / str(version) / "workflow.yaml"
+        if not path.is_file():
+            raise PaosError(
+                ErrorCode.NOT_FOUND,
+                f"Workflow {workflow_id}@{version} chưa đăng ký",
+                hint=f"Kiểm file workflows/{workflow_id}/{version}/workflow.yaml có tồn tại không",
+                context={"workflow_id": workflow_id, "version": version},
+            )
+        return parse_workflow_spec(path.read_text(encoding="utf-8"))
 
     def providers_for(self, capability_id: str, version: int) -> list[ProviderManifest]:
         return [p for p in self._providers if p.implements_capability(capability_id, version)]

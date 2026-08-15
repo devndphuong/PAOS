@@ -53,6 +53,7 @@ import aiosqlite
 
 from agents.summarize.agent import SummarizeAgent
 from apps.paosd.router import Router
+from apps.paosd.workflow_runner import StepExecutionFailed, WorkflowRunner
 from kernel.errors import ErrorCode as KernelErrorCode
 from kernel.errors import PaosError
 from kernel.events.bus import EventBus, EventEnvelope
@@ -123,6 +124,9 @@ class Runner:
         }
         self._running_tasks: dict[str, asyncio.Task[None]] = {}
         self._router = Router(registry, events, store, self._resource_semaphores, workspace_root)
+        self._workflow_runner = WorkflowRunner(
+            manager, events, registry, store, self._router, workspace_root, agents=_AGENTS
+        )
 
     async def on_process_created(self, envelope: EventEnvelope) -> None:
         """Chạy đồng bộ trong dispatch() — chỉ 2 lần ghi DB, đủ nhanh để không
@@ -230,7 +234,6 @@ class Runner:
             return  # đã bị đổi trạng thái trước khi worker kịp chạy (vd cancel — M1-3b)
 
         workflow_ref = process.workflow_ref
-        match = _AGENTS.get(workflow_ref)
         # Đã ở RUNNING TRƯỚC khi vào đây == vừa được đưa lại hàng đợi sau crash
         # (`enqueue_existing()`, doc 19 P-M1-4), KHÔNG phải job mới. Đây là điều
         # kiện DUY NHẤT để cân nhắc resume() thay vì chạy lại từ đầu (P-M3-1).
@@ -242,6 +245,15 @@ class Runner:
         # Nếu ĐÃ ở RUNNING (resume sau crash — doc 19 P-M1-4), không transition lại:
         # đây là CÙNG một lượt RUNNING từ trước khi daemon chết.
 
+        # P-M3-2: workflow_ref "workflow:<id>@<version>" đi đường DAG nhiều step
+        # (WorkflowRunner), khác hẳn "agent:<id>@<version>" (1 agent = cả Process,
+        # M0-M2). WorkflowRunner tự quyết định SUCCEEDED/FAILED/COMPENSATING —
+        # return ngay, không rơi xuống nhánh _AGENTS bên dưới.
+        if workflow_ref.startswith("workflow:"):
+            await self._run_workflow(process_id, workflow_ref)
+            return
+
+        match = _AGENTS.get(workflow_ref)
         if match is None:
             await self._manager.transition(
                 process_id,
@@ -280,6 +292,54 @@ class Runner:
                 error_code=exc.code.value,
                 error_message=redact(exc.message),
             )
+            return
+        except Exception as exc:  # an toàn cuối — process không bao giờ được kẹt ở RUNNING
+            await self._manager.transition(
+                process_id,
+                ProcessState.FAILED,
+                error_code=KernelErrorCode.INTERNAL.value,
+                error_message=redact(str(exc)),
+            )
+            return
+
+        await self._manager.transition(process_id, ProcessState.SUCCEEDED)
+
+    async def _run_workflow(self, process_id: str, workflow_ref: str) -> None:
+        """P-M3-2 — đối xứng với `_run_agent`/`_resume_agent` nhưng cho
+        `workflow:<id>@<version>`. Tự quản lý toàn bộ transition cuối
+        (SUCCEEDED / FAILED / FAILED->COMPENSATING->FAILED_FINAL) vì chỉ ở
+        đây mới đọc được `spec.on_error` để biết có compensate hay không."""
+        ref = workflow_ref.removeprefix("workflow:")
+        workflow_id, _, version_str = ref.partition("@")
+        try:
+            spec = self._registry.get_workflow(workflow_id, int(version_str or "0"))
+        except (PaosError, ValueError) as exc:
+            code = (
+                exc.code.value
+                if isinstance(exc, PaosError)
+                else KernelErrorCode.INVALID_INPUT.value
+            )
+            message = exc.message if isinstance(exc, PaosError) else str(exc)
+            await self._manager.transition(
+                process_id, ProcessState.FAILED, error_code=code, error_message=redact(message)
+            )
+            return
+
+        payload = await self._load_created_payload(process_id)
+        inputs = payload.get("spec", {})
+        try:
+            await self._workflow_runner.run(process_id, spec, inputs)
+        except StepExecutionFailed as failure:
+            cause = failure.cause
+            code = cause.code.value if hasattr(cause, "code") else KernelErrorCode.INTERNAL.value
+            message = getattr(cause, "message", str(cause))
+            await self._manager.transition(
+                process_id, ProcessState.FAILED, error_code=code, error_message=redact(message)
+            )
+            if spec.on_error.get("compensate"):
+                await self._manager.transition(process_id, ProcessState.COMPENSATING)
+                await self._workflow_runner.compensate(process_id, spec, failure.context)
+                await self._manager.transition(process_id, ProcessState.FAILED_FINAL)
             return
         except Exception as exc:  # an toàn cuối — process không bao giờ được kẹt ở RUNNING
             await self._manager.transition(

@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://schemas/events/workflow.compensation.started.v1.schema.json",
+  "title": "workflow.compensation.started payload",
+  "description": "P-M3-2 (doc 19) — doc 05 §3.2 định sẵn tên/payload. Phát khi Process FAILED chuyển sang COMPENSATING vì workflow có khai báo on_error.compensate (doc 04 §4).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["steps"],
+  "properties": {
+    "steps": { "type": "array", "items": { "type": "string" } }
+  }
+}

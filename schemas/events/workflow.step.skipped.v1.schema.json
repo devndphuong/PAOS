@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://schemas/events/workflow.step.skipped.v1.schema.json",
+  "title": "workflow.step.skipped payload",
+  "description": "P-M3-2 (doc 19) — doc 05 §3.2 định sẵn tên/payload. Phát khi step.when đánh giá false (doc 04 §4).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["step_id", "condition"],
+  "properties": {
+    "step_id": { "type": "string" },
+    "condition": { "type": "string" }
+  }
+}

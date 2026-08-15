@@ -210,6 +210,33 @@
 
 ---
 
+## ADR-0027 — Biểu thức `${...}` của Workflow: parser tự viết, không `eval`
+**Trạng thái:** Accepted · 2026-08 · Quyết định M3-2 ([doc 19 P-M3-2](19-prompt-library.md)), chi tiết hoá ADR-0006
+
+**Bối cảnh:** ADR-0006 đã chốt Workflow là YAML khai báo, biểu thức `${...}` "chỉ đọc dữ liệu, không eval code tùy ý", nhưng chưa chọn CÚ PHÁP cụ thể. Doc 04 §4 cho 2 ví dụ thật cần hỗ trợ: truy cập trường lồng nhau (`${steps.detect.output.has_text_layer == false}`) và toán tử coalesce cho nhánh có thể bị bỏ qua (`${steps.ocr.output.text ?? steps.detect.output.text}`). Đây là nơi RSK-12 (Data ≠ Instruction, doc 09 §4) chạm trực tiếp: nội dung workflow.yaml có thể tới từ plugin bên thứ ba (M8) — bất kỳ hình thức nào cho phép biểu thức chạy được mã Python tuỳ ý đều biến "dữ liệu cấu hình" thành "chương trình không kiểm soát được", đúng thứ ADR-0006 đã cấm.
+
+**Quyết định:** viết một parser đệ quy xuống dòng (recursive-descent) nhỏ, tự tay, cho đúng 1 văn phạm tối giản:
+```
+expression := comparison | coalesce
+comparison := coalesce COMP_OP coalesce      # COMP_OP: == != < <= > >=
+coalesce    := operand ("??" operand)*
+operand     := path | literal
+path        := IDENT ("." IDENT)+            # steps.<id>.output.<field...> | inputs.<field...>
+literal     := NUMBER | STRING | "true" | "false" | "null"
+```
+Không có `&&`/`||` để gộp nhiều điều kiện — muốn logic phức tạp hơn thì viết một Agent (đúng hệ quả đã ghi ở ADR-0006). `path` chỉ đọc qua `dict.get()` từng chặng, trả `None` nếu thiếu (để `??` có cái mà rơi vào) — không có cách nào truy cập thuộc tính Python, gọi hàm, hay import bất cứ thứ gì. `${...}` chỉ được dùng làm TOÀN BỘ giá trị của một field YAML (không nhúng nhiều `${}` xen trong một chuỗi dài hơn) — mọi ví dụ ở doc 04 §4 đều theo hình dạng này.
+
+**Lý do:** an toàn tuyệt đối là thuộc tính CẤU TRÚC, không phải kỷ luật lọc input — parser không có đường nào chạm tới `eval`/`exec`/`compile`/attribute Python thật, nên không có bề mặt tấn công để rà soát, khác hẳn "eval với sandbox" (rủi ro luôn ẩn ở chỗ chưa nghĩ tới). Cũng khớp P11 (Boring technology) — không thêm phụ thuộc ngoài cho một văn phạm nhỏ hơn 40 dòng BNF.
+
+**Hệ quả:** thêm toán tử mới (vd `&&`, hàm `len()`, phép cộng số học) là thay đổi hợp đồng Workflow (doc 04 §4), phải qua ADR mới, không được âm thầm mở rộng parser. `path` trả `None` khi thiếu field (thay vì raise lỗi) là lựa chọn có chủ đích cho `??` — nghĩa là lỗi gõ sai tên field (`step.detect` thay vì `steps.detect`) không tự lộ ra ngay mà âm thầm thành `None`; giảm thiểu bằng validate DAG lúc load workflow (kernel/workflow/spec.py) kiểm path tồn tại trong tập step đã khai báo trước khi Process chạy, không đợi tới lúc `when:` bị đánh giá.
+
+**Đã loại:**
+1. **`eval()`/`ast.literal_eval()` với sandbox globals hạn chế** — trông đơn giản nhất, tái dùng cú pháp Python thật (không cần viết parser). Loại vì sandbox `eval()` không phải ranh giới an toàn đáng tin: kỹ thuật thoát sandbox qua chuỗi thuộc tính (`().__class__.__bases__`, `__subclasses__()`...) là tấn công đã biết rộng rãi, và ADR-0006 đã minh thị cấm "eval code tùy ý" — dùng `eval()` dù có lọc cũng vi phạm đúng câu chữ quyết định đó.
+2. **Thư viện biểu thức ngoài (`simpleeval`, JMESPath)** — `simpleeval` có API gọn, nhưng bên trong vẫn dựng `eval()` trên AST đã lọc (cùng lớp rủi ro như phương án 1, chỉ khác ai viết bộ lọc). JMESPath an toàn thật (không eval), nhưng là ngôn ngữ truy vấn JSON đầy đủ (slice, filter, hàm dựng sẵn...) — thừa năng lực so với nhu cầu thật (so sánh + coalesce), thêm một phụ thuộc ngoài + một cú pháp người dùng phải học chỉ để dùng 5% khả năng của nó, vi phạm P11.
+3. **Parser tự viết (đã chọn)** — khối lượng code nhỏ (~150 dòng), 100% nằm trong tầm kiểm soát/audit của dự án, không phụ thuộc ngoài, và văn phạm tối giản đúng bằng những gì doc 04 §4 cần — không hơn.
+
+---
+
 ## Backlog ADR (chưa quyết định, cần trước milestone tương ứng)
 
 | Dự kiến | Chủ đề | Cần trước |

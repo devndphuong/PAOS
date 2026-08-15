@@ -33,6 +33,22 @@ class EventType(StrEnum):
     # P-M3-1 khi AgentContext.progress() có caller đầu tiên.
     PROCESS_PROGRESS = "kernel.process.progress"
 
+    # doc 05 §3.1 "kernel.task.*" — thêm thật ở P-M3-2 khi Task (doc 03 §2.3)
+    # có caller đầu tiên: kernel/process/tasks.py::TaskStore.
+    TASK_SCHEDULED = "kernel.task.scheduled"
+    TASK_STARTED = "kernel.task.started"
+    TASK_COMPLETED = "kernel.task.completed"
+    TASK_FAILED = "kernel.task.failed"
+    TASK_RETRIED = "kernel.task.retried"
+
+    # doc 05 §3.2 Workflow & Decision — thêm thật ở P-M3-2 khi Workflow YAML
+    # engine (kernel/workflow/, apps/paosd/workflow_runner.py) có caller đầu
+    # tiên. workflow.selected (Decision Engine chọn workflow) hoãn tới M6 —
+    # M3 nhận workflow_ref trực tiếp từ caller, chưa có gì để "chọn".
+    WORKFLOW_STEP_SKIPPED = "workflow.step.skipped"
+    WORKFLOW_LOOP_ENTERED = "workflow.loop.entered"
+    WORKFLOW_COMPENSATION_STARTED = "workflow.compensation.started"
+
     # Domain event do plugin/agent tự định nghĩa qua manifest.emits (doc 05 §3.4).
     SUMMARY_CREATED = "summary.created"
 

@@ -137,6 +137,49 @@ async def test_golden_path_run_produces_artifact_and_explain_trace(
     assert artifact_id.startswith("art_")
 
 
+async def test_workflow_ref_golden_path_runs_full_dag_to_succeeded(
+    client: httpx.AsyncClient,
+) -> None:
+    """P-M3-2: `workflow:<id>@<version>` đi qua WorkflowRunner (DAG capability
+    -> agent), khác hẳn `agent:<id>@<version>` (1 agent = cả Process). Dùng
+    `workflows/demo.pipeline/1/workflow.yaml` thật trong repo (chỉ ghép lại
+    text.generate@1 + summarize.agent@1 đã có từ M0/M2, không cần agent mới)."""
+    resp = await client.post(
+        "/v1/jobs",
+        json={
+            "intent": "demo",
+            "spec": {"text": "PAOS là một hệ điều hành AI cá nhân chạy local-first."},
+            "name": "cli-demo-pipeline",
+            "workflow_ref": "workflow:demo.pipeline@1",
+        },
+    )
+    assert resp.status_code == 200
+    created = resp.json()
+
+    status = await _wait_for_terminal(client, created["pid"])
+    assert status["state"] == "SUCCEEDED"
+
+    explain_resp = await client.get(f"/v1/processes/{created['pid']}/explain")
+    trace = explain_resp.json()["trace"]
+    types = [e["type"] for e in trace]
+    assert "kernel.task.scheduled" in types
+    assert types.count("kernel.task.completed") == 2  # draft + summary
+    assert "summary.created" in types
+    assert types[-1] == "kernel.process.completed"
+
+
+async def test_unknown_workflow_id_fails_clean(client: httpx.AsyncClient) -> None:
+    resp = await client.post(
+        "/v1/jobs",
+        json={"intent": "x", "name": "a", "workflow_ref": "workflow:no_such_workflow@1"},
+    )
+    created = resp.json()
+
+    body = await _wait_for_terminal(client, created["pid"])
+    assert body["state"] == "FAILED"
+    assert body["error_code"] == "NOT_FOUND"
+
+
 async def test_post_jobs_returns_before_agent_finishes(client: httpx.AsyncClient) -> None:
     """ADR-0026: response POST /v1/jobs nghĩa là "đã tạo và đưa vào hàng đợi",
     KHÔNG còn nghĩa "đã chạy xong" — đây là điểm khác biệt cốt lõi của M1-2."""

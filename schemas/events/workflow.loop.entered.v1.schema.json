@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://schemas/events/workflow.loop.entered.v1.schema.json",
+  "title": "workflow.loop.entered payload",
+  "description": "P-M3-2 (doc 19) — doc 05 §3.2 định sẵn tên/payload. Phát khi on_fail.goto lặp lại một step đã qua (ADR-0006, giới hạn bằng max_loops).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["step_id", "loop_count"],
+  "properties": {
+    "step_id": { "type": "string" },
+    "loop_count": { "type": "integer", "minimum": 1 }
+  }
+}

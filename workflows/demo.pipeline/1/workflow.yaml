@@ -1,0 +1,26 @@
+# Workflow tối thiểu chứng minh Workflow YAML engine (doc 04 §4, doc 19 P-M3-2)
+# chạy được thật qua paosd — chỉ dùng lại text.generate@1 (M0/M2) và
+# summarize.agent@1 (M0) đã có sẵn, KHÔNG cần agent mới của M3-3+. Đây là
+# "hình dạng" mọi workflow YAML tương lai sẽ mở rộng, giống summarize.agent
+# từng là hình dạng cho mọi Agent (agents/summarize/agent.py).
+id: demo.pipeline
+version: 1
+description: >
+  2 bước tuần tự — capability sinh bản nháp, rồi agent tóm tắt lại — chứng
+  minh dữ liệu chảy đúng qua DAG (${steps.draft.output.text}).
+inputs:
+  text: {type: string, required: true}
+
+steps:
+  - id: draft
+    kind: capability
+    ref: text.generate@1
+    with: {prompt: "${inputs.text}", task_class: workflow_demo}
+
+  - id: summary
+    kind: agent
+    ref: summarize.agent@1
+    with: {text: "${steps.draft.output.text}"}
+
+outputs:
+  summary: "${steps.summary.output}"

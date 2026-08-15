@@ -41,7 +41,9 @@ git worktree add --detach "$WORKDIR" "$REF" >/dev/null 2>&1
 cd "$WORKDIR"
 
 # Đây là toàn bộ ý nghĩa của cổng — xoá sạch mọi tầng trên Kernel.
-rm -rf providers/ agents/ plugins/ capabilities/ apps/
+# workflows/ thêm ở P-M3-2 — cùng lý do capabilities/: nội dung YAML thật của
+# workflow là dữ liệu cấu hình, không phải bộ khung engine (kernel/workflow/).
+rm -rf providers/ agents/ plugins/ capabilities/ apps/ workflows/
 
 # Copy lại cấu hình test (nằm ngoài git ở một số setup)
 cp "$REPO_ROOT/pyproject.toml" ./pyproject.toml 2>/dev/null || true

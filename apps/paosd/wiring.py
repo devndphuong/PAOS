@@ -76,7 +76,9 @@ async def build_daemon(
     await store.start()
 
     events = EventBus(store)
-    registry = Registry(_REPO_ROOT / "capabilities", _REPO_ROOT / "providers")
+    registry = Registry(
+        _REPO_ROOT / "capabilities", _REPO_ROOT / "providers", _REPO_ROOT / "workflows"
+    )
     registry.load()
     for provider_id, adapter in (adapter_overrides or {}).items():
         registry.preload_adapter(provider_id, adapter)
