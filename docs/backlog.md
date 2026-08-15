@@ -28,6 +28,12 @@
 **Vì sao chấp nhận tạm thời:** P-M3-2 tập trung chứng minh cơ chế DAG (điều kiện, parallel, retry, vòng lặp, compensation) chạy đúng trong 1 lượt liên tục — đủ cho UC1 chạy 1 lần không bị crash giữa chừng (exit criteria M3 chưa yêu cầu resume-giữa-DAG). Thêm resume-per-step ngay bây giờ là trừu tượng hoá sớm khi chưa có ca dùng thật cần nó (P4).
 **Điều kiện trả nợ:** khi có nhu cầu thật (workflow chạy đủ lâu — vd render video M3-5 — để crash-giữa-chừng-rồi-restart trở thành tình huống đáng lo, hoặc khi viết test đối kháng "kill -9 giữa workflow" như đã làm cho Process đơn ở M1-4). Cách trả: trước khi chạy mỗi step trong `_execute_chain()`, kiểm `TaskStore.get_by_step()` — nếu đã SUCCEEDED, nạp lại `output` đã lưu (cần thêm cột lưu output hoặc đọc lại từ artifact) vào `context` rồi bỏ qua, không gọi lại Capability/Agent.
 
+### BL-006 · `apps/paosd/runner.py::_AGENTS` vẫn là dict hardcode, chưa nạp động theo manifest
+**Phát sinh:** M0 lát cắt 5c (1 agent) · vẫn còn ở P-M3-3 (2026-08-15) khi bảng đã có 3 agent thật (summarize, planning, script).
+**Hiện trạng:** Thêm agent mới vẫn phải sửa `apps/paosd/runner.py` (thêm import + 1 entry vào `_AGENTS`) — khác hẳn provider (`Registry.load_adapter()` nạp động qua `importlib`, đọc `provider.yaml::adapter`, thêm provider mới KHÔNG sửa code, đúng exit criteria M2). Agent chưa có cơ chế tương đương.
+**Vì sao chấp nhận tạm thời:** tới P-M3-2 mới có 1 agent thật (summarize), chưa đủ bằng chứng để thiết kế đúng hình dạng "nạp động" (P4 — trừu tượng hoá sớm khi chỉ có 1 ca dùng thường sai hình dạng, xem tiền lệ BL-003). P-M3-3 thêm 2 agent thật cùng lúc — đủ 3 agent để thấy rõ pattern chung (mọi agent đều: `agents/<name>/{manifest.yaml, agent.py, prompts/}`), nhưng làm refactor này NGAY TRONG lát cắt "planning → script" sẽ trộn 2 việc không liên quan vào 1 lát cắt (đúng thứ doc 19 §0.2 cảnh báo).
+**Điều kiện trả nợ:** lát cắt riêng, trước hoặc trong P-M3-4 (thêm Image/Voice/Subtitle Agent — đúng lúc exit criteria M3 đòi hỏi "Thêm Subtitle Agent mới: 0 dòng sửa Agent cũ", nên tiện thể chứng minh luôn "0 dòng sửa Runner"). Cách trả: `Registry.scan_agents()` quét `agents/*/manifest.yaml`, nạp `agents/<name>/agent.py` qua `importlib` (giống `load_adapter()`), Runner tra theo `agent_id@version` thay vì dict tĩnh.
+
 ### BL-004 · Ollama chưa an toàn để `Registry.load_adapter()` nạp — 2 nợ liên quan
 **Phát sinh:** M0 lát cắt 4c (Ollama adapter) + phát hiện lại khi dựng Conformance Suite (P-M2-2, 2026-08-10) + THỬ ĐÓNG rồi revert lại khi dựng Router (P-M2-3, 2026-08-14).
 **Hiện trạng:**

@@ -1,0 +1,7 @@
+id: planning.agent
+version: 1
+needs: [text]
+produces: [plan]
+capabilities: [text.generate@1]
+emits: [plan.created]
+checkpointable: false

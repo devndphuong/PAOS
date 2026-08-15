@@ -51,6 +51,10 @@ class EventType(StrEnum):
 
     # Domain event do plugin/agent tự định nghĩa qua manifest.emits (doc 05 §3.4).
     SUMMARY_CREATED = "summary.created"
+    # doc 05 §3.4 đã liệt tên này từ đầu dự án — agents/planning/, agents/script/
+    # (P-M3-3) là caller thật đầu tiên.
+    PLAN_CREATED = "plan.created"
+    SCRIPT_CREATED = "script.created"
 
     # Router (doc 06 §2.3, doc 19 P-M2-3): 1 provider lỗi retryable, chuyển
     # sang provider kế tiếp trong chuỗi fallback.

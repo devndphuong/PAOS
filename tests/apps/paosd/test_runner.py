@@ -168,6 +168,38 @@ async def test_workflow_ref_golden_path_runs_full_dag_to_succeeded(
     assert types[-1] == "kernel.process.completed"
 
 
+async def test_video_plan_and_script_golden_path_runs_two_real_agents(
+    client: httpx.AsyncClient,
+) -> None:
+    """P-M3-3: Video plugin phần 1 — PlanningAgent -> ScriptAgent, 2 agent THẬT
+    (không phải capability giả lập như demo.pipeline), chứng minh P4: thêm
+    ScriptAgent không sửa PlanningAgent, thêm cả 2 chỉ sửa Runner._AGENTS
+    (BL-006) chứ không sửa WorkflowRunner."""
+    resp = await client.post(
+        "/v1/jobs",
+        json={
+            "intent": "video",
+            "spec": {"text": "MongoDB là cơ sở dữ liệu NoSQL hướng tài liệu."},
+            "name": "cli-video-plan-script",
+            "workflow_ref": "workflow:video.plan_and_script@1",
+        },
+    )
+    assert resp.status_code == 200
+    created = resp.json()
+
+    status = await _wait_for_terminal(client, created["pid"])
+    assert status["state"] == "SUCCEEDED"
+
+    explain_resp = await client.get(f"/v1/processes/{created['pid']}/explain")
+    trace = explain_resp.json()["trace"]
+    types = [e["type"] for e in trace]
+    assert types.count("kernel.task.scheduled") == 2  # plan + script
+    assert "plan.created" in types
+    assert "script.created" in types
+    assert types.index("plan.created") < types.index("script.created")
+    assert types[-1] == "kernel.process.completed"
+
+
 async def test_unknown_workflow_id_fails_clean(client: httpx.AsyncClient) -> None:
     resp = await client.post(
         "/v1/jobs",

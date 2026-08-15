@@ -1,0 +1,7 @@
+id: script.agent
+version: 1
+needs: [plan]
+produces: [script]
+capabilities: [text.generate@1]
+emits: [script.created]
+checkpointable: false

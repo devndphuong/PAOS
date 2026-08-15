@@ -51,6 +51,8 @@ from typing import Any
 
 import aiosqlite
 
+from agents.planning.agent import PlanningAgent
+from agents.script.agent import ScriptAgent
 from agents.summarize.agent import SummarizeAgent
 from apps.paosd.router import Router
 from apps.paosd.workflow_runner import StepExecutionFailed, WorkflowRunner
@@ -80,13 +82,22 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _DEFAULT_PRIORITY = 5
 _DEFAULT_MAX_PARALLEL = 3
 
-# workflow_ref -> (agent, thư mục prompts). M0 chỉ có một agent thật — bảng
-# tra cứu tĩnh này là chỗ M3+ sẽ thay bằng nạp động theo manifest thay vì
-# hardcode (doc 18 §10) — khi có nhiều agent thật, đúng nguyên tắc P4.
+# workflow_ref/step ref -> (agent, thư mục prompts). Bảng tra cứu tĩnh — chỗ
+# M3+ sẽ thay bằng nạp động theo manifest (doc 18 §10, giống
+# Registry.load_adapter() cho provider). 3 agent thật từ P-M3-3 (BL-006,
+# docs/backlog.md) — đủ bằng chứng P4 để trả nợ này sớm, chưa làm ở lát này.
 _AGENTS: dict[str, tuple[Agent, Path]] = {
     "agent:summarize.agent@1": (
         SummarizeAgent(),
         _REPO_ROOT / "agents" / "summarize" / "prompts",
+    ),
+    "agent:planning.agent@1": (
+        PlanningAgent(),
+        _REPO_ROOT / "agents" / "planning" / "prompts",
+    ),
+    "agent:script.agent@1": (
+        ScriptAgent(),
+        _REPO_ROOT / "agents" / "script" / "prompts",
     ),
 }
 

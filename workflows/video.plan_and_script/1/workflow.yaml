@@ -1,0 +1,27 @@
+# Video plugin phần 1 (doc 01 §3 UC1, doc 13 M3, doc 19 P-M3-3): planning ->
+# script. Nhận trực tiếp văn bản nguồn (topic hoặc text đã trích) — ingest PDF
+# thật (doc.parse@1/doc.ocr@1) chưa có capability nào đăng ký, ngoài phạm vi
+# lát này. Phần 2 (P-M3-4: image ∥ voice ∥ subtitle) và render (P-M3-5) sẽ nối
+# tiếp ở workflows/video.from_pdf/ khi các agent đó tồn tại — KHÔNG sửa
+# workflow này để thêm, đúng tinh thần P4 (thêm bước không sửa bước cũ).
+id: video.plan_and_script
+version: 1
+description: >
+  Planning Agent -> Script Agent — chứng minh dữ liệu chảy qua DAG 2 agent
+  thật (không phải capability giả lập như demo.pipeline).
+inputs:
+  text: {type: string, required: true}
+
+steps:
+  - id: plan
+    kind: agent
+    ref: planning.agent@1
+    with: {text: "${inputs.text}"}
+
+  - id: script
+    kind: agent
+    ref: script.agent@1
+    with: {plan: "${steps.plan.output.plan}"}
+
+outputs:
+  script: "${steps.script.output.text}"
