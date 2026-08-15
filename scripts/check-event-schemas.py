@@ -80,6 +80,9 @@ PAST_TENSE_OK = {
     # tại một thời điểm, không phải hành động đã hoàn tất, nên không có dạng
     # quá khứ tự nhiên — bịa một động từ quá khứ gượng ép sẽ tệ hơn giữ nguyên.
     "progress",
+    # P-M3-5 — "rendered" (video.rendered), thì quá khứ hợp lệ, lấy nguyên văn
+    # từ doc 05 §3.4 (đã định sẵn từ đầu dự án).
+    "rendered",
 }
 
 errors: list[str] = []

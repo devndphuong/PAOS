@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://schemas/events/video.rendered.v1.schema.json",
+  "title": "video.rendered payload",
+  "description": "doc 05 §3.4 — domain event do agents/render/ tự định nghĩa qua manifest.emits (P-M3-5). `degraded` = true khi render không có ảnh (LOC-05, doc 13 M3 exit criteria) — tín hiệu RÕ RÀNG, không lỗi âm thầm.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["artifact_id", "duration_sec", "degraded"],
+  "properties": {
+    "artifact_id": { "type": "string" },
+    "duration_sec": { "type": "number", "minimum": 0 },
+    "degraded": { "type": "boolean" }
+  }
+}

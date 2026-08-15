@@ -1,0 +1,8 @@
+id: render.agent
+version: 1
+needs: [image, voice, subtitle]
+produces: [video]
+capabilities: [video.render@1]
+emits: [video.rendered]
+checkpointable: false
+entry: agents.render.agent:RenderAgent

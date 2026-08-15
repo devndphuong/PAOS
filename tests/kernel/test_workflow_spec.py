@@ -247,3 +247,30 @@ def test_invalid_kind_raises() -> None:
 def test_missing_ref_raises() -> None:
     with pytest.raises(PaosError):
         parse_workflow_spec("id: w\nversion: 1\nsteps: [{id: a, kind: capability}]")
+
+
+def test_step_required_defaults_true() -> None:
+    spec = parse_workflow_spec("id: w\nversion: 1\nsteps: [{id: a, kind: capability, ref: x@1}]")
+    assert spec.steps[0].required is True
+
+
+def test_step_required_false_parsed_and_frozen() -> None:
+    yaml_text = """
+    id: w
+    version: 1
+    steps:
+      - id: media
+        kind: parallel
+        steps:
+          - {id: image, kind: agent, ref: x@1, required: false}
+          - {id: voice, kind: agent, ref: y@1}
+    """
+    spec = parse_workflow_spec(yaml_text)
+    media = spec.steps[0]
+    assert media.sub_steps[0].required is False
+    assert media.sub_steps[1].required is True
+
+    frozen = to_json_dict(spec)
+    frozen_sub_steps = frozen["steps"][0]["steps"]
+    assert frozen_sub_steps[0]["required"] is False
+    assert "required" not in frozen_sub_steps[1]  # mặc định True -> không ghi thừa

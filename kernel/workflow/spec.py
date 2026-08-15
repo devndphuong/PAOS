@@ -57,6 +57,14 @@ class Step:
     retry: RetryPolicy = field(default_factory=RetryPolicy)
     on_fail: OnFail | None = None
     sub_steps: tuple[Step, ...] = ()  # chỉ non-empty khi kind == "parallel"
+    # required=False CHỈ có ý nghĩa cho sub-step trong 1 group "parallel"
+    # (doc 13 M3 exit criteria LOC-05, P-M3-5): step thất bại (hết retry) mà
+    # required=False thì KHÔNG làm cả group thất bại — group tiếp tục ở chế độ
+    # degraded (thiếu nhánh đó), workflow vẫn hoàn tất, không crash, không lỗi
+    # âm thầm (vẫn phát kernel.task.failed thật + workflow.step.skipped rõ
+    # ràng, xem apps/paosd/workflow_runner.py). Step top-level (không trong
+    # parallel) CHƯA có ý nghĩa cho field này — thất bại luôn lan lên Process.
+    required: bool = True
 
 
 @dataclass(frozen=True)
@@ -128,6 +136,7 @@ def _parse_step(data: dict[str, Any], *, in_parallel: bool) -> Step:
         resources=tuple(data.get("resources", [])),
         retry=_parse_retry(data.get("retry")),
         on_fail=_parse_on_fail(data.get("on_fail")),
+        required=bool(data.get("required", True)),
     )
 
 
@@ -326,6 +335,8 @@ def _step_to_dict(step: Step) -> dict[str, Any]:
             "max_loops": step.on_fail.max_loops,
             "carry": step.on_fail.carry,
         }
+    if not step.required:
+        result["required"] = False
     return result
 
 

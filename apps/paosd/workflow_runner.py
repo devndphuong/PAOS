@@ -198,12 +198,29 @@ class WorkflowRunner:
             return_exceptions=True,
         )
         wall_ms = _duration_ms_between(wall_start, clock.now())
-        for result in results:
-            if isinstance(result, BaseException):
+        # doc 13 M3 exit criteria LOC-05 (P-M3-5): sub-step required=False thất
+        # bại KHÔNG làm cả group thất bại — Task của chính nó đã ghi FAILED
+        # thật ở _run_single_step_with_retry() (không lỗi âm thầm), ta chỉ
+        # KHÔNG lan lỗi lên trên, coi như "bỏ qua có kiểm soát" và phát thêm
+        # workflow.step.skipped để rõ ràng đây là quyết định, không phải bug.
+        for sub, result in zip(group.sub_steps, results, strict=True):
+            if not isinstance(result, BaseException):
+                continue
+            if sub.required:
                 await self._tasks.fail(
                     group_task.task_id, error_code=KernelErrorCode.DEPENDENCY_FAILED.value
                 )
                 raise result
+            context["steps"][sub.step_id] = {"output": None, "skipped": True}
+            await self._events.publish(
+                EventType.WORKFLOW_STEP_SKIPPED.value,
+                source="kernel.workflow",
+                payload={
+                    "step_id": sub.step_id,
+                    "condition": f"required: false, degraded sau khi thất bại: {result}",
+                },
+                process_id=process_id,
+            )
         context["steps"][group.step_id] = {
             sub.step_id: context["steps"][sub.step_id] for sub in group.sub_steps
         }

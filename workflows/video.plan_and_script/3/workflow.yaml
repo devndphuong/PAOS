@@ -1,0 +1,56 @@
+# Video plugin phần 3 — Render (doc 01 §3 UC1, doc 13 M3, doc 19 P-M3-5).
+# version=3 vì đổi SHAPE (thêm bước render) — doc 04 §6, ADR đóng băng bản đã
+# chạy. version=1 (P-M3-3), version=2 (P-M3-4) GIỮ NGUYÊN, không đụng.
+#
+# Khép kín UC1: Planning -> Script -> (Image ∥ Voice ∥ Subtitle) -> Render.
+# `image` required: false — doc 13 M3 exit criteria LOC-05: chạy khi
+# image.generate không có GPU vẫn phải hoàn tất ở chế độ degraded (thiếu
+# minh hoạ), không crash, không lỗi âm thầm. voice/subtitle vẫn bắt buộc —
+# thiếu 1 trong 2 thì không còn gì để dựng thành video.
+id: video.plan_and_script
+version: 3
+description: >
+  UC1 end-to-end offline (doc 01 §3): Planning -> Script -> media song song
+  -> Render. Toàn bộ provider hôm nay là stub/local (chưa cần ComfyUI/edge-
+  tts/ffmpeg cài sẵn) — xem docs/environment-baseline.md.
+inputs:
+  text: {type: string, required: true}
+
+steps:
+  - id: plan
+    kind: agent
+    ref: planning.agent@1
+    with: {text: "${inputs.text}"}
+
+  - id: script
+    kind: agent
+    ref: script.agent@1
+    with: {plan: "${steps.plan.output.plan}"}
+
+  - id: media
+    kind: parallel
+    steps:
+      - id: image
+        kind: agent
+        ref: image.agent@1
+        with: {script: "${steps.script.output.text}"}
+        required: false
+      - id: voice
+        kind: agent
+        ref: voice.agent@1
+        with: {script: "${steps.script.output.text}"}
+      - id: subtitle
+        kind: agent
+        ref: subtitle.agent@1
+        with: {script: "${steps.script.output.text}"}
+
+  - id: render
+    kind: agent
+    ref: render.agent@1
+    with:
+      images: "${steps.media.image.output.images}"
+      voice: "${steps.media.voice.output.audio}"
+      subtitle: "${steps.media.subtitle.output.text}"
+
+outputs:
+  video: "${steps.render.output.video}"

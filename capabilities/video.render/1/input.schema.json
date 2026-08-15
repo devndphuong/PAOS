@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://capabilities/video.render/1/input.schema.json",
+  "title": "video.render@1 input",
+  "description": "doc 02 §1 L4 (P-M3-5) — ghép ảnh + âm thanh + phụ đề thành video. `images` TÙY CHỌN (mảng rỗng hợp lệ) — chế độ degraded khi image.generate không có GPU (doc 13 M3 exit criteria LOC-05) vẫn phải render được, chỉ thiếu minh hoạ.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["voice", "subtitle"],
+  "properties": {
+    "images": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "object",
+        "properties": { "placeholder_text": { "type": "string" } }
+      }
+    },
+    "voice": {
+      "type": "object",
+      "required": ["duration_sec"],
+      "properties": {
+        "placeholder_text": { "type": "string" },
+        "duration_sec": { "type": "number", "minimum": 0 }
+      }
+    },
+    "subtitle": {
+      "type": "object",
+      "required": ["text"],
+      "properties": { "text": { "type": "string" } }
+    }
+  }
+}

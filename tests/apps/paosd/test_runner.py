@@ -6,6 +6,7 @@ StateStore thật."""
 
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import aiosqlite
@@ -27,6 +28,7 @@ from sdk.agent import (
     ReviewResult,
     ValidationResult,
 )
+from sdk.provider import Estimate, Health, ProviderError
 
 _TERMINAL_STATES = {"SUCCEEDED", "FAILED", "CANCELLED"}
 
@@ -237,6 +239,106 @@ async def test_video_plan_script_media_golden_path_runs_parallel_branch(
     )
     parallel = media_completed["payload"]["parallel"]
     assert parallel["saved_ms"] == max(0, parallel["sequential_ms"] - parallel["wall_ms"])
+
+
+async def test_uc1_end_to_end_offline_full_pipeline(client: httpx.AsyncClient) -> None:
+    """P-M3-5 — doc 01 §3 UC1, doc 13 M3 exit criteria: Planning -> Script ->
+    (Image ∥ Voice ∥ Subtitle) -> Render, offline 100% (toàn bộ provider stub/
+    local, không cần mạng/GPU thật). Kiểm luôn progress() có caller thật
+    (P-M3-1) và tín hiệu tiết kiệm thời gian (P-M3-4) cùng có mặt trong 1
+    lượt chạy đầy đủ."""
+    resp = await client.post(
+        "/v1/jobs",
+        json={
+            "intent": "video",
+            "spec": {"text": "MongoDB là cơ sở dữ liệu NoSQL hướng tài liệu."},
+            "name": "cli-uc1",
+            "workflow_ref": "workflow:video.plan_and_script@3",
+        },
+    )
+    assert resp.status_code == 200
+    created = resp.json()
+
+    status = await _wait_for_terminal(client, created["pid"], max_wait_s=10.0)
+    assert status["state"] == "SUCCEEDED"
+
+    explain_resp = await client.get(f"/v1/processes/{created['pid']}/explain")
+    trace = explain_resp.json()["trace"]
+    types = [e["type"] for e in trace]
+    assert types.index("plan.created") < types.index("script.created")
+    assert "image.batch.created" in types
+    assert "voice.created" in types
+    assert "subtitle.created" in types
+    assert "kernel.process.progress" in types
+    video_rendered = next(e for e in trace if e["type"] == "video.rendered")
+    assert video_rendered["payload"]["degraded"] is False
+    assert types[-1] == "kernel.process.completed"
+
+
+async def test_uc1_degraded_mode_when_image_generate_has_no_gpu(tmp_path: Path) -> None:
+    """doc 13 M3 exit criteria LOC-05: chạy UC1 khi `image.generate` không có
+    GPU khả dụng (giả lập) -> workflow vẫn hoàn tất ở chế độ degraded, không
+    crash, không lỗi âm thầm — `video.rendered.degraded=True` là tín hiệu rõ
+    ràng, `kernel.task.failed`/`workflow.step.skipped` ghi lại lý do thật."""
+
+    class _NoGpuAdapter:
+        manifest = SimpleNamespace(resources=[])
+
+        async def health(self) -> Health:
+            return Health(healthy=False)
+
+        async def estimate(self, capability: str, payload: dict) -> Estimate:
+            return Estimate(cost=0.0, latency_ms=1, confidence=1.0)
+
+        async def invoke(self, capability: str, payload: dict, ctx) -> dict:
+            raise ProviderError(
+                "RESOURCE_EXHAUSTED",
+                "không có GPU khả dụng (giả lập, test LOC-05)",
+                retryable=False,
+                hint="test",
+            )
+
+        async def cancel(self, call_id: str) -> None:
+            pass
+
+    daemon = await build_daemon(
+        tmp_path / ".paos" / "state.db",
+        workspace_root=tmp_path / "workspace",
+        adapter_overrides={"stub.image": _NoGpuAdapter()},
+    )
+    try:
+        transport = httpx.ASGITransport(app=daemon.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                "/v1/jobs",
+                json={
+                    "intent": "video",
+                    "spec": {"text": "MongoDB là cơ sở dữ liệu NoSQL hướng tài liệu."},
+                    "name": "cli-uc1-degraded",
+                    "workflow_ref": "workflow:video.plan_and_script@3",
+                },
+            )
+            assert resp.status_code == 200
+            created = resp.json()
+
+            status = await _wait_for_terminal(client, created["pid"], max_wait_s=10.0)
+            assert status["state"] == "SUCCEEDED"  # KHÔNG crash, KHÔNG fail cả Process
+
+            explain_resp = await client.get(f"/v1/processes/{created['pid']}/explain")
+            trace = explain_resp.json()["trace"]
+            types = [e["type"] for e in trace]
+
+            assert "kernel.task.failed" in types  # lỗi image GHI LẠI THẬT, không nuốt
+            skipped = next(e for e in trace if e["type"] == "workflow.step.skipped")
+            assert skipped["payload"]["step_id"] == "image"
+            assert "image.batch.created" not in types  # không có ảnh nào được publish
+
+            video_rendered = next(e for e in trace if e["type"] == "video.rendered")
+            assert video_rendered["payload"]["degraded"] is True
+            assert "voice.created" in types  # nhánh khác vẫn chạy bình thường
+            assert "subtitle.created" in types
+    finally:
+        await daemon.stop()
 
 
 async def test_unknown_workflow_id_fails_clean(client: httpx.AsyncClient) -> None:

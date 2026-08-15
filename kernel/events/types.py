@@ -62,6 +62,9 @@ class EventType(StrEnum):
     IMAGE_BATCH_CREATED = "image.batch.created"
     VOICE_CREATED = "voice.created"
     SUBTITLE_CREATED = "subtitle.created"
+    # doc 05 §3.4 đã liệt "video.rendered" từ đầu dự án — agents/render/
+    # (P-M3-5) là caller thật đầu tiên, khép kín UC1 (doc 01 §3).
+    VIDEO_RENDERED = "video.rendered"
 
     # Router (doc 06 §2.3, doc 19 P-M2-3): 1 provider lỗi retryable, chuyển
     # sang provider kế tiếp trong chuỗi fallback.

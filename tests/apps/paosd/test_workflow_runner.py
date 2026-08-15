@@ -369,6 +369,71 @@ async def test_parallel_group_records_honest_time_saved_vs_sequential(
     assert parallel["sequential_ms"] == expected_sequential
 
 
+async def test_parallel_group_continues_when_optional_sub_step_fails(
+    harness: Harness, fake_review_adapter: _FakeAdapter
+) -> None:
+    """doc 13 M3 exit criteria LOC-05 (P-M3-5): sub-step `required: false` thất
+    bại KHÔNG làm cả group thất bại — group vẫn thành công ở chế độ degraded,
+    có tín hiệu rõ ràng (`workflow.step.skipped`), không lỗi âm thầm."""
+    fake_review_adapter.fail_times = 999  # luôn lỗi, mô phỏng "không có GPU"
+
+    events_received: list[EventEnvelope] = []
+
+    async def _handler(e: EventEnvelope) -> None:
+        events_received.append(e)
+
+    harness.events.subscribe("watcher", "workflow.step.skipped", _handler)
+
+    spec = parse_workflow_spec(
+        """
+        id: t
+        version: 1
+        steps:
+          - id: media
+            kind: parallel
+            steps:
+              - id: image
+                kind: capability
+                ref: text.review@1
+                with: {prompt: img}
+                required: false
+              - {id: voice, kind: capability, ref: text.generate@1, with: {prompt: v}}
+        """
+    )
+    process_id = await harness.new_process()
+    context = await harness.runner().run(process_id, spec, {})
+
+    assert context["steps"]["media"]["image"] == {"output": None, "skipped": True}
+    assert context["steps"]["media"]["voice"]["output"]["text"].startswith("ok-")
+    assert len(events_received) == 1
+    assert events_received[0].payload["step_id"] == "image"
+
+
+async def test_parallel_group_fails_when_required_sub_step_fails(
+    harness: Harness, fake_review_adapter: _FakeAdapter
+) -> None:
+    """Đối chứng: KHÔNG khai `required: false` thì hành vi cũ giữ nguyên —
+    1 sub-step thất bại vẫn làm cả group (và Process) thất bại."""
+    fake_review_adapter.fail_times = 999
+
+    spec = parse_workflow_spec(
+        """
+        id: t
+        version: 1
+        steps:
+          - id: media
+            kind: parallel
+            steps:
+              - {id: image, kind: capability, ref: text.review@1, with: {prompt: img}}
+              - {id: voice, kind: capability, ref: text.generate@1, with: {prompt: v}}
+        """
+    )
+    process_id = await harness.new_process()
+    with pytest.raises(StepExecutionFailed) as exc_info:
+        await harness.runner().run(process_id, spec, {})
+    assert exc_info.value.step_id == "image"
+
+
 async def test_on_fail_loop_reruns_target_step_then_succeeds(
     harness: Harness, fake_review_adapter: _FakeAdapter
 ) -> None:

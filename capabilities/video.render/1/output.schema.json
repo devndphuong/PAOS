@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://capabilities/video.render/1/output.schema.json",
+  "title": "video.render@1 output",
+  "description": "doc 02 §1 L4 (P-M3-5). `placeholder_text` thay cho byte video thật — provider stub hôm nay không gọi ffmpeg thật (chưa cài trên máy dev, xem docs/environment-baseline.md); `duration_sec` = duration_sec của voice (video dài bằng lời đọc, không bịa số riêng).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["video"],
+  "properties": {
+    "video": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["duration_sec"],
+      "properties": {
+        "placeholder_text": { "type": "string" },
+        "path": { "type": "string" },
+        "duration_sec": { "type": "number", "minimum": 0 },
+        "image_count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "meta": { "type": "object" }
+  }
+}
