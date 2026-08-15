@@ -51,8 +51,11 @@ def runner(manager: ProcessManager, events: EventBus, store: StateStore, tmp_pat
 
 
 @pytest.fixture
-async def client(manager: ProcessManager, events: EventBus, runner: Runner):
-    transport = httpx.ASGITransport(app=create_app(manager, events, runner))
+async def client(
+    manager: ProcessManager, events: EventBus, runner: Runner, store: StateStore, tmp_path: Path
+):
+    app = create_app(manager, events, runner, store, tmp_path / "workspace")
+    transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
 

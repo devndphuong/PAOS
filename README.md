@@ -5,7 +5,7 @@
 
 PAOS không phải một chatbot có vỏ đẹp. Model AI chỉ là một lớp mỏng (Provider Layer) bên trong một kiến trúc hệ điều hành thật: Kernel · Scheduler · Event Bus · Capability · Agent · Workflow. Đổi model không sửa Kernel. Tài sản tích lũy sau nhiều năm không phải là code, mà là **Operational Knowledge** — xem [doc 07](docs/07-memory-and-knowledge.md) và [doc 20](docs/20-vision-beyond-v1.md).
 
-**Trạng thái:** đang triển khai, M0–M3 xong, M4 (Quality & Self-Correction) đang làm dở. `paosd`/`paosctl` chạy được thật — xem [Hướng dẫn sử dụng & Luồng dự án](docs/user-guide.md) và tiến độ ở [doc 13 — Roadmap](docs/13-roadmap-and-milestones.md).
+**Trạng thái:** đang triển khai, M0–M4 xong, M5 (Memory & Knowledge) sắp bắt đầu. `paosd`/`paosctl` chạy được thật — xem [Hướng dẫn sử dụng & Luồng dự án](docs/user-guide.md) và tiến độ ở [doc 13 — Roadmap](docs/13-roadmap-and-milestones.md).
 
 ## 1. Tài liệu là nguồn sự thật
 

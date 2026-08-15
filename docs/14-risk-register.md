@@ -50,7 +50,7 @@ Nếu Qwen 14B viết script quá tệ, toàn bộ lời hứa "chi phí 0" sụ
 ## Rủi ro trung bình (R 5–9)
 
 ### RSK-10 · LLM-as-judge chấm điểm không đáng tin · P4 I2 **R8**
-**Giảm thiểu:** ưu tiên kiểm tất định · judge khác generator · hiệu chuẩn tay 20 mẫu/tháng · dùng `edit_rate` làm chỉ số thật.
+**Giảm thiểu:** ưu tiên kiểm tất định · judge khác generator · hiệu chuẩn tay 20 mẫu/tháng · dùng `edit_rate` làm chỉ số thật. **Cập nhật (M4, P-M4-3, 2026-08-16):** `edit_rate` lần đầu có triển khai thật — `sdk/eval.py::edit_rate()` (Levenshtein mức từ) + `apps/paosd/artifact_store.py::record_edit()` ghi vào bảng `artifact_edits` mỗi khi người dùng tự tay sửa 1 artifact (`POST /v1/artifacts/{id}/edited`, `paosctl artifact edit`). Hiệu chuẩn tay 20 mẫu/tháng vẫn CHƯA có quy trình tự động (nợ mở, chưa ghi backlog riêng — cần khi có đủ khối lượng job thật để lấy mẫu).
 
 ### RSK-11 · Memory tích lũy rác, càng dùng càng tệ · P3 I3 **R9**
 **Giảm thiểu:** chỉ ghi L3 từ hành vi quan sát được · ngưỡng confidence · consolidation có kiểm duyệt · `paosctl memory review` định kỳ · nút quên luôn sẵn.

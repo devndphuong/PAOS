@@ -112,6 +112,7 @@ Ví dụ theo luồng video: `agent.planning.completed` → `plan.created` → S
 | `quality.review.passed` | score, breakdown |
 | `quality.review.rejected` | score, failed_criteria[], feedback |
 | `quality.escalated.to_human` | artifact_id, reason |
+| `quality.artifact.edited` | artifact_id, edited_artifact_id, edit_rate — mới P-M4-3, không có trong bản gốc |
 
 ### 3.7 Memory & Knowledge
 | Event | Payload |

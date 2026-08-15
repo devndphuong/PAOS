@@ -223,6 +223,40 @@ def events_replay(ctx: click.Context, from_ts: str, to_ts: str, to_subscriber: s
     click.echo(f"✓ Đã giao lại {body['replayed']} event cho subscriber '{to_subscriber}'")
 
 
+@cli.group()
+def artifact() -> None:
+    """Xem/sửa artifact (doc 08 §5, P-M4-3)."""
+
+
+@artifact.command("show")
+@click.argument("artifact_id")
+@click.pass_context
+def artifact_show(ctx: click.Context, artifact_id: str) -> None:
+    """In nội dung 1 artifact text — dùng trước khi `artifact edit` để biết
+    sửa gì (workspace/ nằm trên cùng máy, nhưng đi qua paosd cho nhất quán
+    ADR-0025 thay vì đọc thẳng file)."""
+    with _client(ctx) as client:
+        body = _get(client, f"/v1/artifacts/{artifact_id}").json()
+    click.echo(f"# {body['artifact_id']} ({body['type']}, {body['mime']}) — {body['path']}")
+    click.echo(body["content"])
+
+
+@artifact.command("edit")
+@click.argument("artifact_id")
+@click.argument("edited_file", type=click.Path(exists=True, dir_okay=False))
+@click.pass_context
+def artifact_edit(ctx: click.Context, artifact_id: str, edited_file: str) -> None:
+    """Nộp bản đã tự tay sửa cho ARTIFACT_ID — ghi `edit_rate` (doc 08 §5,
+    doc 13 M4 exit criteria). EDITED_FILE là file cục bộ bạn vừa sửa xong
+    (vd sau khi `paosctl artifact show` rồi chỉnh trong editor riêng)."""
+    with open(edited_file, encoding="utf-8") as f:
+        edited_text = f.read()
+    with _client(ctx) as client:
+        resp = _post(client, f"/v1/artifacts/{artifact_id}/edited", json={"text": edited_text})
+    body = resp.json()
+    click.echo(f"✓ Đã ghi bản sửa {body['edited_artifact_id']} — edit_rate={body['edit_rate']:.1%}")
+
+
 @cli.command()
 @click.pass_context
 def doctor(ctx: click.Context) -> None:

@@ -204,6 +204,59 @@ def test_events_replay_to_runner_reports_count(runner: CliRunner, api_url: str) 
     assert "Đã giao lại" in result.output
 
 
+def _run_and_get_artifact_id(runner: CliRunner, api_url: str) -> str:
+    run_result = runner.invoke(
+        cli, ["--api-url", api_url, "run", "PAOS là một hệ điều hành AI cá nhân chạy local-first."]
+    )
+    pid = run_result.output.splitlines()[0].split("pid=")[1].split(" ")[0]
+    explain = runner.invoke(cli, ["--api-url", api_url, "explain", pid])
+    line = next(line for line in explain.output.splitlines() if "summary.created" in line)
+    return line.split('"artifact_id": "')[1].split('"')[0]
+
+
+def test_artifact_show_prints_content(runner: CliRunner, api_url: str) -> None:
+    artifact_id = _run_and_get_artifact_id(runner, api_url)
+    result = runner.invoke(cli, ["--api-url", api_url, "artifact", "show", artifact_id])
+    assert result.exit_code == 0
+    assert artifact_id in result.output
+    assert "summary" in result.output
+
+
+def test_artifact_show_unknown_id_reports_error(runner: CliRunner, api_url: str) -> None:
+    result = runner.invoke(cli, ["--api-url", api_url, "artifact", "show", "art_khong_ton_tai"])
+    assert result.exit_code == 1
+    assert "✗" in result.output
+
+
+def test_artifact_edit_reports_edit_rate(runner: CliRunner, api_url: str, tmp_path: Path) -> None:
+    artifact_id = _run_and_get_artifact_id(runner, api_url)
+    edited_file = tmp_path / "edited.txt"
+    edited_file.write_text("bản đã tự tay sửa hoàn toàn khác", encoding="utf-8")
+
+    result = runner.invoke(
+        cli, ["--api-url", api_url, "artifact", "edit", artifact_id, str(edited_file)]
+    )
+    assert result.exit_code == 0
+    assert "edit_rate=" in result.output
+
+    # bản sửa đọc lại được qua chính `artifact show`.
+    edited_artifact_id = result.output.split("Đã ghi bản sửa ")[1].split(" ")[0]
+    show_result = runner.invoke(cli, ["--api-url", api_url, "artifact", "show", edited_artifact_id])
+    assert "bản đã tự tay sửa hoàn toàn khác" in show_result.output
+
+
+def test_artifact_edit_unknown_id_reports_error(
+    runner: CliRunner, api_url: str, tmp_path: Path
+) -> None:
+    edited_file = tmp_path / "edited.txt"
+    edited_file.write_text("nội dung", encoding="utf-8")
+    result = runner.invoke(
+        cli, ["--api-url", api_url, "artifact", "edit", "art_khong_ton_tai", str(edited_file)]
+    )
+    assert result.exit_code == 1
+    assert "✗" in result.output
+
+
 def test_events_replay_unknown_subscriber_reports_error(runner: CliRunner, api_url: str) -> None:
     result = runner.invoke(
         cli,

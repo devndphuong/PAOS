@@ -89,6 +89,9 @@ PAST_TENSE_OK = {
     # động (đó là "escalated", đã có sẵn trong danh sách) — bịa một động từ quá
     # khứ khác cho riêng cụm "to_human" sẽ gượng ép hơn giữ nguyên.
     "to_human",
+    # P-M4-3 — "edited" (quality.artifact.edited), thì quá khứ hợp lệ chuẩn,
+    # KHÔNG có trong doc 05 gốc — event mới, cùng tiền lệ "subtitle.created".
+    "edited",
 }
 
 errors: list[str] = []

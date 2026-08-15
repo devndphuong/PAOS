@@ -62,6 +62,24 @@
 **Vì sao chấp nhận tạm thời:** doc 13 M4 exit criteria ("Script kém bị reject, vòng 2 cải thiện, vòng 3 đổi chiến lược") không bắt buộc phải chứng minh NGAY TRONG UC1 — một workflow độc lập chứng minh cơ chế THẬT (không mock rubric engine, không mock agent) là đủ bằng chứng cho M4, và tách rời giảm rủi ro (sửa `video.plan_and_script` đang chạy tốt ở M3 để nhúng thêm 1 cơ chế mới lớn, ngay trong cùng lát cắt dựng cơ chế đó, là rủi ro không cần thiết).
 **Điều kiện trả nợ:** khi có nhu cầu thật (UC1 sản xuất video cần chất lượng script cao hơn) — tạo `workflows/video.plan_and_script/4/workflow.yaml` (đóng băng bản 3, không sửa — doc 04 §6) thay step `script` (`kind: agent`) bằng `kind: self_correction`.
 
+### BL-010 · `scripts/run_eval.py` không cưỡng chế "judge khác provider generator"
+**Phát sinh:** P-M4-3 (2026-08-16, doc 19).
+**Hiện trạng:** Eval harness standalone (`scripts/run_eval.py`) gọi thẳng 1 `ProviderAdapter` instance cho cả sinh script lẫn chấm judge — không qua `apps/paosd/router.py::Router`, nơi DUY NHẤT cưỡng chế `exclude_provider` thật (ADR-0008/RSK-10, đã kiểm ở `tests/apps/paosd/test_self_correction.py::test_judge_excludes_generator_provider`). Script chỉ dùng cho SO SÁNH offline nhanh (không publish artifact thật), không phải luồng self-correction production (đó vẫn đi qua Router, không bị ảnh hưởng bởi nợ này).
+**Vì sao chấp nhận tạm thời:** dựng lại cả Router/Registry cho 1 script so sánh offline là quá nặng so với lợi ích — RSK-10 (LLM tự chấm điểm mình) rủi ro thấp hơn nhiều ở NGỮ CẢNH so sánh tương đối 2 config (không phải quyết định publish/reject 1 artifact thật).
+**Điều kiện trả nợ:** nếu phát hiện eval harness cho điểm thiên vị rõ rệt (vd luôn ưu ái config vừa sinh) — khi đó cho `scripts/run_eval.py` dựng `Registry`/`Router` thật thay vì gọi thẳng adapter.
+
+### BL-011 · Dataset eval (`tests/eval/datasets/script_writing_vi.jsonl`) chỉ có 6 mẫu, chưa phải 30-50 mẫu quy mô đầy đủ
+**Phát sinh:** P-M4-3 (2026-08-16, doc 19), doc 18 §8 đã ghi trước: "Eval harness đầy đủ hoãn sang trước M6".
+**Hiện trạng:** Dataset seed 6 mẫu đủ để chứng minh cơ chế harness chạy đúng (`tests/eval/test_eval_suite.py`) và dùng thử `scripts/run_eval.py`, nhưng chưa đủ quy mô doc 08 §7.5 mô tả ("30-50 mẫu có nguồn + kỳ vọng") để tin cậy số liệu so sánh prompt/provider trong quyết định thật. `tests/eval/rubrics/script_eval.rubric.v1.yaml` cũng dùng cửa sổ `length` lỏng hơn bản production (40-120 từ thay vì 150-200) để khớp dataset ngắn hiện tại.
+**Vì sao chấp nhận tạm thời:** đúng phạm vi đã cắt sẵn ở doc 18 §8 — hạ tầng (sdk/eval.py, harness, edit_rate recording) là phần BẮT BUỘC ở M4; mở rộng dataset lên quy mô đầy đủ là công việc lặp lại đơn giản (thêm dòng JSONL), không phải rủi ro kiến trúc, hợp lý để làm dần khi có nhu cầu thật trước M6.
+**Điều kiện trả nợ:** trước M6 (Provider Ranking, doc 13) — khi đó số liệu eval bắt đầu ảnh hưởng quyết định routing thật, cần dataset đủ lớn để đáng tin. Khi mở rộng, đổi `tests/eval/rubrics/script_eval.rubric.v1.yaml` lại dùng đúng cửa sổ 150-200 từ của bản production, hoặc xoá hẳn bản riêng nếu dataset mới đã khớp.
+
+### BL-012 · Self-correction escalation (`quality.escalated.to_human`) chưa ghi Decision Record
+**Phát sinh:** phát hiện khi rà lại `apps/paosd/workflow_runner.py::_run_self_correction` lúc thiết kế P-M4-3 (2026-08-16) — lỗi/thiếu sót tồn tại từ P-M4-2, không phải do lát cắt này gây ra.
+**Hiện trạng:** ADR-0014 (doc 15) liệt "quyết định retry/escalate/đổi chiến lược" là 1 trong 4 nơi BẮT BUỘC có Decision Record (doc 10 §"Decision Record"). `_run_self_correction` chỉ phát event `quality.escalated.to_human`, không ghi hàng nào vào bảng `decisions` (migration 003) khi quyết định dừng vòng lặp/escalate — khác `apps/paosd/router.py::_write_decision` (chọn provider) đã tuân thủ đúng ADR-0014.
+**Vì sao chấp nhận tạm thời:** event `quality.escalated.to_human` đã mang đủ thông tin audit tối thiểu (best_score, attempts, reason) cho M4 exit criteria; đây là nợ tuân thủ ADR-0014 chưa gây hư hại chức năng nào, không thuộc phạm vi P-M4-3 (eval harness/edit_rate).
+**Điều kiện trả nợ:** lát cắt tiếp theo chạm `_run_self_correction` — thêm 1 hàng `decisions` (`scope='self_correction_escalation'`, `candidates_json` = điểm từng vòng, `chosen`='escalate', `rationale`=lý do) ngay trước khi phát event, cùng khuôn mẫu `router.py::_write_decision`.
+
 ---
 
 ## Mục chưa phân loại

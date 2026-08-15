@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
+from apps.paosd.artifact_store import ArtifactNotEditable, ArtifactNotFound, ArtifactStore
 from apps.paosd.runner import Runner
 from kernel.errors import PaosError
 from kernel.events.bus import EventBus, EventEnvelope
+from kernel.events.types import EventType
 from kernel.process.manager import Process, ProcessManager, ProcessState
+from kernel.state.db import StateStore
 
 
 class CreateJobRequest(BaseModel):
@@ -80,6 +84,25 @@ class ExplainResponse(BaseModel):
     trace: list[EventResponse]
 
 
+class ArtifactResponse(BaseModel):
+    artifact_id: str
+    process_id: str
+    type: str
+    mime: str
+    path: str
+    content: str
+    created_at: str
+
+
+class ArtifactEditRequest(BaseModel):
+    text: str
+
+
+class ArtifactEditResponse(BaseModel):
+    edited_artifact_id: str
+    edit_rate: float
+
+
 def _to_event_response(e: EventEnvelope) -> EventResponse:
     return EventResponse(
         event_id=e.event_id,
@@ -112,10 +135,18 @@ def _to_response(p: Process) -> ProcessResponse:
 
 
 def create_app(  # noqa: PLR0915 — đăng ký route tăng tuyến tính theo số endpoint, không phải độ phức tạp
-    manager: ProcessManager, events: EventBus, runner: Runner
+    manager: ProcessManager,
+    events: EventBus,
+    runner: Runner,
+    store: StateStore,
+    workspace_root: Path,
 ) -> FastAPI:
-    """Lớp mỏng dịch HTTP <-> Kernel API (doc 04 §1) — không chứa logic nghiệp vụ."""
+    """Lớp mỏng dịch HTTP <-> Kernel API (doc 04 §1) — không chứa logic nghiệp vụ.
+    `store`/`workspace_root` chỉ dùng để dựng `ArtifactStore` (P-M4-3) — cùng
+    tiền lệ `Router` tự dựng `CacheStore` nội bộ (`apps/paosd/router.py`),
+    không cần một tầng "wiring" riêng cho 1 DAO nhỏ."""
     app = FastAPI(title="paosd")
+    artifacts = ArtifactStore(store, workspace_root)
 
     @app.post("/v1/jobs", response_model=CreateJobResponse)
     async def create_job(body: CreateJobRequest) -> CreateJobResponse:
@@ -196,6 +227,52 @@ def create_app(  # noqa: PLR0915 — đăng ký route tăng tuyến tính theo s
         except PaosError as exc:
             raise HTTPException(status_code=400, detail=exc.to_dict()) from exc
         return ReplayResponse(replayed=count)
+
+    @app.get("/v1/artifacts/{artifact_id}", response_model=ArtifactResponse)
+    async def get_artifact(artifact_id: str) -> ArtifactResponse:
+        record = await artifacts.get(artifact_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail=f"Artifact '{artifact_id}' không tồn tại")
+        try:
+            content = await artifacts.read_content(record)
+        except ArtifactNotEditable as exc:
+            raise HTTPException(status_code=415, detail=str(exc)) from exc
+        return ArtifactResponse(
+            artifact_id=record.artifact_id,
+            process_id=record.process_id,
+            type=record.type,
+            mime=record.mime,
+            path=record.path,
+            content=content,
+            created_at=record.created_at,
+        )
+
+    @app.post("/v1/artifacts/{artifact_id}/edited", response_model=ArtifactEditResponse)
+    async def edit_artifact(artifact_id: str, body: ArtifactEditRequest) -> ArtifactEditResponse:
+        """doc 08 §5, doc 13 M4 exit criteria — ghi `edit_rate` khi người dùng
+        tự tay sửa 1 artifact. Đây là tín hiệu KHÁCH QUAN, không phải điểm
+        rubric — apps/paosd/artifact_store.py::record_edit() làm toàn bộ việc
+        đo lường + ghi bản artifact mới (supersedes)."""
+        try:
+            result = await artifacts.record_edit(artifact_id, body.text)
+        except ArtifactNotFound as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ArtifactNotEditable as exc:
+            raise HTTPException(status_code=415, detail=str(exc)) from exc
+        record = await artifacts.get(artifact_id)
+        await events.publish(
+            EventType.ARTIFACT_EDITED.value,
+            source="paosd",
+            payload={
+                "artifact_id": artifact_id,
+                "edited_artifact_id": result.edited_artifact_id,
+                "edit_rate": round(result.edit_rate, 4),
+            },
+            process_id=record.process_id if record else None,
+        )
+        return ArtifactEditResponse(
+            edited_artifact_id=result.edited_artifact_id, edit_rate=result.edit_rate
+        )
 
     @app.get("/v1/health")
     async def health() -> dict[str, str]:

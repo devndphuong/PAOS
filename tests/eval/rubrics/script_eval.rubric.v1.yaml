@@ -1,0 +1,45 @@
+# Biến thể của rubrics/script.rubric.v1.yaml DÀNH RIÊNG cho eval harness
+# (doc 08 §7.5, P-M4-3) — cùng vị trí `tests/eval/rubrics/` mà doc 08 §7.3 đã
+# vẽ sẵn trong cây thư mục eval suite.
+#
+# KHÁC DUY NHẤT với bản production: cửa sổ `length`. Dataset seed hiện tại
+# (tests/eval/datasets/script_writing_vi.jsonl) chỉ có 6 mẫu ngắn (60-70 từ,
+# xem docstring tests/eval/test_eval_suite.py) — chưa phải 30-50 mẫu quy mô
+# đầy đủ doc 08 §7.5 mô tả (đó là phần "eval harness đầy đủ" đã hoãn tới
+# trước M6, xem docs/18 §8 bảng cắt phạm vi + docs/backlog.md). Ép cửa sổ
+# 150-200 từ của rubric thật lên dataset ngắn sẽ luôn fail_fast ở TIÊU CHÍ
+# length bất kể config nào — vô hiệu hoá hoàn toàn phép so sánh. Mọi tiêu chí
+# khác (logic/redundancy/hook/cta/tone_match, trọng số, câu hỏi judge) giữ
+# NGUYÊN VĂN bản production để "Quality" đo được ở đây vẫn cùng ngữ nghĩa.
+id: script_eval.rubric
+version: 1
+applies_to: script
+threshold: 80
+criteria:
+  - id: logic
+    weight: 0.25
+    kind: llm
+    question: "Có lỗi logic, mâu thuẫn, hay thông tin sai so với nguồn không?"
+    scale: { 0: "sai nghiêm trọng", 50: "có điểm mơ hồ", 100: "chặt chẽ" }
+  - id: redundancy
+    weight: 0.15
+    kind: hybrid
+    check: "n_gram_overlap(script) < 0.18"
+    question: "Có ý nào bị lặp lại không?"
+  - id: length
+    weight: 0.15
+    kind: deterministic
+    check: "40 <= word_count <= 120"
+  - id: hook
+    weight: 0.20
+    kind: llm
+    question: "3 giây đầu có giữ chân người xem không?"
+  - id: cta
+    weight: 0.10
+    kind: deterministic
+    check: "has_section('cta')"
+  - id: tone_match
+    weight: 0.15
+    kind: llm
+    question: "Có đúng tone 'professional' theo sở thích người dùng không?"
+fail_fast: [length, cta]

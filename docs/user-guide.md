@@ -1,6 +1,6 @@
 # Hướng dẫn sử dụng & Luồng dự án
 
-> Tài liệu SỐNG — cập nhật mỗi khi có chức năng mới (P-CLOSE của mỗi lát cắt), không phải ảnh chụp một lần. Khác với `docs/00-20` (đặc tả thiết kế, ổn định), file này mô tả **thực trạng chạy được hôm nay**, cùng nhóm với `docs/backlog.md`/`docs/environment-baseline.md`. Cập nhật gần nhất: lát cắt **P-M4-2** (2026-08-16).
+> Tài liệu SỐNG — cập nhật mỗi khi có chức năng mới (P-CLOSE của mỗi lát cắt), không phải ảnh chụp một lần. Khác với `docs/00-20` (đặc tả thiết kế, ổn định), file này mô tả **thực trạng chạy được hôm nay**, cùng nhóm với `docs/backlog.md`/`docs/environment-baseline.md`. Cập nhật gần nhất: lát cắt **P-M4-3** (2026-08-16) — **M4 hoàn tất**.
 
 ---
 
@@ -41,6 +41,17 @@ curl -X POST localhost:8787/v1/jobs -d '{"intent":"video","spec":{"text":"MongoD
 curl -X POST localhost:8787/v1/jobs -d '{"intent":"video","spec":{"plan":"..."},"workflow_ref":"workflow:script_with_review@1"}'
 ```
 
+**Ghi lại khi bạn tự tay sửa kết quả AI (mới — M4)** — chỉ số đáng tin nhất theo doc 08 §5 không phải điểm rubric, mà là bạn phải sửa tay BAO NHIÊU. Sửa xong, nộp lại để hệ thống đo `edit_rate` khách quan (không tự khai).
+```bash
+paosctl artifact show <artifact_id>              # xem nội dung, tự sửa trong editor riêng
+paosctl artifact edit <artifact_id> ban-da-sua.txt  # nộp lại — in ra edit_rate đo được
+```
+
+**So sánh chất lượng prompt/provider theo thời gian (mới — M4)** — chạy bộ mẫu chuẩn qua nhiều phiên bản prompt, xuất bảng so sánh điểm/edit_rate/chi phí/độ trễ, tự chặn nếu chất lượng đi xuống trước khi đổi prompt thật (doc 08 §7.5).
+```bash
+python scripts/run_eval.py --provider ollama   # cần Ollama đang chạy; --provider stub để chỉ thử hạ tầng offline
+```
+
 **Theo dõi & giải thích mọi việc đang/đã làm** — không có "log" mù mờ, mọi quyết định dựng lại được đầy đủ từ Event Log.
 ```bash
 paosctl ps                 # liệt kê mọi job
@@ -54,12 +65,13 @@ paosctl cancel <pid>       # hủy 1 job đang chạy, không ảnh hưởng job
 - **Chưa có giao diện Web/đồ hoạ** (đó là M8). Dùng qua `paosctl` hoặc HTTP trực tiếp; có Swagger UI tự sinh ở `http://127.0.0.1:8787/docs` để thử API không cần viết code.
 - **Model LLM thật (Ollama) chưa bật an toàn** — mặc định dùng provider "giả lập xác định" (`stub.deterministic`) để mọi thứ chạy nhanh, offline, kiểm chứng được (xem `docs/backlog.md` BL-004). Kết quả sinh ra hiện KHÔNG phải văn bản do AI thật viết.
 - **Cơ chế tự sửa kịch bản (M4) chưa nối vào luồng sản xuất video thật** — mới chạy ở 1 luồng riêng (`workflows/script_with_review/`) để chứng minh cơ chế đúng, chưa thay bước viết kịch bản trong UC1 (BL-009).
+- **Eval harness (M4) mới có bộ mẫu nhỏ (6 mẫu)**, chưa phải quy mô 30-50 mẫu đầy đủ (BL-011); `scripts/run_eval.py` cũng chưa cưỡng chế "judge khác provider generator" như luồng production (BL-010).
 - **Chưa nhớ sở thích người dùng** (giọng đọc ưa thích, độ dài quen dùng...) — mỗi job độc lập, đó là phạm vi M5.
 - **Chưa tự chọn cách làm tốt nhất** (Decision Engine, M6) — workflow phải chỉ định tay qua `workflow_ref`.
 
 ### 1.4 Sắp tới
 
-Việc **ngay tiếp theo**: **P-M4-3 — Eval harness + `edit_rate`** (đo chất lượng AI theo thời gian, xuất bảng so sánh prompt/provider, ghi lại tỉ lệ người dùng phải sửa tay). Lộ trình đầy đủ ở [§3](#3-lộ-trình-sắp-tới) bên dưới.
+M4 (Quality & Self-Correction) đã hoàn tất. Việc **ngay tiếp theo**: **P-M5-0 — chốt ADR-0015 (vector search + embedding) và ADR-0016 (chiến lược chunking)** trước khi bắt đầu code M5 (Memory & Knowledge — 5 tầng memory, retrieval lai, consolidation hàng đêm, Knowledge Graph, Privacy Filter). Lộ trình đầy đủ ở [§3](#3-lộ-trình-sắp-tới) bên dưới.
 
 ---
 
@@ -177,7 +189,7 @@ Theo kế hoạch 10 milestone (~31 tuần lập trình thuần, 11–15 tháng 
 | M1 | Kernel thật | Process quản lý được, resume được | ✅ Xong |
 | M2 | Capability & Provider | Đổi provider không sửa code | ✅ Xong |
 | M3 | Agent & Workflow | Video plugin chạy hoàn chỉnh | ✅ Xong |
-| M4 | Quality & Self-Correction | Tự sửa, tự chấm điểm | 🟡 Đang làm · 2/3 |
+| M4 | Quality & Self-Correction | Tự sửa, tự chấm điểm, ghi `edit_rate` | ✅ Xong |
 | M5 | Memory & Knowledge | Nhớ sở thích, xây Knowledge Graph | ⚪ Kế tiếp |
 | M6 | Decision Engine | Tự chọn workflow phù hợp | ⚪ Chưa tới |
 | M7 | Cost / Energy / Time | Chạy đêm, tiết kiệm, đúng ngân sách | ⚪ Chưa tới |

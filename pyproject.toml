@@ -109,6 +109,7 @@ markers = [
     "requires_gpu: cần GPU",
     "chaos: chaos test, chạy trước mỗi release",
     "contract: contract/conformance test — chạy mỗi PR",
+    "eval: eval suite (doc 08 §7.5) — chạy hàng đêm hoặc trước khi đổi prompt/provider",
 ]
 
 # ---------------------------------------------------------------------------

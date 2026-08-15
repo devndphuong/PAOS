@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://schemas/events/quality.artifact.edited.v1.schema.json",
+  "title": "quality.artifact.edited payload",
+  "description": "doc 08 §5, doc 13 M4 exit criteria, P-M4-3 — apps/paosd/app.py::edit_artifact phát sau khi apps/paosd/artifact_store.py::record_edit() ghi bản artifact mới (supersedes bản gốc) và đo edit_rate. Tín hiệu chất lượng KHÁCH QUAN duy nhất doc 08 §5 tin tưởng — không phải điểm rubric.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["artifact_id", "edited_artifact_id", "edit_rate"],
+  "properties": {
+    "artifact_id": { "type": "string" },
+    "edited_artifact_id": { "type": "string" },
+    "edit_rate": { "type": "number", "minimum": 0, "maximum": 1 }
+  }
+}

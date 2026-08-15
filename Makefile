@@ -34,7 +34,7 @@ arch: ## Cưỡng chế quy tắc phụ thuộc (doc 17 §1)
 
 .PHONY: test
 test: ## Test nhanh — loại những thứ cần môi trường ngoài
-	pytest -m "not requires_ollama and not requires_gpu and not slow and not chaos"
+	pytest -m "not requires_ollama and not requires_gpu and not slow and not chaos and not eval"
 
 .PHONY: test-all
 test-all: ## Toàn bộ test, kể cả cần Ollama và chaos
@@ -43,7 +43,11 @@ test-all: ## Toàn bộ test, kể cả cần Ollama và chaos
 .PHONY: cov
 cov: ## Test kèm coverage Kernel (MNT-07 >= 85%)
 	pytest --cov --cov-report=term-missing \
-		-m "not requires_ollama and not requires_gpu"
+		-m "not requires_ollama and not requires_gpu and not eval"
+
+.PHONY: eval
+eval: ## Eval suite (doc 08 §7.5) — chạy trước khi đổi prompt/provider, hoặc hàng đêm
+	pytest -m eval -v
 
 # ===========================================================================
 # Bốn cổng CI không thể bỏ qua — doc 17 §2

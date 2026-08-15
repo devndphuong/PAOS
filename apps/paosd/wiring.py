@@ -86,13 +86,14 @@ async def build_daemon(
     registry.load()
     for provider_id, adapter in (adapter_overrides or {}).items():
         registry.preload_adapter(provider_id, adapter)
+    resolved_workspace_root = workspace_root or _REPO_ROOT / "workspace"
     manager = ProcessManager(store, events)
     runner = Runner(
         manager,
         events,
         registry,
         store,
-        workspace_root or _REPO_ROOT / "workspace",
+        resolved_workspace_root,
         max_parallel=max_parallel,
         resource_capacity=resource_capacity,
     )
@@ -120,7 +121,7 @@ async def build_daemon(
         payload={"version": _PAOS_VERSION, "uptime": 0},
     )
 
-    app = create_app(manager, events, runner)
+    app = create_app(manager, events, runner, store, resolved_workspace_root)
     return Daemon(
         store=store,
         events=events,

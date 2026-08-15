@@ -88,10 +88,12 @@ Phạm vi: Agent Contract 6 bước + SDK · Workflow YAML engine (điều kiệ
 Phạm vi: Rubric engine (deterministic + LLM judge) · Review Agent · loop có giới hạn · escalation · `edit_rate` tracking · eval harness.
 
 **Exit criteria**
-- [ ] Script kém bị reject, vòng 2 cải thiện, vòng 3 đổi chiến lược, không lặp vô hạn
-- [ ] Judge dùng provider khác với generator (bị cưỡng chế)
-- [ ] Eval suite chạy được, xuất bảng so sánh prompt/provider
-- [ ] Có bản ghi `edit_rate` khi người dùng sửa tay
+- [x] Script kém bị reject, vòng 2 cải thiện, vòng 3 đổi chiến lược, không lặp vô hạn (P-M4-2, `tests/apps/paosd/test_self_correction.py`)
+- [x] Judge dùng provider khác với generator (bị cưỡng chế) (P-M4-2, `Router.exclude_provider`, `test_judge_excludes_generator_provider`)
+- [x] Eval suite chạy được, xuất bảng so sánh prompt/provider (P-M4-3, `sdk/eval.py` + `scripts/run_eval.py` + `tests/eval/`)
+- [x] Có bản ghi `edit_rate` khi người dùng sửa tay (P-M4-3, `apps/paosd/artifact_store.py::record_edit` + `POST /v1/artifacts/{id}/edited`, `artifact_edits` table)
+
+**M4 hoàn tất — 2026-08-16.**
 
 ---
 

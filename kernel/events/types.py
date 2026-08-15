@@ -83,3 +83,8 @@ class EventType(StrEnum):
     QUALITY_REVIEW_PASSED = "quality.review.passed"
     QUALITY_REVIEW_REJECTED = "quality.review.rejected"
     QUALITY_ESCALATED_TO_HUMAN = "quality.escalated.to_human"
+    # "artifact.edited" KHÔNG có trong doc 05 gốc — thêm mới ở P-M4-3 (cùng
+    # tiền lệ "subtitle.created" ở P-M3-4), đã bổ sung vào bảng doc 05 §3.6.
+    # apps/paosd/app.py::edit_artifact là caller thật đầu tiên, sau khi
+    # apps/paosd/artifact_store.py::record_edit() đo edit_rate xong.
+    ARTIFACT_EDITED = "quality.artifact.edited"
