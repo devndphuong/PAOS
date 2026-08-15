@@ -7,13 +7,16 @@ provider/agent nào trong kernel/ — mọi thứ đọc từ file, hoàn toàn 
 `load_adapter()` (P-M2-1) nạp ĐỘNG instance adapter qua `importlib` theo
 `provider.yaml::adapter` (dạng `module.path:ClassName`) — Kernel không bao
 giờ có `import providers.xxx` tĩnh nào (đúng doc 02 §3.5 "Load lúc khởi động").
-`load_agent()` (P-M3-4, trả nợ BL-006) làm ĐÚNG như vậy cho `agents/<x>/
+`load_agent()` (P-M3-4, trả nợ BL-006) nạp ĐỘNG cùng cơ chế cho `agents/<x>/
 manifest.yaml::entry` — trước lát này `apps/paosd/runner.py` có 1 dict tĩnh
 `_AGENTS` import trực tiếp từng agent, vi phạm đúng "thêm agent không cần sửa
-code" mà `load_adapter()` đã đạt được cho provider từ M2-1. Cả hai đều trả về
-`Any`, KHÔNG import `sdk.provider.ProviderAdapter`/`sdk.agent.Agent` để gõ
-kiểu — Kernel không được phép biết tới `sdk/` (MNT-06); caller (`apps/`, được
-phép import cả 2 tầng) tự chịu trách nhiệm instance khớp Protocol."""
+code" mà `load_adapter()` đã đạt được cho provider từ M2-1. KHÁC `load_adapter()`:
+`load_agent()` KHÔNG cache instance dùng chung (trả nợ BL-007) — Agent có state
+riêng-theo-lượt-gọi trên `self` (ProviderAdapter thì không), nên chỉ cache CLASS
+đã `importlib.import_module()` rồi tự khởi tạo instance MỚI mỗi lần gọi. Cả hai
+đều trả về `Any`, KHÔNG import `sdk.provider.ProviderAdapter`/`sdk.agent.Agent`
+để gõ kiểu — Kernel không được phép biết tới `sdk/` (MNT-06); caller (`apps/`,
+được phép import cả 2 tầng) tự chịu trách nhiệm instance khớp Protocol."""
 
 from __future__ import annotations
 
@@ -142,7 +145,8 @@ class Registry:
         self._providers_by_id: dict[str, ProviderManifest] = {}
         self._adapter_cache: dict[str, Any] = {}
         self._agents: dict[str, _AgentEntry] = {}
-        self._agent_cache: dict[str, Any] = {}
+        self._agent_preload: dict[str, Any] = {}
+        self._agent_class_cache: dict[str, type] = {}
 
     def load(self) -> None:
         """Quét capabilities/, providers/, agents/, nạp toàn bộ vào bộ nhớ. Gọi 1 lần lúc
@@ -240,21 +244,30 @@ class Registry:
         return instance
 
     def preload_agent(self, agent_id: str, version: int, instance: Any, extra_dir: Path) -> None:
-        """Đặt sẵn 1 instance Agent + thư mục phụ trợ, bỏ qua nạp động — dùng
-        cho test (thay agent thật bằng agent giả điều khiển được), cùng vai
-        trò `preload_adapter()`. Production code không cần gọi hàm này."""
+        """Đặt sẵn 1 instance Agent CỐ ĐỊNH + thư mục phụ trợ, bỏ qua nạp động —
+        dùng cho test (thay agent thật bằng agent giả điều khiển được, test tự
+        giữ tham chiếu instance để assert lên state của nó sau khi chạy), cùng
+        vai trò `preload_adapter()`. Production code không cần gọi hàm này.
+        KHÁC `load_agent()` (trả nợ BL-007): đây là instance DÙNG CHUNG có chủ
+        đích — test chỉ gọi 1 lần, không có 2 Process song song cùng dùng chung
+        agent giả này."""
         key = _capability_key(agent_id, version)
-        self._agent_cache[key] = instance
+        self._agent_preload[key] = instance
         self._agents.setdefault(key, _AgentEntry(entry="", extra_dir=extra_dir))
 
     def load_agent(self, agent_id: str, version: int) -> Any:
-        """Nạp động instance Agent theo `agents/<x>/manifest.yaml::entry`
-        (P-M3-4, trả nợ BL-006 — cùng cơ chế `load_adapter()` cho provider,
-        exit criteria doc 13 M3: thêm agent mới không sửa code Kernel/Runner).
-        Cache theo `agent_id@version` — mỗi agent chỉ khởi tạo 1 lần."""
+        """Nạp động 1 instance Agent MỚI theo `agents/<x>/manifest.yaml::entry`
+        (P-M3-4, trả nợ BL-006) mỗi lần được gọi — trả nợ BL-007 (docs/backlog.md):
+        Agent gán state riêng-theo-lượt lên `self` (vd `self._ctx`), KHÁC
+        `ProviderAdapter` (không có state riêng theo lượt gọi, `invoke()` nhận
+        đủ dữ liệu qua tham số) nên `load_adapter()` cache instance dùng chung
+        được nhưng `load_agent()` thì không — cache CLASS (nạp `importlib` 1
+        lần) rồi tự `agent_cls()` instance mới mỗi lần gọi, tránh 2 Process chạy
+        song song (`Runner.worker_loop()`, `asyncio.Semaphore(max_parallel)`)
+        cùng agent_id@version chia sẻ state và ghi đè lẫn nhau giữa chừng."""
         key = _capability_key(agent_id, version)
-        if key in self._agent_cache:
-            return self._agent_cache[key]
+        if key in self._agent_preload:
+            return self._agent_preload[key]
 
         entry_info = self._agents.get(key)
         if entry_info is None:
@@ -272,21 +285,26 @@ class Registry:
                 context={"agent_id": agent_id, "version": version},
             )
 
-        module_path, _, class_name = entry_info.entry.partition(":")
-        try:
-            module = importlib.import_module(module_path)
-            agent_cls = getattr(module, class_name)
-            instance = agent_cls()
-        except (ImportError, AttributeError) as exc:
-            raise PaosError(
-                ErrorCode.INTERNAL,
-                f"Không nạp được agent '{entry_info.entry}' cho {key}: {exc}",
-                hint="Kiểm giá trị 'entry' trong manifest.yaml đúng dạng module.path:ClassName",
-                context={"agent_id": agent_id, "version": version, "entry": entry_info.entry},
-            ) from exc
+        agent_cls = self._agent_class_cache.get(key)
+        if agent_cls is None:
+            module_path, _, class_name = entry_info.entry.partition(":")
+            try:
+                module = importlib.import_module(module_path)
+                agent_cls = getattr(module, class_name)
+            except (ImportError, AttributeError) as exc:
+                raise PaosError(
+                    ErrorCode.INTERNAL,
+                    f"Không nạp được agent '{entry_info.entry}' cho {key}: {exc}",
+                    hint="Kiểm giá trị 'entry' trong manifest.yaml đúng dạng module.path:ClassName",
+                    context={
+                        "agent_id": agent_id,
+                        "version": version,
+                        "entry": entry_info.entry,
+                    },
+                ) from exc
+            self._agent_class_cache[key] = agent_cls
 
-        self._agent_cache[key] = instance
-        return instance
+        return agent_cls()
 
     def agent_extra_dir(self, agent_id: str, version: int) -> Path:
         """Thư mục `agents/<x>/` chứa `manifest.yaml` — TRẢ VỀ NGUYÊN THƯ MỤC

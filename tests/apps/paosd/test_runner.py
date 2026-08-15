@@ -139,6 +139,71 @@ async def test_golden_path_run_produces_artifact_and_explain_trace(
     assert artifact_id.startswith("art_")
 
 
+async def test_concurrent_processes_same_agent_do_not_corrupt_each_other(
+    client: httpx.AsyncClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Test đối kháng BL-007 (docs/backlog.md): `Registry.load_agent()` cache 1
+    instance Agent dùng chung theo `agent_id@version`, nhưng Agent gán state
+    riêng-theo-lượt lên `self` (`self._ctx` trong `initialize()`). `worker_loop()`
+    chạy nhiều Process THẬT SỰ đồng thời (`asyncio.Semaphore(max_parallel)`,
+    mặc định 3) — nếu chúng dùng chung 1 agent instance, `self._ctx` của
+    process này có thể bị process khác ghi đè giữa chừng trước khi `publish()`
+    kịp đọc lại, khiến artifact/event bị publish nhầm process.
+
+    `PAOS_STUB_DELAY_MS` ép `StubAdapter.invoke()` (bên trong `execute()`) chờ
+    thật thay vì trả ngay — mở đủ khe hở để 3 process cùng chạy `initialize()`
+    (đồng bộ, không await) TRƯỚC KHI bất kỳ process nào tới lượt `publish()`;
+    không có khe hở này race gần như không thể ép lộ ra tất định trong 1 lượt
+    test (mọi bước trước execute() đều đồng bộ, chạy hết trong 1 lượt event
+    loop, không có cơ hội xen kẽ)."""
+    monkeypatch.setenv("PAOS_STUB_DELAY_MS", "30")
+
+    texts = [f"VAN-BAN-DOC-LAP-SO-{i}-{'x' * 20}" for i in range(3)]
+    created = []
+    for i, text in enumerate(texts):
+        resp = await client.post(
+            "/v1/jobs",
+            json={
+                "intent": "summarize",
+                "spec": {"text": text},
+                "name": f"race-{i}",
+                "workflow_ref": "agent:summarize.agent@1",
+            },
+        )
+        assert resp.status_code == 200
+        created.append(resp.json())
+
+    statuses = await asyncio.gather(
+        *(_wait_for_terminal(client, c["pid"], max_wait_s=10.0) for c in created)
+    )
+
+    workspace_root = tmp_path / "workspace"
+    for c, text, status in zip(created, texts, statuses, strict=True):
+        assert status["state"] == "SUCCEEDED", f"process {c['pid']} không SUCCEEDED: {status}"
+
+        explain_resp = await client.get(f"/v1/processes/{c['pid']}/explain")
+        trace = explain_resp.json()["trace"]
+        own_created_events = [e for e in trace if e["type"] == "summary.created"]
+        assert len(own_created_events) == 1, (
+            f"process {c['pid']} phải có ĐÚNG 1 sự kiện summary.created của "
+            f"chính nó, thấy {len(own_created_events)} — dấu hiệu self._ctx bị "
+            f"process khác ghi đè giữa chừng (BL-007)"
+        )
+
+        artifact_file = workspace_root / "artifacts" / c["process_id"] / "summary.txt"
+        assert artifact_file.is_file(), (
+            f"process {c['pid']} không có artifact summary.txt trong đúng thư "
+            f"mục process_id của chính nó — publish() đã ghi nhầm sang process "
+            f"khác (BL-007)"
+        )
+        content = artifact_file.read_text(encoding="utf-8")
+        assert text in content, (
+            f"artifact của process {c['pid']} chứa nội dung KHÁC văn bản đã "
+            f"gửi — lẫn dữ liệu process khác (BL-007): mong '{text}' trong "
+            f"{content!r}"
+        )
+
+
 async def test_workflow_ref_golden_path_runs_full_dag_to_succeeded(
     client: httpx.AsyncClient,
 ) -> None:

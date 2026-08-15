@@ -202,6 +202,98 @@ def test_preload_adapter_bypasses_dynamic_import(tmp_path: Path) -> None:
     assert reg.load_adapter("chua.dang.ky") is fake
 
 
+def test_load_agent_dynamically_imports_and_returns_new_instance_each_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P-M3-4 nạp động giống `load_adapter()`, nhưng KHÁC MỘT ĐIỂM CỐT LÕI —
+    trả nợ BL-007 (docs/backlog.md): Agent gán state riêng-theo-lượt lên `self`
+    (vd `self._ctx`), khác `ProviderAdapter` (không state riêng theo lượt gọi)
+    nên `load_adapter()` cache instance dùng chung được nhưng `load_agent()`
+    phải trả instance MỚI mỗi lần gọi — nếu không, 2 Process chạy thật song
+    song cùng `agent_id@version` (`Runner.worker_loop()`,
+    `asyncio.Semaphore(max_parallel)`) sẽ ghi đè `self` của nhau giữa chừng."""
+    caps_dir = tmp_path / "capabilities"
+    providers_dir = tmp_path / "providers"
+    agents_dir = tmp_path / "agents"
+    _write_fixture_capability(caps_dir)
+
+    fake_pkg = tmp_path / "fake_agent_pkg"
+    fake_pkg.mkdir()
+    (fake_pkg / "__init__.py").write_text("", encoding="utf-8")
+    (fake_pkg / "agent.py").write_text(
+        "class FakeAgent:\n    def __init__(self) -> None:\n        self.created = True\n",
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    agent_dir = agents_dir / "fake_dynamic"
+    agent_dir.mkdir(parents=True)
+    (agent_dir / "manifest.yaml").write_text(
+        "id: fake.dynamic.agent\nversion: 1\nentry: fake_agent_pkg.agent:FakeAgent\n",
+        encoding="utf-8",
+    )
+
+    reg = Registry(caps_dir, providers_dir, agents_dir=agents_dir)
+    reg.load()
+
+    agent1 = reg.load_agent("fake.dynamic.agent", 1)
+    agent2 = reg.load_agent("fake.dynamic.agent", 1)
+    assert agent1.created is True
+    assert agent2.created is True
+    # KHÔNG cache instance dùng chung (khác load_adapter()) — trả nợ BL-007.
+    assert agent1 is not agent2
+
+
+def test_load_agent_unknown_agent_raises_not_found(tmp_path: Path) -> None:
+    caps_dir = tmp_path / "capabilities"
+    providers_dir = tmp_path / "providers"
+    _write_fixture_capability(caps_dir)
+
+    reg = Registry(caps_dir, providers_dir, agents_dir=tmp_path / "agents")
+    reg.load()
+
+    with pytest.raises(PaosError) as exc_info:
+        reg.load_agent("khong.ton.tai.agent", 1)
+    assert exc_info.value.code == ErrorCode.NOT_FOUND
+
+
+def test_load_agent_missing_entry_field_raises_clear_error(tmp_path: Path) -> None:
+    caps_dir = tmp_path / "capabilities"
+    providers_dir = tmp_path / "providers"
+    agents_dir = tmp_path / "agents"
+    _write_fixture_capability(caps_dir)
+
+    agent_dir = agents_dir / "no_entry"
+    agent_dir.mkdir(parents=True)
+    (agent_dir / "manifest.yaml").write_text("id: no.entry.agent\nversion: 1\n", encoding="utf-8")
+
+    reg = Registry(caps_dir, providers_dir, agents_dir=agents_dir)
+    reg.load()
+
+    with pytest.raises(PaosError) as exc_info:
+        reg.load_agent("no.entry.agent", 1)
+    assert "entry" in exc_info.value.message.lower()
+
+
+def test_preload_agent_bypasses_dynamic_import_and_returns_same_instance(
+    tmp_path: Path,
+) -> None:
+    """Đối lập có chủ đích với `load_agent()` (BL-007): `preload_agent()` là
+    instance CỐ ĐỊNH test tự giữ tham chiếu để điều khiển/assert — chỉ dùng
+    cho test, không phải hành vi production."""
+    caps_dir = tmp_path / "capabilities"
+    providers_dir = tmp_path / "providers"
+    _write_fixture_capability(caps_dir)
+
+    reg = Registry(caps_dir, providers_dir)
+    reg.load()
+
+    fake = object()
+    reg.preload_agent("chua.dang.ky.agent", 1, fake, tmp_path)
+    assert reg.load_agent("chua.dang.ky.agent", 1) is fake
+    assert reg.load_agent("chua.dang.ky.agent", 1) is fake
+
+
 def _write_fixture_capability(caps_dir: Path) -> None:
     version_dir = caps_dir / "text.generate" / "1"
     version_dir.mkdir(parents=True)
