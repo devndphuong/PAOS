@@ -575,15 +575,21 @@ class WorkflowRunner:
                 f"Step '{step.step_id}': self_correction không chạy vòng nào — lỗi lập trình "
                 "(total_attempts luôn >= 2)"
             )
+        # `attempt` giữ nguyên giá trị của LƯỢT CUỐI thực sự đã chạy (vòng lặp
+        # `for` của Python không xoá biến sau khi kết thúc, kể cả qua `break`)
+        # — PHẢI dùng số này cho "attempts", KHÔNG phải `best["attempt"]` (số
+        # thứ tự của lượt ĐIỂM CAO NHẤT, có thể nhỏ hơn nếu vòng cuối tệ hơn
+        # vòng đã ghi nhận "best" — bug thật phát hiện lúc chạy `paosd` sống
+        # tay: "Sau 2 lượt" nhưng thật ra đã chạy 3 lượt).
         await self._events.publish(
             EventType.QUALITY_ESCALATED_TO_HUMAN.value,
             source="kernel.workflow",
             payload={
                 "artifact_id": best["artifact_id"] or "",
-                "reason": f"Sau {best['attempt']} lượt vẫn chưa đạt threshold rubric "
-                f"(điểm tốt nhất {round(best['score'])})",
+                "reason": f"Sau {attempt} lượt vẫn chưa đạt threshold rubric "
+                f"(điểm tốt nhất ở lượt {best['attempt']}: {round(best['score'])})",
                 "best_score": round(best["score"]),
-                "attempts": best["attempt"],
+                "attempts": attempt,
             },
             process_id=process_id,
         )

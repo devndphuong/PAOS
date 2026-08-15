@@ -239,6 +239,34 @@ async def test_exhausts_all_attempts_then_escalates_with_best_draft(tmp_path: Pa
     assert escalated["payload"]["attempts"] == 3
 
 
+async def test_escalation_attempts_counts_all_rounds_even_when_best_is_not_last(
+    tmp_path: Path,
+) -> None:
+    """Hồi quy — bug thật phát hiện lúc chạy `paosd` sống tay (2026-08-15):
+    vòng 2 điểm cao nhất (best), vòng 3 điểm TỆ hơn vòng 2 nhưng vẫn đủ để
+    LOOP CHẠY HẾT vòng 3 (chỉ break SAU khi đã chạy xong, vì kiểm tra "cải
+    thiện" là so với vòng NGAY TRƯỚC, không phải best) — payload
+    `attempts` PHẢI = 3 (số lượt THẬT SỰ đã chạy), không phải 2 (số thứ tự
+    của lượt best) như bug cũ."""
+    adapter = _ScriptedTextGenerateAdapter(
+        script_texts=[
+            _script_text("ROUND_Y1"),
+            _script_text("ROUND_Y2"),
+            _script_text("ROUND_Y3"),
+        ],
+        judge_scores={"ROUND_Y1": 40.0, "ROUND_Y2": 70.0, "ROUND_Y3": 45.0},
+    )
+    result = await _run_workflow(tmp_path, adapter)
+
+    assert result["status"]["state"] == "SUCCEEDED"
+    assert len(adapter.script_prompts) == 3  # cả 3 vòng đều thực sự chạy
+    trace = result["explain"]["trace"]
+    assert [e["type"] for e in trace].count("quality.review.rejected") == 3
+    escalated = next(e for e in trace if e["type"] == "quality.escalated.to_human")
+    assert escalated["payload"]["best_score"] == _aggregate_score(70)  # vòng 2, không phải vòng 3
+    assert escalated["payload"]["attempts"] == 3  # KHÔNG phải 2
+
+
 async def test_judge_excludes_generator_provider(tmp_path: Path) -> None:
     """ADR-0008/RSK-10 — Router phải loại provider đã sinh script khỏi ứng
     viên khi Review Agent gọi text.generate@1 để chấm (exclude_provider)."""
