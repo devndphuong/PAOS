@@ -1,0 +1,34 @@
+# Rubric chấm Script Agent (doc 08 §2, P-M4-1). Nguyên tắc vàng: tiêu chí nào
+# kiểm được bằng code thì KHÔNG dùng LLM — length/cta là deterministic thuần.
+id: script.rubric
+version: 1
+applies_to: script
+threshold: 80
+criteria:
+  - id: logic
+    weight: 0.25
+    kind: llm
+    question: "Có lỗi logic, mâu thuẫn, hay thông tin sai so với nguồn không?"
+    scale: { 0: "sai nghiêm trọng", 50: "có điểm mơ hồ", 100: "chặt chẽ" }
+  - id: redundancy
+    weight: 0.15
+    kind: hybrid
+    check: "n_gram_overlap(script) < 0.18"
+    question: "Có ý nào bị lặp lại không?"
+  - id: length
+    weight: 0.15
+    kind: deterministic
+    check: "150 <= word_count <= 200"
+  - id: hook
+    weight: 0.20
+    kind: llm
+    question: "3 giây đầu có giữ chân người xem không?"
+  - id: cta
+    weight: 0.10
+    kind: deterministic
+    check: "has_section('cta')"
+  - id: tone_match
+    weight: 0.15
+    kind: llm
+    question: "Có đúng tone 'professional' theo sở thích người dùng không?"
+fail_fast: [length, cta]
