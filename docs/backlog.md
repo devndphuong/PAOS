@@ -92,6 +92,18 @@
 **Vì sao chấp nhận tạm thời:** chưa có caller thật nào ghi L4 với `expires_at` (P-M5-1 chỉ dựng hạ tầng lưu trữ/truy hồi, chưa có KnowledgeExtractor/ingestion pipeline thật ghi L4 — đó là P-M5-3). Xây job dọn rác cho dữ liệu chưa từng được ghi là trừu tượng hoá sớm.
 **Điều kiện trả nợ:** khi có caller thật ghi L4 (P-M5-3 KnowledgeExtractor, hoặc M9 Research Plugin) — thêm vào Consolidation Job hàng đêm (P-M5-2, doc 07 §5.2) một bước "xoá `memory_items` WHERE `tier='L4' AND expires_at < now`", cùng chỗ đã có `consolidation job chạy mỗi đêm`.
 
+### BL-015 · Chưa Agent nào đọc lại sở thích đã học từ `MemoryWriter`
+**Phát sinh:** P-M5-2 (2026-08-16, doc 19).
+**Hiện trạng:** `apps/paosd/memory_writer.py` học sở thích thật (confidence tăng/giảm theo quan sát, chạy qua Event thật) nhưng KHÔNG Agent nào (`PlanningAgent`, `ScriptAgent`...) đọc lại `memory_items` tầng L3 để áp dụng — "học" xong nhưng chưa "dùng". Đây là lý do doc 13 M5 exit criterion #1 ("sau 3 job không hỏi lại sở thích") chỉ đạt MỘT PHẦN: không có gì "hỏi" (chưa có UI, M8) nên cũng không có gì để "không hỏi lại" — và ngay cả khi có UI, chưa Agent nào biết đọc `GET /v1/memory?tier=L3&key=pref.duration_sec` để điền sẵn giá trị đã học.
+**Vì sao chấp nhận tạm thời:** P-M5-2 phạm vi là "Consolidation job + preference learning" — CƠ CHẾ học, không phải việc tiêu thụ. Nối vào `PlanningAgent`/`ScriptAgent` mà chưa có UI thật để người dùng thấy tác dụng là trừu tượng hoá sớm (P4).
+**Điều kiện trả nợ:** khi có UI thật hỏi sở thích (M8) hoặc khi UC1 cần thật (vd `agents/planning/agent.py::think()` gọi `MemoryRetriever.search(..., key="pref.duration_sec")` trước khi dựng prompt, dùng giá trị nếu `promotion == "auto_apply"`).
+
+### BL-016 · Sửa tay hạ confidence Ở MỨC JOB, không phân biệt được trường nào sai
+**Phát sinh:** P-M5-2 (2026-08-16, doc 19).
+**Hiện trạng:** `MemoryWriter.on_artifact_edited()` hạ confidence CỦA MỌI sở thích đang gán `scope_id` = process đã sinh artifact bị sửa — nếu 1 job dùng cả `duration_sec` lẫn `tone`, sửa tay vì `tone` sai cũng hạ nhầm confidence của `duration_sec` (dù có thể nó đúng). Không có cách xác định CHÍNH XÁC trường nào gây ra lần sửa — payload `quality.artifact.edited` (`schemas/events/quality.artifact.edited.v1.schema.json`) không mang theo thông tin đó.
+**Vì sao chấp nhận tạm thời:** tương quan chính xác cần biết Agent đã DÙNG giá trị sở thích nào để sinh ra đoạn nào của artifact — cần cơ chế truy vết chi tiết hơn (vd đánh dấu trong Plan/prompt), chưa tồn tại và BL-015 cho thấy chưa Agent nào dùng sở thích đã học để việc này có ý nghĩa thật.
+**Điều kiện trả nợ:** sau khi BL-015 được trả (Agent bắt đầu dùng sở thích đã học) — nếu tương quan sai mức job gây hại thật (sở thích ĐÚNG bị hạ oan), thiết kế cách gắn preference_id cụ thể vào Decision Record của lượt sinh, đọc lại lúc `on_artifact_edited` thay vì demote hàng loạt theo `scope_id`.
+
 ---
 
 ## Mục chưa phân loại

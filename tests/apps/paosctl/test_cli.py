@@ -18,6 +18,7 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 import uvicorn
 from click.testing import CliRunner
@@ -350,3 +351,51 @@ def test_memory_search_no_match_reports_none(runner: CliRunner, api_url: str) ->
     )
     assert result.exit_code == 0
     assert "không tìm thấy" in result.output
+
+
+async def _seed_learned_preference(daemon):  # type: ignore[no-untyped-def]
+    """3 job THẬT qua daemon để MemoryWriter tự học — không ghi tay qua
+    MemoryStore, đúng con đường production (khác _seed_memory ở trên)."""
+    transport = httpx.ASGITransport(app=daemon.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        for i in range(3):
+            await client.post(
+                "/v1/jobs",
+                json={
+                    "intent": "video",
+                    "name": f"job-{i}",
+                    "workflow_ref": "wf@1",
+                    "spec": {"duration_sec": 75},
+                },
+            )
+
+
+@pytest.fixture
+def api_url_with_learned_preference(tmp_path: Path) -> Iterator[str]:
+    port = _free_port()
+    server = _BackgroundDaemon(
+        tmp_path / ".paos" / "state.db",
+        tmp_path / "workspace",
+        port,
+        seed=_seed_learned_preference,
+    )
+    server.start()
+    server.wait_ready()
+    yield f"http://127.0.0.1:{port}"
+    server.stop()
+
+
+def test_memory_review_groups_by_promotion_status(
+    runner: CliRunner, api_url_with_learned_preference: str
+) -> None:
+    result = runner.invoke(cli, ["--api-url", api_url_with_learned_preference, "memory", "review"])
+    assert result.exit_code == 0
+    assert "Chỉ gợi ý" in result.output
+    assert "pref.duration_sec" in result.output
+    assert "confidence=0.50" in result.output
+
+
+def test_memory_review_empty_tier_reports_none(runner: CliRunner, api_url: str) -> None:
+    result = runner.invoke(cli, ["--api-url", api_url, "memory", "review", "--tier", "L4"])
+    assert result.exit_code == 0
+    assert "chưa có sở thích nào" in result.output

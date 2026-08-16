@@ -17,6 +17,7 @@ from kernel.events.bus import EventBus, EventEnvelope
 from kernel.events.types import EventType
 from kernel.process.manager import Process, ProcessManager, ProcessState
 from kernel.state.db import StateStore
+from sdk.preference import decide_promotion
 
 
 class CreateJobRequest(BaseModel):
@@ -116,6 +117,7 @@ class MemoryItemResponse(BaseModel):
     salience: float
     created_at: str
     last_used_at: str | None
+    promotion: str
     score: float | None = None
     matched_via: str | None = None
 
@@ -165,6 +167,7 @@ def _memory_item_response(
         salience=item.salience,
         created_at=item.created_at,
         last_used_at=item.last_used_at,
+        promotion=decide_promotion(item.confidence).value,
         score=score,
         matched_via=matched_via,
     )

@@ -208,3 +208,40 @@ class MemoryStore:
             )
 
         await self._store.write(_update)
+
+    async def update(
+        self,
+        memory_id: str,
+        *,
+        content: str | None = None,
+        confidence: float | None = None,
+        scope_id: str | None = None,
+    ) -> None:
+        """Cập nhật TẠI CHỖ (UPDATE, không tạo hàng mới) — khác `write()` (luôn
+        INSERT). Memory item không bất biến như Artifact (không có `supersedes`,
+        doc 03 §3) — học sở thích (doc 07 §2.1, P-M5-2) là điều chỉnh dần
+        `confidence`/`content`/`scope_id` của MỘT hàng theo thời gian, không
+        phải tạo phiên bản mới. Tham số `None` nghĩa là GIỮ NGUYÊN (không phải
+        "xoá") — chỉ cột có giá trị truyền vào mới bị ghi đè."""
+        if content is None and confidence is None and scope_id is None:
+            return
+        clean_content = None if content is None else redact(content)
+
+        async def _update(conn: aiosqlite.Connection) -> None:
+            if clean_content is not None:
+                await conn.execute(
+                    "UPDATE memory_items SET content = ? WHERE memory_id = ?",
+                    (clean_content, memory_id),
+                )
+            if confidence is not None:
+                await conn.execute(
+                    "UPDATE memory_items SET confidence = ? WHERE memory_id = ?",
+                    (confidence, memory_id),
+                )
+            if scope_id is not None:
+                await conn.execute(
+                    "UPDATE memory_items SET scope_id = ? WHERE memory_id = ?",
+                    (scope_id, memory_id),
+                )
+
+        await self._store.write(_update)

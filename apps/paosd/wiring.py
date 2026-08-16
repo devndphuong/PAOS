@@ -17,6 +17,8 @@ from typing import Any
 from fastapi import FastAPI
 
 from apps.paosd.app import create_app
+from apps.paosd.memory_store import MemoryStore
+from apps.paosd.memory_writer import MemoryWriter
 from apps.paosd.runner import Runner
 from kernel.events.bus import EventBus
 from kernel.events.types import EventType
@@ -99,8 +101,20 @@ async def build_daemon(
     )
     events.subscribe("runner", "kernel.process.created", runner.on_process_created)
 
-    await events.start()  # giao lại event chưa dispatch cho subscriber "runner" (REL-01) —
-    # quan trọng nếu daemon crash giữa lúc kernel.process.created chưa kịp xử lý.
+    # MemoryWriter (P-M5-2, doc 07 §2) — quan sát Event để tự học sở thích.
+    # 2 tên subscriber riêng vì EventBus.subscribe() ánh xạ 1 tên -> ĐÚNG 1
+    # pattern (kernel/events/bus.py::_subscribers dict) — không gộp được 2
+    # pattern khác nhau dưới cùng 1 tên.
+    memory_writer = MemoryWriter(MemoryStore(store, events))
+    events.subscribe(
+        "memory_writer_process", "kernel.process.created", memory_writer.on_process_created
+    )
+    events.subscribe(
+        "memory_writer_edit", "quality.artifact.edited", memory_writer.on_artifact_edited
+    )
+
+    await events.start()  # giao lại event chưa dispatch cho từng subscriber (REL-01) —
+    # quan trọng nếu daemon crash giữa lúc xử lý event chưa kịp xong.
 
     worker_task = asyncio.create_task(runner.worker_loop())
 

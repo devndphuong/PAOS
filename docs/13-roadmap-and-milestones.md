@@ -102,8 +102,8 @@ Phạm vi: Rubric engine (deterministic + LLM judge) · Review Agent · loop có
 Phạm vi: 5 tầng memory · retrieval lai · consolidation job hàng đêm · preference learning · Knowledge Graph + extractor · Privacy Filter · `paosctl memory` / `knowledge`.
 
 **Exit criteria**
-- [ ] Sau 3 job cùng loại, PAOS không hỏi lại sở thích (duration/tone/voice)
-- [ ] Người dùng sửa tay → confidence giảm → hành vi đổi ở job sau
+- [ ] Sau 3 job cùng loại, PAOS không hỏi lại sở thích (duration/tone/voice) — **một phần** (P-M5-2): cơ chế học `confidence` tăng dần theo quan sát chạy thật (`MemoryWriter`), nhưng 3 lần quan sát THỤ ĐỘNG (`SILENT_ACCEPT`, +0.10, không có UI xác nhận rõ ràng) chỉ đạt confidence 0.5 ("suggest"), CHƯA tới ngưỡng 0.75 ("auto_apply") như ví dụ minh hoạ doc 07 §1 giả định (ví dụ đó ngầm định có xác nhận rõ ràng, +0.25/lần). Chưa Agent nào đọc lại sở thích đã học để THỰC SỰ "không hỏi lại" — cần UI (M8) mới có gì để hỏi/không hỏi.
+- [ ] Người dùng sửa tay → confidence giảm → hành vi đổi ở job sau — **một phần** (P-M5-2): "confidence giảm" đã CHẠY THẬT, kiểm bằng test HTTP end-to-end (`quality.artifact.edited` → `MemoryWriter.on_artifact_edited` → `-0.40`). "Hành vi đổi ở job sau" CHƯA — không Agent nào tiêu thụ sở thích đã học (xem BL mới).
 - [ ] KG có ≥ 100 node từ sử dụng thật, mọi edge có provenance
 - [ ] Memory L3 không bao giờ rời máy khi `privacy: private` (test đối kháng)
 - [ ] Rebuild KG từ replay event cho kết quả tương đương

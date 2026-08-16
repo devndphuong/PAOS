@@ -295,6 +295,37 @@ def memory_search(ctx: click.Context, query: str, tier: str | None) -> None:
         click.echo(f"{it['score']:.3f} [{it['matched_via']}] {it['content']}")
 
 
+@memory.command("review")
+@click.option("--tier", default="L3", show_default=True)
+@click.pass_context
+def memory_review(ctx: click.Context, tier: str) -> None:
+    """Duyệt sở thích đã học (doc 07 §2.2) — gộp theo trạng thái áp dụng:
+    auto_apply (>=0.75, PAOS tự dùng) · suggest (0.4-0.75, chỉ gợi ý) ·
+    ignore (<0.4, bỏ qua). Mặc định hàng tuần theo doc 07 §2.2, ở đây chạy
+    tay (doc 18 §8: consolidation chưa tự động hoá tới trước M7)."""
+    with _client(ctx) as client:
+        items = _get(client, "/v1/memory", params={"tier": tier, "limit": 200}).json()
+    if not items:
+        click.echo(f"(chưa có sở thích nào ở tầng {tier})")
+        return
+    groups: dict[str, list[dict[str, Any]]] = {"auto_apply": [], "suggest": [], "ignore": []}
+    for it in items:
+        groups.setdefault(it["promotion"], []).append(it)
+    labels = {
+        "auto_apply": "✓ Đang tự áp dụng",
+        "suggest": "? Chỉ gợi ý (chưa đủ tin cậy)",
+        "ignore": "· Bỏ qua (còn quá yếu)",
+    }
+    for status in ("auto_apply", "suggest", "ignore"):
+        rows = groups[status]
+        if not rows:
+            continue
+        click.echo(f"\n{labels[status]}")
+        for it in rows:
+            key = it["key"] or "-"
+            click.echo(f"  {key:<20} {it['content']:<24} confidence={it['confidence']:.2f}")
+
+
 @cli.command()
 @click.pass_context
 def doctor(ctx: click.Context) -> None:

@@ -135,3 +135,47 @@ async def test_write_with_embedding_stores_vector_row(memory_store: MemoryStore)
 
     row = await memory_store._store.read(_select)
     assert row == ("stub.embed", 3)
+
+
+async def test_update_confidence_updates_in_place_not_new_row(memory_store: MemoryStore) -> None:
+    item = await memory_store.write(tier="L3", content="x", key="pref.x", confidence=0.3)
+    await memory_store.update(item.memory_id, confidence=0.55)
+
+    updated = await memory_store.get(item.memory_id)
+    assert updated is not None
+    assert updated.confidence == pytest.approx(0.55)
+    assert updated.memory_id == item.memory_id  # cùng hàng, không tạo mới
+    assert updated.content == "x"  # không đụng tới vì content=None
+
+    all_items = await memory_store.list_by_tier("L3")
+    assert len(all_items) == 1
+
+
+async def test_update_content_and_scope_id(memory_store: MemoryStore) -> None:
+    item = await memory_store.write(tier="L3", content="75", key="pref.x", scope_id="proc_1")
+    await memory_store.update(item.memory_id, content="90", scope_id="proc_2")
+
+    updated = await memory_store.get(item.memory_id)
+    assert updated is not None
+    assert updated.content == "90"
+    assert updated.scope_id == "proc_2"
+    assert updated.confidence == 0.7  # không đụng tới vì confidence=None
+
+
+async def test_update_redacts_new_content(memory_store: MemoryStore) -> None:
+    item = await memory_store.write(tier="L3", content="x", key="pref.x")
+    await memory_store.update(item.memory_id, content="key=sk-abcdef1234567890")
+
+    updated = await memory_store.get(item.memory_id)
+    assert updated is not None
+    assert "sk-abcdef1234567890" not in updated.content
+
+
+async def test_update_with_no_fields_is_a_noop(memory_store: MemoryStore) -> None:
+    item = await memory_store.write(tier="L3", content="x", key="pref.x")
+    await memory_store.update(item.memory_id)
+
+    unchanged = await memory_store.get(item.memory_id)
+    assert unchanged is not None
+    assert unchanged.content == "x"
+    assert unchanged.confidence == 0.7
