@@ -18,6 +18,7 @@ dependencies = [
     "pyyaml>=6.0",          # manifest, policy
     "httpx>=0.27",          # chỉ dùng trong providers/, KHÔNG trong kernel/
     "click>=8.1",           # ADR-0025 — thư viện CLI cho paosctl
+    "psutil>=6.0",          # ADR-0030 — đo CPU/RAM/pin thật cho Energy Engine
 ]
 
 [project.optional-dependencies]
@@ -30,6 +31,7 @@ dev = [
     "import-linter>=2.1",
     "types-PyYAML",
     "types-jsonschema",
+    "types-psutil",
 ]
 
 [project.scripts]

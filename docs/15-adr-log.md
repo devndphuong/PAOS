@@ -332,6 +332,29 @@ Không có `&&`/`||` để gộp nhiều điều kiện — muốn logic phức 
 
 ---
 
+## ADR-0030 — `psutil` cho Energy Engine đo CPU/RAM/pin thật; KHÔNG thêm thư viện GPU vendor-specific
+
+**Trạng thái:** Accepted · 2026-08 · Quyết định P-M7-2 ([doc 19](19-prompt-library.md))
+
+**Bối cảnh:** doc 06 §4 Energy Engine cần đọc trạng thái máy THẬT (CPU util, RAM, pin/AC, nhiệt độ, GPU util/VRAM) để quyết định "máy có đang bận không" trước khi cấp resource token — khác biệt so với chỉ đếm số Task nội bộ paosd đang giữ token (`asyncio.Semaphore`, đã có từ M2-3): máy có thể bận vì ứng dụng KHÁC ngoài paosd. Cần chọn công cụ đọc sensor hệ điều hành. Máy dev thật là Windows (10 Pro N Workstation) — công cụ phải hoạt động ở đó, không chỉ trên Linux/CI.
+
+**Quyết định:** Dùng `psutil>=6.0` cho CPU (`cpu_percent()`), RAM (`virtual_memory()`), pin/AC (`sensors_battery()`) — cả 3 đã kiểm chạy thật trên Windows dev machine. **KHÔNG** thêm `pynvml`/`GPUtil`/`nvidia-ml-py` cho GPU ở lát này — GPU util/VRAM trong `policies/energy.yaml` khai báo nhưng chưa được `EnergyEngine` đọc, đánh dấu rõ "chưa đo được". Nhiệt độ (`psutil.sensors_temperatures()`) gọi được nhưng **raise `AttributeError` trên Windows** (chỉ implement cho Linux) — `EnergyEngine` bắt lỗi này, coi là "không đo được" (`None`), KHÔNG chặn vì thiếu dữ liệu, KHÔNG giả vờ có số.
+
+**Lý do:**
+1. **`psutil` đã kiểm thật trên đúng nền tảng dev** (không phải giả định tài liệu) — `cpu_percent()`/`sensors_battery()`/`virtual_memory()` đều trả giá trị hợp lệ trên Windows 10 lúc viết ADR này; `sensors_temperatures()` xác nhận KHÔNG khả dụng, ghi vào quyết định thay vì phát hiện muộn lúc chạy thật.
+2. **GPU vendor-specific đụng POR (tính di động, doc 11)** — `pynvml` chỉ chạy được với GPU NVIDIA + driver cài đúng; máy không NVIDIA (AMD/Intel/Apple Silicon) sẽ crash hoặc luôn báo "không có GPU". Thêm phụ thuộc cứng cho 1 hãng phần cứng khi hệ thống còn đang chạy `stub`/`local` provider (chưa GPU nào thật sự cần theo dõi util% ngoài test) là đầu tư sớm không cần thiết (P4).
+3. **`psutil` đã là lựa chọn "boring" đúng nghĩa P11** — thư viện thuần Python (kèm C extension biên dịch sẵn), 15+ năm, không phụ thuộc thêm service nền, không phải AI SDK (không đụng Cổng CI nào).
+4. **Không giả vờ đo được cái chưa đo được tốt hơn đo sai.** `EnergyEngine.check()` chỉ chặn dựa trên tín hiệu THẬT SỰ đọc được — thiếu 1 sensor (nhiệt độ trên Windows, GPU luôn) không được phép làm hỏng toàn bộ quyết định lịch, chỉ đơn giản là số hạng đó vắng mặt.
+
+**Hệ quả:** `policies/energy.yaml::gpu` và `::thermal` (trên Windows) là cấu hình khai báo nhưng KHÔNG có driver đọc — chờ ADR riêng nếu/khi cần GPU util thật (ví dụ khi có provider local dùng ComfyUI/GPU nặng thường trực, hoặc máy dev đổi sang Linux). `cpu_percent(interval=None)` cần "mồi" 1 lần lúc khởi động (`EnergyEngine.__init__`) — lần gọi đầu tiên có thể trả 0.0, chấp nhận được vì thiên về "cho phép" (an toàn theo hướng không chặn oan), không phải hướng nguy hiểm (chặn oan mới cần lo).
+
+**Đã loại:**
+1. **`pynvml` + `psutil` (đo cả GPU NVIDIA thật)** — đúng đủ 5 tín hiệu doc 06 §4 liệt kê. Loại vì lý do #2 (vendor lock-in phần cứng) và vì chưa có bằng chứng cần thật (chưa provider nào chạy GPU nặng thường trực ngoài test giả — RSK-04 "thêm Engine mới khi chưa có nhu cầu thật" áp dụng tương tự cho "thêm số hạng engine khi chưa có nhu cầu thật").
+2. **`GPUtil`** (wrapper mỏng quanh `nvidia-smi`) — nhẹ hơn `pynvml` nhưng cùng vấn đề vendor lock-in, và dự án đã bảo trì yếu hơn `psutil` (ít commit gần đây, không phải "boring technology" đã kiểm chứng lâu dài như `psutil`).
+3. **Không đo gì cả — chỉ dùng số Task nội bộ (`asyncio.Semaphore`) làm tín hiệu duy nhất**, bỏ hẳn khái niệm "máy bận vì ứng dụng khác". Loại vì đây chính xác là khoảng trống doc 06 §4 nêu tên ("theo dõi GPU util/VRAM, CPU load...") — semaphore nội bộ chỉ biết paosd tự cạnh tranh với chính nó, không biết gì về phần còn lại của máy người dùng đang dùng.
+
+---
+
 ## Backlog ADR (chưa quyết định, cần trước milestone tương ứng)
 
 | Dự kiến | Chủ đề | Cần trước |

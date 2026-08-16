@@ -1,0 +1,19 @@
+# Nguong tai nguyen may (doc 06 S4, doc 19 P-M7-2, ADR-0030). DU LIEU, khong
+# phai code (P10) - EnergyEngine._load_energy_policy() doc lai MOI LAN goi
+# (hot reload, cung tien le policies/routing.yaml/budget.yaml/intents.yaml).
+#
+# gpu.* - CHUA duoc EnergyEngine doc (ADR-0030: khong them pynvml/GPUtil vendor-
+# specific o lat nay). Khai bao san cho tuong lai, KHONG anh huong hanh vi hom nay.
+# thermal.throttle_above_c - psutil.sensors_temperatures() KHONG kha dung tren
+# Windows (chi Linux, ADR-0030) - tren may dev, so hang nay luon "khong do duoc",
+# khong chan lich vi thieu du lieu.
+version: 1
+gpu:
+  max_util_to_start: 60
+  min_free_vram_mb: 4096
+cpu:
+  max_load_to_start: 0.75
+battery:
+  on_battery: {defer_heavy: true, allow: [text.generate]}
+thermal:
+  throttle_above_c: 85
