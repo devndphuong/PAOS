@@ -9,11 +9,14 @@ THẬT theo kết quả invoke(), không chỉ theo load().
 
 CHƯA làm ở M2 (doc 19 P-M2-3): công thức chấm điểm + provider ranking — chọn
 theo ĐÚNG thứ tự Registry.providers_for() trả về (ưu tiên khai báo, chưa đảm
-bảo ổn định). P-M6-2 đã lấp MỘT PHẦN: `_rank_by_quality()` xếp lại theo
-`provider_stats.quality_ewma` khi ≥1 ứng viên đủ `quality_n>=5` (doc 06 §2.2
-Q̂), cold start vẫn giữ nguyên thứ tự khai báo. CHƯA áp Ĉ/L̂/P/R theo trọng số
-đầy đủ (`routing.yaml`) — cần Cost/Energy Engine (M7) và profile/hot-reload
-(P-M6-3), xem docstring `_rank_by_quality()`.
+bảo ổn định). P-M6-2/P-M6-3 đã lấp 3/5 số hạng: `_rank_candidates()` xếp lại
+theo `w_q·Q̂ + w_p·P + w_r·R` (renormalize trên số hạng THẬT SỰ có — Q̂ cần
+`quality_n>=5`, R cần ≥1 lần thử, P luôn tính được từ `provider.yaml::class`)
+khi ≥1 ứng viên đủ Q̂; cold start vẫn giữ nguyên thứ tự khai báo. Trọng số đọc
+từ `policies/routing.yaml` theo `profile` (default/economy/quality/private,
+đọc lại MỖI LẦN gọi — hot reload, không cache). CHƯA áp Ĉ/L̂ (cần Cost Engine
+M7 + latency tracking) và CHƯA có rule engine tự đổi profile theo budget (đó
+cũng cần Cost Engine) — xem docstring `_rank_candidates()`.
 
 doc 06 §2.1 liệt kê 9 ràng buộc cứng — chỉ 3 làm được với dữ liệu ĐÃ CÓ hôm
 nay (enabled, breaker OPEN, privacy_class). 6 mục còn lại (health FAIL, budget,
@@ -35,6 +38,7 @@ from pathlib import Path
 from typing import Any
 
 import aiosqlite
+import yaml
 
 from apps.paosd.cache_store import CacheHit, CacheStore
 from apps.paosd.provider_stats import ProviderStats, normalize_task_class
@@ -53,6 +57,48 @@ _BACKOFF_JITTER_S = 0.03
 
 _BREAKER_FAILURE_THRESHOLD = 3
 _BREAKER_OPEN_S = 60.0
+
+# Cùng tiền lệ EventBus._DEFAULT_SCHEMA_DIR (kernel/events/bus.py) — default trỏ
+# file THẬT trong repo, để 26+ chỗ gọi Router(...) đã có (test + production)
+# không cần sửa khi thêm tham số này (doc 19 P-M6-3).
+_DEFAULT_ROUTING_POLICY_PATH = Path(__file__).resolve().parents[2] / "policies" / "routing.yaml"
+_DEFAULT_PROFILE = "default"
+_LOCAL_PRIVACY_FIT = 1.0
+_NON_LOCAL_PRIVACY_FIT = 0.4
+
+
+@dataclass(frozen=True)
+class _RoutingWeights:
+    w_q: float
+    w_c: float
+    w_l: float
+    w_p: float
+    w_r: float
+
+
+def _load_routing_policy(path: Path) -> dict[str, _RoutingWeights]:
+    """Đọc lại MỖI LẦN gọi — hot reload thật, cùng tiền lệ
+    `DecisionEngine._load_intents()` (P-M6-1): sửa `policies/routing.yaml` có
+    hiệu lực ngay lần gọi kế tiếp, không cache, không restart daemon. Thiếu
+    file/profile -> trả dict rỗng/thiếu key, caller tự fallback về
+    "không xếp hạng" — không giả vờ có trọng số."""
+    if not path.is_file():
+        return {}
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    result: dict[str, _RoutingWeights] = {}
+    default = data.get("default")
+    if default:
+        result[_DEFAULT_PROFILE] = _RoutingWeights(**default)
+    for name, weights in (data.get("profiles") or {}).items():
+        result[name] = _RoutingWeights(**weights)
+    return result
+
+
+def _privacy_fit(provider_class: str) -> float:
+    """P doc 06 §2.2 — "local=1.0, cloud=0.4", tính TĨNH từ provider.yaml::class,
+    không cần lịch sử. `hybrid` xử lý như non-local (bảo thủ — tên gọi hàm ý vẫn
+    gọi ra mạng)."""
+    return _LOCAL_PRIVACY_FIT if provider_class == "local" else _NON_LOCAL_PRIVACY_FIT
 
 
 @dataclass
@@ -113,6 +159,7 @@ class Router:
         store: StateStore,
         resource_semaphores: dict[str, asyncio.Semaphore],
         workspace_root: Path,
+        routing_policy_path: Path = _DEFAULT_ROUTING_POLICY_PATH,
     ) -> None:
         self._registry = registry
         self._events = events
@@ -121,6 +168,7 @@ class Router:
         self._breakers: dict[str, _BreakerState] = {}
         self._cache = CacheStore(store, workspace_root / "cache")
         self._provider_stats = ProviderStats(store)
+        self._routing_policy_path = routing_policy_path
 
     async def call(
         self,
@@ -130,6 +178,7 @@ class Router:
         *,
         exclude_provider: str | None = None,
         contains_private_l3: bool = False,
+        profile: str = _DEFAULT_PROFILE,
     ) -> tuple[dict[str, Any], str | None]:
         """Trả về `(result, chosen_provider_id)` — provider_id cần lộ ra ngoài
         từ P-M4-2 (ADR-0008): caller (`AgentContext.call()`) ghi lại provider
@@ -143,7 +192,13 @@ class Router:
         `True` loại VÔ ĐIỀU KIỆN mọi candidate `provider_class == "cloud"`
         khỏi ứng viên, BẤT KỂ provider đó tự khai `privacy:` gì trong
         provider.yaml — xem `_classify()`. Mặc định `False`, không đổi hành
-        vi của bất kỳ caller nào đã có hôm nay (8 Agent thật đều không truyền)."""
+        vi của bất kỳ caller nào đã có hôm nay (8 Agent thật đều không truyền).
+
+        `profile` (P-M6-3, doc 06 §2.2) — chọn bộ trọng số trong
+        `policies/routing.yaml::profiles`. Mặc định `"default"`. CHƯA có
+        caller nào tự đổi profile theo ngữ cảnh (rule "budget_used_pct>80 ->
+        force_profile economy" cần Cost Engine, M7) — tham số đã sẵn sàng,
+        chờ caller thật."""
         capability_id, version_str = capability_ref.split("@")
         version = int(version_str)
         manifests = self._registry.providers_for(capability_id, version)
@@ -160,7 +215,7 @@ class Router:
         await self._publish_privacy_blocked(decision_id, process_id, capability_ref, candidates)
         eligible = [c for c in candidates if c.eligible]
         task_class = normalize_task_class(payload.get("task_class"))
-        eligible, ranked = await self._rank_by_quality(eligible, task_class)
+        eligible, ranked = await self._rank_candidates(eligible, task_class, profile)
 
         if spec.cacheable and spec.cache_key_fields and eligible:
             found = await self._lookup_cache(spec, capability_id, version, payload, eligible)
@@ -206,23 +261,54 @@ class Router:
             )
         return fb.result, fb.chosen
 
-    async def _rank_by_quality(
-        self, eligible: list[_Candidate], task_class: str
+    async def _rank_candidates(
+        self, eligible: list[_Candidate], task_class: str, profile: str
     ) -> tuple[list[_Candidate], bool]:
-        """doc 06 §2.2 Q̂ — CHỈ xếp lại khi ≥1 ứng viên có `quality_n >= 5`
-        (đủ dữ liệu thật, doc 06). Cold start (mọi ứng viên n<5, gồm 100% test
-        hiện có trước P-M6-2) giữ NGUYÊN thứ tự khai báo — 0 hành vi đổi, chỉ
-        kích hoạt khi lịch sử thật đã tích lũy. CHƯA áp Ĉ/L̂/P/R theo trọng số
-        đầy đủ — cần Cost/Energy Engine (M7) và `routing.yaml` (P-M6-3)."""
-        scores: dict[str, float] = {}
+        """doc 06 §2.2 — điểm = (w_q·Q̂ + w_p·P + w_r·R) / (w_q+w_p+w_r), RENORMALIZE
+        trên đúng các số hạng THẬT SỰ có cho từng candidate (Q̂ cần `quality_n>=5`,
+        R cần ≥1 lần thử ghi qua `record_attempt()`, P luôn tính được tĩnh từ
+        `provider.yaml::class`). CHƯA có Ĉ/L̂ (Cost Engine/latency tracking = M7)
+        — 2 số hạng đó vắng mặt hoàn toàn khỏi công thức này, không giả vờ bằng 0
+        hay giá trị trung tính (một Ĉ=0 giả sẽ khiến Router tưởng MỌI provider
+        miễn phí, sai lệch nghiêm trọng hơn là thiếu số hạng).
+
+        CHỈ xếp lại khi ≥1 ứng viên có đủ Q̂ (`quality_n>=5`, đúng điều kiện
+        P-M6-2) — cold start (100% test trước P-M6-2/3) giữ NGUYÊN thứ tự khai
+        báo, 0 hành vi đổi."""
+        policy = _load_routing_policy(self._routing_policy_path)
+        weights = policy.get(profile) or policy.get(_DEFAULT_PROFILE)
+
+        stats_by_provider: dict[str, Any] = {}
         for candidate in eligible:
-            stat = await self._provider_stats.get(candidate.manifest.provider_id, task_class)
-            if stat is None or not stat.has_enough_quality_samples or stat.quality_ewma is None:
-                continue
-            scores[candidate.manifest.provider_id] = stat.quality_ewma
-        if not scores:
+            stats_by_provider[candidate.manifest.provider_id] = await self._provider_stats.get(
+                candidate.manifest.provider_id, task_class
+            )
+        has_quality_signal = any(
+            stat is not None and stat.has_enough_quality_samples and stat.quality_ewma is not None
+            for stat in stats_by_provider.values()
+        )
+        if not has_quality_signal or weights is None:
             return eligible, False
-        ranked = sorted(eligible, key=lambda c: -scores.get(c.manifest.provider_id, -1.0))
+
+        def _score(candidate: _Candidate) -> float:
+            stat = stats_by_provider[candidate.manifest.provider_id]
+            numerator = 0.0
+            denominator = 0.0
+            if (
+                stat is not None
+                and stat.has_enough_quality_samples
+                and stat.quality_ewma is not None
+            ):
+                numerator += weights.w_q * stat.quality_ewma
+                denominator += weights.w_q
+            numerator += weights.w_p * _privacy_fit(candidate.manifest.provider_class)
+            denominator += weights.w_p
+            if stat is not None and stat.success_rate is not None:
+                numerator += weights.w_r * stat.success_rate
+                denominator += weights.w_r
+            return numerator / denominator if denominator > 0 else 0.0
+
+        ranked = sorted(eligible, key=lambda c: -_score(c))
         return ranked, True
 
     async def _run_fallback(

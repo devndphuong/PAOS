@@ -18,6 +18,7 @@ from typing import Any
 
 import aiosqlite
 import pytest
+import yaml
 
 from apps.paosd.router import Router
 from kernel import clock as clock_module
@@ -98,13 +99,14 @@ def _write_provider(
     *,
     enabled: bool = True,
     privacy: str = "private",
+    provider_class: str = "local",
 ) -> None:
     provider_dir = providers_dir / dirname
     provider_dir.mkdir(parents=True)
     (provider_dir / "provider.yaml").write_text(
-        f"id: {provider_id}\nimplements: [text.generate@1]\nclass: local\nprivacy: {privacy}\n"
-        f"cost: {{}}\nlimits: {{}}\nresources: []\nhealth_check: {{}}\nquality_hint: {{}}\n"
-        f"enabled: {'true' if enabled else 'false'}\n",
+        f"id: {provider_id}\nimplements: [text.generate@1]\nclass: {provider_class}\n"
+        f"privacy: {privacy}\ncost: {{}}\nlimits: {{}}\nresources: []\nhealth_check: {{}}\n"
+        f"quality_hint: {{}}\nenabled: {'true' if enabled else 'false'}\n",
         encoding="utf-8",
     )
 
@@ -226,6 +228,113 @@ async def test_ranking_ignored_when_fewer_than_5_samples(
     assert chosen == first_id
     decision = await _latest_decision(store)
     assert "ưu tiên #1 theo thứ tự khai báo" in decision["rationale"]
+
+
+def _write_routing_policy(path: Path, profiles: dict[str, dict[str, float]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump({"version": 1, **profiles}), encoding="utf-8")
+
+
+async def test_privacy_fit_favors_local_under_private_profile(
+    events: EventBus, store: StateStore, tmp_path: Path
+) -> None:
+    """P-M6-3 (doc 06 §2.2) — 2 provider CÙNG quality_ewma (n>=5) nhưng khác
+    class: local vs cloud. Profile "private" (w_p cao) phải ưu tiên local nhờ
+    số hạng P, dù Q̂ hòa tuyệt đối."""
+    caps_dir = tmp_path / "capabilities"
+    providers_dir = tmp_path / "providers"
+    _write_fixture_capability(caps_dir)
+    _write_provider(providers_dir, "provider.local", "p_local", provider_class="local")
+    _write_provider(providers_dir, "provider.cloud", "p_cloud", provider_class="cloud")
+    reg = Registry(caps_dir, providers_dir)
+    reg.load()
+    reg.preload_adapter("provider.local", _FakeAdapter())
+    reg.preload_adapter("provider.cloud", _FakeAdapter())
+    await _seed_provider_quality(store, "provider.local", "unknown", 0.6, 5)
+    await _seed_provider_quality(store, "provider.cloud", "unknown", 0.6, 5)
+
+    routing_path = tmp_path / "policies" / "routing.yaml"
+    _write_routing_policy(
+        routing_path,
+        {
+            "default": {"w_q": 0.40, "w_c": 0.35, "w_l": 0.15, "w_p": 0.05, "w_r": 0.05},
+            "profiles": {"private": {"w_q": 0.10, "w_c": 0.0, "w_l": 0.0, "w_p": 0.90, "w_r": 0.0}},
+        },
+    )
+    router = Router(reg, events, store, {}, tmp_path, routing_policy_path=routing_path)
+    _, chosen = await router.call("text.generate@1", {"prompt": "x"}, "proc_1", profile="private")
+
+    assert chosen == "provider.local"
+
+
+async def test_success_rate_breaks_tie_via_r_term(
+    events: EventBus, store: StateStore, tmp_path: Path
+) -> None:
+    """R (success_rate) tham gia điểm khi CÓ lịch sử thử (không cần ngưỡng n,
+    khác Q̂) — 2 provider cùng quality_ewma nhưng khác success_rate."""
+    caps_dir = tmp_path / "capabilities"
+    providers_dir = tmp_path / "providers"
+    _write_fixture_capability(caps_dir)
+    _write_provider(providers_dir, "provider.reliable", "p_a")
+    _write_provider(providers_dir, "provider.flaky", "p_b")
+    reg = Registry(caps_dir, providers_dir)
+    reg.load()
+    reg.preload_adapter("provider.reliable", _FakeAdapter())
+    reg.preload_adapter("provider.flaky", _FakeAdapter())
+    await _seed_provider_quality(store, "provider.reliable", "unknown", 0.6, 5)
+    await _seed_provider_quality(store, "provider.flaky", "unknown", 0.6, 5)
+
+    async def _seed_attempts(provider_id: str, success: int, fail: int) -> None:
+        async def _insert(conn: aiosqlite.Connection) -> None:
+            await conn.execute(
+                "UPDATE provider_stats SET success_count = ?, fail_count = ? "
+                "WHERE provider_id = ? AND task_class = 'unknown'",
+                (success, fail, provider_id),
+            )
+
+        await store.write(_insert)
+
+    await _seed_attempts("provider.reliable", 9, 1)
+    await _seed_attempts("provider.flaky", 1, 9)
+
+    router = Router(reg, events, store, {}, tmp_path)
+    _, chosen = await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
+
+    assert chosen == "provider.reliable"
+
+
+async def test_routing_policy_hot_reload_changes_ranking_without_restart(
+    events: EventBus, store: StateStore, tmp_path: Path
+) -> None:
+    """`routing.yaml` đọc lại MỖI LẦN gọi — sửa file giữa 2 lượt gọi phải đổi
+    ngay kết quả xếp hạng, không cần dựng lại Router (P-M6-3, doc 06 §2.2)."""
+    caps_dir = tmp_path / "capabilities"
+    providers_dir = tmp_path / "providers"
+    _write_fixture_capability(caps_dir)
+    _write_provider(providers_dir, "provider.local", "p_local", provider_class="local")
+    _write_provider(providers_dir, "provider.cloud", "p_cloud", provider_class="cloud")
+    reg = Registry(caps_dir, providers_dir)
+    reg.load()
+    reg.preload_adapter("provider.local", _FakeAdapter())
+    reg.preload_adapter("provider.cloud", _FakeAdapter())
+    await _seed_provider_quality(store, "provider.local", "unknown", 0.5, 5)
+    await _seed_provider_quality(store, "provider.cloud", "unknown", 0.9, 5)
+
+    routing_path = tmp_path / "policies" / "routing.yaml"
+    _write_routing_policy(
+        routing_path, {"default": {"w_q": 1.0, "w_c": 0.0, "w_l": 0.0, "w_p": 0.0, "w_r": 0.0}}
+    )
+    router = Router(reg, events, store, {}, tmp_path, routing_policy_path=routing_path)
+
+    _, first_chosen = await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
+    assert first_chosen == "provider.cloud"  # w_q thắng tuyệt đối -> quality_ewma cao hơn
+
+    # Sửa file NGAY GIỮA 2 lượt gọi — không dựng lại Router.
+    _write_routing_policy(
+        routing_path, {"default": {"w_q": 0.0, "w_c": 0.0, "w_l": 0.0, "w_p": 1.0, "w_r": 0.0}}
+    )
+    _, second_chosen = await router.call("text.generate@1", {"prompt": "x"}, "proc_2")
+    assert second_chosen == "provider.local"  # w_p thắng tuyệt đối -> local có P cao hơn
 
 
 async def test_exclude_provider_routes_to_next_candidate(

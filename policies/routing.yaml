@@ -1,0 +1,16 @@
+# Trong so cham diem Router (doc 06 S2.2, doc 19 P-M6-3). DU LIEU, khong phai
+# code (P10) - sua file nay co hieu luc NGAY lan goi ke tiep, khong restart
+# daemon (Router._load_routing_policy() doc lai moi lan .call(), khong cache).
+#
+# 5 so hang cong thuc goc: w_q.Q_hat + w_c.(1-C_hat) + w_l.(1-L_hat) + w_p.P + w_r.R
+# Hom nay CHI dung duoc Q_hat/P/R that (Router._rank_candidates()) - Ĉ/L̂ can
+# Cost Engine (M7) va latency tracking chua ton tai. Khong dua "rules:" (doc 06
+# vi du "budget_used_pct > 80 -> force_profile economy") vao file nay - rule do
+# can Cost Engine de danh gia dieu kien, dua vao ma khong co code doc se gay
+# hieu lam dang hoat dong.
+version: 1
+default: {w_q: 0.40, w_c: 0.35, w_l: 0.15, w_p: 0.05, w_r: 0.05}
+profiles:
+  economy: {w_q: 0.25, w_c: 0.60, w_l: 0.10, w_p: 0.05, w_r: 0.00}
+  quality: {w_q: 0.70, w_c: 0.05, w_l: 0.10, w_p: 0.05, w_r: 0.10}
+  private: {w_q: 0.35, w_c: 0.20, w_l: 0.10, w_p: 0.35, w_r: 0.00}
