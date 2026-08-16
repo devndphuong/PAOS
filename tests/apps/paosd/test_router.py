@@ -11,6 +11,8 @@ test hồi quy cho bug đã sửa lúc dựng lát này).
 from __future__ import annotations
 
 import json
+import os
+import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -1225,3 +1227,121 @@ async def test_decision_rationale_and_candidates_json_are_redacted(
     decision = await _latest_decision(store)
     assert "sk-abcdefgh12345678" not in str(decision["rationale"])
     assert "sk-abcdefgh12345678" not in str(decision["candidates_json"])
+
+
+def _write_plugin_provider(
+    plugins_dir: Path, plugin_id: str, provider_id: str, *, spend_max_per_job: float
+) -> None:
+    """Plugin THẬT chạy `fake_plugin.py` (P-M8-1) — dùng để kiểm enforcement
+    `spend.max_per_job` (doc 09 §5, P-M8-2) đầu-cuối qua Router thật, không
+    giả lập PluginProcess."""
+    plugin_dir = plugins_dir / plugin_id.replace(".", "_")
+    plugin_dir.mkdir(parents=True)
+    manifest = {
+        "id": plugin_id,
+        "name": "Demo Plugin",
+        "version": "1.0.0",
+        "paos_api": ">=1.0,<2.0",
+        "provides": {
+            "agents": [],
+            "workflows": [],
+            "capabilities": [],
+            "providers": [f"{provider_id}@1"],
+            "rubrics": [],
+        },
+        "permissions": {
+            "fs": {"read": [], "write": []},
+            "network": {"allow": []},
+            "exec": [],
+            "spend": {"max_per_job": spend_max_per_job, "currency": "JPY"},
+        },
+        "runtime": {
+            "type": "process",
+            "entry": f"{sys.executable} fake_plugin.py",
+            "isolation": "subprocess",
+            "limits": {},
+        },
+        "signature": None,
+    }
+    (plugin_dir / "plugin.yaml").write_text(yaml.safe_dump(manifest), encoding="utf-8")
+    fixture_src = Path(__file__).resolve().parents[2] / "kernel" / "fixtures" / "plugin_process"
+    (plugin_dir / "fake_plugin.py").write_text(
+        (fixture_src / "fake_plugin.py").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    provider_dir = plugin_dir / "providers" / provider_id.replace(".", "_")
+    provider_dir.mkdir(parents=True)
+    (provider_dir / "provider.yaml").write_text(
+        f"id: {provider_id}\nimplements: [text.generate@1]\nclass: local\n"
+        "privacy: private\ncost: {unit: token, in: 1.0, out: 0.0, currency: JPY}\n"
+        "limits: {}\nresources: []\nhealth_check: {}\nquality_hint: {}\n",
+        encoding="utf-8",
+    )
+
+
+async def test_plugin_exceeding_spend_max_per_job_triggers_callback(
+    tmp_path: Path, events: EventBus, store: StateStore
+) -> None:
+    """Doc 09 §5 "Plugin không có quyền: ... vượt spend.max_per_job" — P-M8-2
+    exit criteria "Plugin vượt quyền khai báo -> bị chặn, tự disable". Router
+    tự phát hiện qua callback `on_plugin_spend_exceeded` (không tự disable —
+    đó là việc của `PluginManager`, nối ở `wiring.py::build_daemon()`)."""
+    caps_dir = tmp_path / "capabilities"
+    plugins_dir = tmp_path / "plugins"
+    _write_fixture_capability(caps_dir)
+    _write_plugin_provider(
+        plugins_dir, "paos.plugin.demo", "plugin.demo.echo", spend_max_per_job=5.0
+    )
+    os.environ["FAKE_PLUGIN_USAGE_JSON"] = '{"in_tokens": 100, "out_tokens": 0}'  # 100đ > 5đ
+
+    reg = Registry(caps_dir, tmp_path / "providers", plugins_dir=plugins_dir)
+    reg.load()
+
+    violations: list[tuple[str, str, float, float]] = []
+
+    async def _on_exceeded(
+        plugin_id: str, capability_ref: str, amount: float, max_allowed: float
+    ) -> None:
+        violations.append((plugin_id, capability_ref, amount, max_allowed))
+
+    router = _make_router(reg, events, store, {}, tmp_path, on_plugin_spend_exceeded=_on_exceeded)
+    try:
+        result, chosen = await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
+        assert chosen == "plugin.demo.echo"
+        assert result["text"] == "fake-plugin-output"
+
+        assert violations == [("paos.plugin.demo", "text.generate@1", 100.0, 5.0)]
+    finally:
+        os.environ.pop("FAKE_PLUGIN_USAGE_JSON", None)
+        process = reg.plugin_process("paos.plugin.demo")
+        if process is not None:
+            await process.stop()
+
+
+async def test_plugin_within_spend_max_per_job_does_not_trigger_callback(
+    tmp_path: Path, events: EventBus, store: StateStore
+) -> None:
+    caps_dir = tmp_path / "capabilities"
+    plugins_dir = tmp_path / "plugins"
+    _write_fixture_capability(caps_dir)
+    _write_plugin_provider(
+        plugins_dir, "paos.plugin.demo", "plugin.demo.echo", spend_max_per_job=500.0
+    )
+    os.environ["FAKE_PLUGIN_USAGE_JSON"] = '{"in_tokens": 100, "out_tokens": 0}'  # 100đ < 500đ
+
+    reg = Registry(caps_dir, tmp_path / "providers", plugins_dir=plugins_dir)
+    reg.load()
+
+    violations: list[Any] = []
+
+    async def _on_exceeded(*args: Any) -> None:
+        violations.append(args)
+
+    router = _make_router(reg, events, store, {}, tmp_path, on_plugin_spend_exceeded=_on_exceeded)
+    try:
+        await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
+        assert violations == []
+    finally:
+        os.environ.pop("FAKE_PLUGIN_USAGE_JSON", None)
+        process = reg.plugin_process("paos.plugin.demo")
+        if process is not None:
+            await process.stop()

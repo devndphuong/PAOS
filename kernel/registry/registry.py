@@ -204,7 +204,9 @@ class Registry:
         self._agents: dict[str, _AgentEntry] = {}
         self._agent_preload: dict[str, Any] = {}
         self._agent_class_cache: dict[str, type] = {}
+        self._builtin_providers: list[ProviderManifest] = []
         self._plugins: list[PluginManifest] = []
+        self._disabled_plugins: list[PluginManifest] = []
         self._plugin_processes: dict[str, PluginProcess] = {}
         self._plugin_provider_owner: dict[str, str] = {}
         self._plugin_load_errors: list[tuple[str, str]] = []
@@ -212,28 +214,50 @@ class Registry:
     def load(self) -> None:
         """Quét capabilities/, providers/, agents/, plugins/, nạp toàn bộ vào bộ
         nhớ. Gọi 1 lần lúc khởi động; `reload_plugins()` (P-M8-2) hot-reload
-        RIÊNG phần plugin sau đó, không cần gọi lại `load()` toàn bộ."""
+        RIÊNG phần plugin sau đó, không cần gọi lại `load()` toàn bộ (đắt hơn —
+        quét lại cả capabilities/providers/agents gốc repo, thứ không đổi khi
+        cài/gỡ 1 plugin)."""
         self._capabilities = dict(self._scan_capabilities())
-        self._providers = list(self._scan_providers())
-        self._providers_by_id = {p.provider_id: p for p in self._providers}
+        self._builtin_providers = list(self._scan_providers())
         self._agents = dict(self._scan_agents())
-        self._load_plugins()
+        self._apply_plugin_scan(reuse_processes={})
 
-    def _load_plugins(self) -> None:
+    async def reload_plugins(self) -> None:
+        """Hot-reload PHẦN PLUGIN (P-M8-2, doc 12 §2 "Registry hot-reload") —
+        quét lại `plugins_dir`, KHÔNG đụng capabilities/providers/agents gốc
+        repo. Plugin ĐANG chạy (process cũ) mà vẫn còn trong lần quét mới
+        được TÁI DÙNG NGUYÊN VẸN (không respawn oan — 1 lượt gọi đang dở
+        không nên bị ngắt chỉ vì `paosctl plugin install` một plugin KHÁC).
+        Plugin biến mất (gỡ cài/bị disable) → dừng hẳn process của nó, KHÔNG
+        để rò tiến trình con."""
+        old_processes = dict(self._plugin_processes)
+        self._apply_plugin_scan(reuse_processes=old_processes)
+        for plugin_id, process in old_processes.items():
+            if plugin_id not in self._plugin_processes:
+                await process.stop()
+
+    def _apply_plugin_scan(self, reuse_processes: dict[str, PluginProcess]) -> None:
         """`plugins_dir` KHÔNG cấu hình → không quét gì (an toàn mặc định,
         cùng tiền lệ `workflows_dir`/`agents_dir`). Plugin lỗi (manifest sai
         schema, `paos_api` không tương thích) bị GHI LẠI (`_plugin_load_errors`)
-        chứ KHÔNG làm `load()` raise — 1 plugin cẩu thả không được phép chặn
-        toàn bộ daemon khởi động (doc 09 §1 T3, đúng tinh thần "plugin crash
-        không giết Kernel" áp dụng luôn cho lúc NẠP, không chỉ lúc CHẠY)."""
+        chứ KHÔNG raise — 1 plugin cẩu thả không được phép chặn toàn bộ daemon
+        khởi động HAY 1 lần `reload_plugins()` khác (doc 09 §1 T3, đúng tinh
+        thần "plugin crash không giết Kernel" áp dụng luôn cho lúc NẠP, không
+        chỉ lúc CHẠY). Plugin có file đánh dấu `.disabled` (`apps/paosd/
+        plugin_manager.py`, P-M8-2) vẫn được LIỆT KÊ (`disabled_plugins()`)
+        nhưng KHÔNG merge provider/tạo `PluginProcess` — tắt thật, không chỉ
+        ẩn khỏi danh sách."""
         self._plugins = []
+        self._disabled_plugins = []
         self._plugin_processes = {}
         self._plugin_provider_owner = {}
         self._plugin_load_errors = []
+        self._providers = list(self._builtin_providers)
+        self._providers_by_id = {p.provider_id: p for p in self._providers}
         if self._plugins_dir is None or not self._plugins_dir.exists():
             return
 
-        for plugin_dir in self._plugins_dir.iterdir():
+        for plugin_dir in sorted(self._plugins_dir.iterdir()):
             if not plugin_dir.is_dir() or not (plugin_dir / "plugin.yaml").is_file():
                 continue
             try:
@@ -242,12 +266,18 @@ class Registry:
                 self._plugin_load_errors.append((plugin_dir.name, exc.message))
                 continue
 
+            if (plugin_dir / ".disabled").is_file():
+                self._disabled_plugins.append(manifest)
+                continue
+
             self._plugins.append(manifest)
             for provider_manifest in _scan_provider_manifests(plugin_dir / "providers"):
                 self._providers.append(provider_manifest)
                 self._providers_by_id[provider_manifest.provider_id] = provider_manifest
                 self._plugin_provider_owner[provider_manifest.provider_id] = manifest.plugin_id
-            self._plugin_processes[manifest.plugin_id] = PluginProcess(
+            self._plugin_processes[manifest.plugin_id] = reuse_processes.get(
+                manifest.plugin_id
+            ) or PluginProcess(
                 manifest.plugin_id,
                 manifest.runtime.entry,
                 manifest.plugin_dir,
@@ -270,10 +300,32 @@ class Registry:
     def plugins(self) -> list[PluginManifest]:
         return list(self._plugins)
 
+    def disabled_plugins(self) -> list[PluginManifest]:
+        return list(self._disabled_plugins)
+
+    def plugin_process(self, plugin_id: str) -> PluginProcess | None:
+        """`apps/paosd/plugin_manager.py` cần truy cập trực tiếp để `stop()`
+        lúc gỡ cài — KHÔNG lộ qua `load_adapter()` (đó là API cho ROUTER, đọc
+        theo `provider_id`, không phải `plugin_id`)."""
+        return self._plugin_processes.get(plugin_id)
+
     def plugin_load_errors(self) -> list[tuple[str, str]]:
         """`[(tên_thư_mục, lý_do_lỗi), ...]` — `paosctl plugin list` (P-M8-2)
         đọc để báo plugin nào cài mà KHÔNG nạp được, thay vì âm thầm biến mất."""
         return list(self._plugin_load_errors)
+
+    def plugin_owner_of(self, provider_id: str) -> str | None:
+        """`apps/paosd/router.py` dùng để biết 1 candidate có phải provider
+        CỦA PLUGIN không — cần cho enforcement `spend.max_per_job` (doc 09
+        §5, P-M8-2): chỉ provider đến từ plugin mới có giới hạn chi tiêu
+        RIÊNG cần kiểm sau mỗi lượt gọi thành công."""
+        return self._plugin_provider_owner.get(provider_id)
+
+    def plugin_manifest(self, plugin_id: str) -> PluginManifest | None:
+        for manifest in self._plugins:
+            if manifest.plugin_id == plugin_id:
+                return manifest
+        return None
 
     def get_capability(self, capability_id: str, version: int) -> CapabilitySpec:
         key = _capability_key(capability_id, version)

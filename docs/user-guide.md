@@ -112,6 +112,15 @@ paosctl report --month 2026-08      # chọn tháng khác
 # saved_local hôm nay luôn 0đ — repo chưa đăng ký provider cloud/hybrid nào thật (ADR-0031)
 ```
 
+**Cài plugin — thấy quyền trước khi duyệt, tự tắt khi lạm quyền (mới — M8)** — plugin chạy tiến trình riêng, giao tiếp JSON-RPC qua stdio (ADR-0005/ADR-0032). Cài từ đường dẫn local hoặc git URL, luôn hiện TOÀN BỘ quyền yêu cầu (`fs`/`network`/`exec`/`spend`) trước khi hỏi xác nhận (doc 09 §2). Vượt `spend.max_per_job` → tự động tắt (`.disabled` marker, KHÔNG xóa code) — `fs`/`network`/`exec` hiện chỉ hiển thị lúc cài, chưa có sandbox OS thật chặn được (BL-025, docs/backlog.md).
+```bash
+paosctl plugin install <đường-dẫn-hoặc-git-url>
+paosctl plugin list                 # enabled/disabled/error, kèm lý do
+paosctl plugin disable <id> <lý-do> # tay — hoặc tự động khi vượt spend.max_per_job
+paosctl plugin enable <id>
+paosctl plugin uninstall <id>       # xóa CODE — Project/Artifact plugin đã tạo vẫn giữ nguyên
+```
+
 **Theo dõi & giải thích mọi việc đang/đã làm** — không có "log" mù mờ, mọi quyết định dựng lại được đầy đủ từ Event Log.
 ```bash
 paosctl ps                 # liệt kê mọi job
@@ -138,6 +147,7 @@ paosctl cancel <pid>       # hủy 1 job đang chạy, không ảnh hưởng job
 - **Energy Engine chưa chuyển Process sang WAITING/resume thật** — chỉ loại candidate + để cơ chế fallback/backoff đã có xử lý (BL-022). GPU util/VRAM chưa đọc (tránh vendor lock-in NVIDIA, ADR-0030), nhiệt độ không đo được trên Windows (giới hạn nền tảng thật của `psutil`, không phải bỏ sót).
 - **Time Engine chưa có `deadline` miễn trừ, `max_parallel` chưa enforce, giờ UTC trực tiếp (không quy đổi timezone local)** — cùng lý do Energy Engine ở trên (chưa chuyển Process sang WAITING thật, chỉ loại candidate + backoff), 3 quyết định phạm vi có chủ đích (ADR-0031, BL-024).
 - **Savings Report "tiết kiệm nhờ local" luôn 0đ** — repo hôm nay chưa đăng ký provider `class: cloud`/`hybrid` nào thật, nên không có gì để so sánh (không phải bug, ADR-0031). "Tiết kiệm nhờ cache" đã đo được thật ngay khi có cache hit.
+- **Sandbox plugin chỉ enforce `spend.max_per_job` thật** — `fs`/`network`/`exec` khai trong `plugin.yaml` chỉ hiển thị lúc duyệt cài (doc 09 §2), KHÔNG có sandbox OS thật chặn được (ADR-0005 đã từ chối container/WASM) — chấp nhận được vì "v1 chỉ cài plugin do chính bạn viết" (RSK-13, doc 14). `rss_mb` (RAM) cũng chưa enforce trên nền tảng nào. Chỉ Provider chạy được qua RPC — Agent/Workflow của plugin mới NẠP TĨNH (biết tên tồn tại), chưa THỰC THI được (BL-025, ADR-0032).
 
 ### 1.3b Ví dụ minh hoạ — Decision Engine chọn workflow
 
@@ -163,7 +173,7 @@ sequenceDiagram
 
 ### 1.4 Sắp tới
 
-P-M8-0 vừa xong — chốt 2 ADR mở đầu Milestone 8 (chưa viết code, đúng bản chất P-M8-0 "quyết định trước"). **ADR-0017**: UI v1 là Web local tĩnh — HTML/CSS/JS thuần, không framework/build step, phục vụ bởi chính `apps/paosd/app.py` cùng port `127.0.0.1:8787` đã có (không Tauri — mâu thuẫn với doc 02 §8 đã sketch từ Ngày 0, và máy dev chưa có toolchain Rust). **ADR-0018**: plugin phân phối dạng thư mục thuần (đường dẫn local hoặc git URL, không archive), cài vào `workspace/plugins/<id>/` (không phải gốc repo — giữ đúng ranh giới "workspace = dữ liệu người dùng"), Registry quét thêm 1 gốc `plugins_dir` tái dùng nguyên các hàm scan đã có. Việc **ngay tiếp theo**: **P-M8-1 — Plugin loader + sandbox subprocess (JSON-RPC stdio)**, hiện thực hóa ADR-0005/ADR-0018. Lộ trình đầy đủ ở [§3](#3-lộ-trình-sắp-tới) bên dưới.
+P-M8-1 + P-M8-2 vừa xong. **P-M8-1**: `kernel/plugin/` — `PluginProcess` spawn subprocess thật, giao tiếp JSON-RPC 2.0 newline-delimited qua stdio (ADR-0032: 3 method `health`/`estimate`/`invoke` khớp `sdk.provider.ProviderAdapter`), tự restart tối đa 3 lần khi crash (doc 09 §5), giới hạn `cpu_sec`/`open_files` enforce thật trên POSIX (Windows — máy dev thật — không có, chỉ khai báo). `RemotePluginProviderAdapter` (`sdk/plugin_adapter.py`) cho Registry route provider của plugin y hệt provider thường. **P-M8-2**: `apps/paosd/plugin_manager.py` — `paosctl plugin install <path-or-git-url>` hiện toàn bộ quyền yêu cầu, chờ xác nhận tay, ghi Audit Log qua PermissionGuard, copy vào `workspace/plugins/<id>/`, Registry hot-reload KHÔNG cần khởi động lại `paosd`. `paosctl plugin list|uninstall|enable|disable`. Tự động disable khi vượt `spend.max_per_job` (Router phát hiện sau mỗi lượt gọi thành công) — `fs`/`network`/`exec` CHƯA enforce được thật, chỉ dừng ở khai báo hiển thị lúc cài (BL-025, không có sandbox OS thật, ADR-0005 đã từ chối container). Việc **ngay tiếp theo**: **P-M8-3 — Plugin Document**, bài kiểm tra kiến trúc "0 dòng sửa Kernel" (doc 12 §7, plugin thứ hai). Lộ trình đầy đủ ở [§3](#3-lộ-trình-sắp-tới) bên dưới.
 
 ---
 
@@ -285,7 +295,7 @@ Theo kế hoạch 10 milestone (~31 tuần lập trình thuần, 11–15 tháng 
 | M5 | Memory & Knowledge | Nhớ sở thích, xây Knowledge Graph | ✅ Phạm vi xong · 2/5 tiêu chí trọn vẹn |
 | M6 | Decision Engine | Tự chọn workflow phù hợp | ✅ Phạm vi xong — chọn workflow + xếp hạng provider (Q̂/P/R) + routing.yaml/profile + explain --decisions. Chờ M7 (Ĉ/L̂) mới đủ 5/5 số hạng |
 | M7 | Cost / Energy / Time | Chạy đêm, tiết kiệm, đúng ngân sách | ✅ Xong — Cost Engine (ngân sách 3 tầng) + Energy Engine (CPU/pin thật) + Time Engine (cửa sổ thời gian) + Savings Report (`paosctl report`) |
-| M8 | Plugin System & UI | Cài plugin, có giao diện Web thật | 🔶 Đang làm — P-M8-0 xong (ADR-0017 UI Web local tĩnh, ADR-0018 phân phối plugin) |
+| M8 | Plugin System & UI | Cài plugin, có giao diện Web thật | 🔶 Đang làm — P-M8-0/P-M8-1/P-M8-2 xong (ADR-0017/0018/0032, plugin loader + sandbox subprocess + cài/gỡ/hot-reload). Còn: Plugin Document, Web UI, export/import |
 | M9 | Research Plugin | Nghiên cứu chủ đề, tích luỹ tri thức thật | ⚪ Chưa tới |
 | — | Hardening | Đạt toàn bộ chỉ tiêu chất lượng phi chức năng | ⚪ Liên tục |
 

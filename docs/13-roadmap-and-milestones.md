@@ -142,8 +142,8 @@ Phạm vi: plugin loader + sandbox subprocess · quyền + duyệt · hot reload
 
 **Exit criteria**
 - [ ] Cài Plugin Document: **0 dòng sửa Kernel** (bằng chứng: diff git)
-- [ ] Plugin crash → Kernel sống, có `plugin.crashed`
-- [ ] Plugin vượt quyền khai báo → bị chặn, tự disable
+- [x] Plugin crash → Kernel sống, có `plugin.crashed` (P-M8-1 — `kernel/plugin/process.py`, tự restart tối đa 3 lần)
+- [x] Plugin vượt quyền khai báo → bị chặn, tự disable (P-M8-2 — CHỈ `spend.max_per_job` enforce được thật; `fs`/`network`/`exec` dừng ở khai báo, xem docs/backlog.md BL-025)
 - [ ] UI hiển thị Process thời gian thực + explain click được
 - [ ] `paosctl export` → mở được toàn bộ bằng tay, không cần PAOS
 

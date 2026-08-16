@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import socket
+import sys
 import threading
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import closing
@@ -21,6 +22,7 @@ from typing import Any
 import httpx
 import pytest
 import uvicorn
+import yaml
 from click.testing import CliRunner
 
 from apps.paosctl.__main__ import cli
@@ -434,3 +436,112 @@ def test_memory_review_empty_tier_reports_none(runner: CliRunner, api_url: str) 
     result = runner.invoke(cli, ["--api-url", api_url, "memory", "review", "--tier", "L4"])
     assert result.exit_code == 0
     assert "chưa có sở thích nào" in result.output
+
+
+_FAKE_PLUGIN_SRC = Path(__file__).resolve().parents[2] / "kernel" / "fixtures" / "plugin_process"
+
+
+def _write_source_plugin(root: Path, plugin_id: str) -> Path:
+    src = root / "src" / plugin_id
+    src.mkdir(parents=True)
+    manifest = {
+        "id": plugin_id,
+        "name": "Demo Plugin",
+        "version": "1.0.0",
+        "paos_api": ">=1.0,<2.0",
+        "provides": {
+            "agents": [],
+            "workflows": [],
+            "capabilities": [],
+            "providers": ["plugin.demo.echo@1"],
+            "rubrics": [],
+        },
+        "permissions": {
+            "fs": {"read": [], "write": []},
+            "network": {"allow": []},
+            "exec": [],
+            "spend": {"max_per_job": 5, "currency": "JPY"},
+        },
+        "runtime": {
+            "type": "process",
+            "entry": f"{sys.executable} fake_plugin.py",
+            "isolation": "subprocess",
+            "limits": {},
+        },
+        "signature": None,
+    }
+    (src / "plugin.yaml").write_text(yaml.safe_dump(manifest), encoding="utf-8")
+    (src / "fake_plugin.py").write_text(
+        (_FAKE_PLUGIN_SRC / "fake_plugin.py").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    provider_dir = src / "providers" / "plugin_demo_echo"
+    provider_dir.mkdir(parents=True)
+    (provider_dir / "provider.yaml").write_text(
+        "id: plugin.demo.echo\nimplements: [text.generate@1]\nclass: local\n"
+        "privacy: private\ncost: {unit: token, in: 0, out: 0, currency: JPY}\n"
+        "limits: {}\nresources: []\nhealth_check: {}\nquality_hint: {}\n",
+        encoding="utf-8",
+    )
+    return src
+
+
+def test_plugin_install_shows_permissions_and_installs_with_yes(
+    runner: CliRunner, api_url: str, tmp_path: Path
+) -> None:
+    source = _write_source_plugin(tmp_path, "paos.plugin.demo")
+    result = runner.invoke(cli, ["--api-url", api_url, "plugin", "install", str(source), "--yes"])
+    assert result.exit_code == 0
+    assert "Quyền yêu cầu" in result.output
+    assert "✓ Đã cài paos.plugin.demo" in result.output
+
+
+def test_plugin_install_without_yes_prompts_and_aborts_on_no(
+    runner: CliRunner, api_url: str, tmp_path: Path
+) -> None:
+    source = _write_source_plugin(tmp_path, "paos.plugin.demo")
+    result = runner.invoke(
+        cli, ["--api-url", api_url, "plugin", "install", str(source)], input="n\n"
+    )
+    assert result.exit_code != 0
+    assert "Đã cài" not in result.output
+
+
+def test_plugin_list_and_uninstall_round_trip(
+    runner: CliRunner, api_url: str, tmp_path: Path
+) -> None:
+    source = _write_source_plugin(tmp_path, "paos.plugin.demo")
+    runner.invoke(cli, ["--api-url", api_url, "plugin", "install", str(source), "--yes"])
+
+    result_list = runner.invoke(cli, ["--api-url", api_url, "plugin", "list"])
+    assert result_list.exit_code == 0
+    assert "paos.plugin.demo" in result_list.output
+    assert "enabled" in result_list.output
+
+    result_uninstall = runner.invoke(
+        cli, ["--api-url", api_url, "plugin", "uninstall", "paos.plugin.demo"]
+    )
+    assert result_uninstall.exit_code == 0
+    assert "✓ Đã gỡ paos.plugin.demo" in result_uninstall.output
+
+    result_list_after = runner.invoke(cli, ["--api-url", api_url, "plugin", "list"])
+    assert "chưa cài plugin nào" in result_list_after.output
+
+
+def test_plugin_disable_enable_round_trip(runner: CliRunner, api_url: str, tmp_path: Path) -> None:
+    source = _write_source_plugin(tmp_path, "paos.plugin.demo")
+    runner.invoke(cli, ["--api-url", api_url, "plugin", "install", str(source), "--yes"])
+
+    result_disable = runner.invoke(
+        cli, ["--api-url", api_url, "plugin", "disable", "paos.plugin.demo", "vượt quyền"]
+    )
+    assert result_disable.exit_code == 0
+    assert "✓ Đã tắt paos.plugin.demo" in result_disable.output
+
+    result_list = runner.invoke(cli, ["--api-url", api_url, "plugin", "list"])
+    assert "disabled" in result_list.output
+
+    result_enable = runner.invoke(
+        cli, ["--api-url", api_url, "plugin", "enable", "paos.plugin.demo"]
+    )
+    assert result_enable.exit_code == 0
+    assert "✓ Đã bật paos.plugin.demo" in result_enable.output

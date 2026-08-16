@@ -33,7 +33,7 @@ from __future__ import annotations
 import asyncio
 import json
 import random
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -44,7 +44,7 @@ import aiosqlite
 import yaml
 
 from apps.paosd.cache_store import CacheHit, CacheStore
-from apps.paosd.cost_engine import CostEngine
+from apps.paosd.cost_engine import CostEngine, compute_actual_amount
 from apps.paosd.energy_engine import EnergyEngine
 from apps.paosd.provider_stats import ProviderStats, normalize_task_class
 from apps.paosd.time_engine import TimeEngine
@@ -179,6 +179,7 @@ class Router:
         time_policy_path: Path = _DEFAULT_TIME_POLICY_PATH,
         energy_engine: EnergyEngine | None = None,
         time_engine: TimeEngine | None = None,
+        on_plugin_spend_exceeded: Callable[[str, str, float, float], Awaitable[None]] | None = None,
     ) -> None:
         self._registry = registry
         self._events = events
@@ -199,6 +200,13 @@ class Router:
         # TimeEngine trỏ policies/time.yaml tạm, tránh phụ thuộc GIỜ THẬT lúc
         # chạy CI, doc 19 P-M7-3).
         self._time_engine = time_engine or TimeEngine(time_policy_path)
+        # `on_plugin_spend_exceeded` (P-M8-2, doc 09 §5 "spend: {max_per_job}")
+        # — callback tối giản (KHÔNG phụ thuộc `apps/paosd/plugin_manager.py`
+        # trực tiếp, tránh vòng phụ thuộc: PluginManager cần Router chạy
+        # được TRƯỚC khi nó tồn tại) — `wiring.py::build_daemon()` nối callback
+        # này gọi `PluginManager.disable()`. `None` = không kiểm gì (test cũ
+        # không truyền tham số này vẫn chạy y hệt trước P-M8-2).
+        self._on_plugin_spend_exceeded = on_plugin_spend_exceeded
 
     async def call(
         self,
@@ -469,7 +477,32 @@ class Router:
             manifest_cost=candidate.manifest.cost,
             usage=usage,
         )
+        await self._check_plugin_spend_limit(candidate, capability_ref, usage)
         return _AttemptOutcome(result, None)
+
+    async def _check_plugin_spend_limit(
+        self, candidate: _Candidate, capability_ref: str, usage: dict[str, Any]
+    ) -> None:
+        """Doc 09 §5 "Plugin không có quyền: ... vượt `spend.max_per_job`" —
+        MỘT trong số ít giới hạn `permissions:` thật sự QUAN SÁT ĐƯỢC từ
+        ngoài process (khác `fs`/`network`/`exec`, cần sandbox OS thật —
+        ADR-0005 đã từ chối container, xem docs/backlog.md). Chỉ kiểm khi
+        `provider_id` thuộc 1 plugin (`Registry.plugin_owner_of()`, ADR-0018)
+        VÀ plugin đó khai `spend.max_per_job` (thiếu khai = không giới hạn,
+        không giả vờ có ngưỡng — cùng nguyên tắc ADR-0030)."""
+        if self._on_plugin_spend_exceeded is None:
+            return
+        plugin_id = self._registry.plugin_owner_of(candidate.manifest.provider_id)
+        if plugin_id is None:
+            return
+        manifest = self._registry.plugin_manifest(plugin_id)
+        if manifest is None or manifest.permissions.spend_max_per_job is None:
+            return
+        amount, _ = compute_actual_amount(candidate.manifest.cost, usage)
+        if amount > manifest.permissions.spend_max_per_job:
+            await self._on_plugin_spend_exceeded(
+                plugin_id, capability_ref, amount, manifest.permissions.spend_max_per_job
+            )
 
     async def _check_time(
         self, candidate: _Candidate, capability_ref: str, process_id: str

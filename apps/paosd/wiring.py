@@ -23,10 +23,12 @@ from apps.paosd.knowledge_extractor import KnowledgeExtractor
 from apps.paosd.knowledge_store import KnowledgeStore
 from apps.paosd.memory_store import MemoryStore
 from apps.paosd.memory_writer import MemoryWriter
+from apps.paosd.plugin_manager import PluginManager
 from apps.paosd.provider_stats import ProviderCorrectionUpdater, ProviderStats
 from apps.paosd.runner import Runner
 from kernel.events.bus import EventBus
 from kernel.events.types import EventType
+from kernel.permission.guard import PermissionGuard
 from kernel.process.manager import ProcessManager, ProcessState
 from kernel.registry.registry import Registry
 from kernel.state.db import StateStore
@@ -111,6 +113,25 @@ async def build_daemon(
     for provider_id, adapter in (adapter_overrides or {}).items():
         registry.preload_adapter(provider_id, adapter)
     manager = ProcessManager(store, events)
+    # PluginManager dựng TRƯỚC Runner (P-M8-2) — Router cần 1 callback gọi
+    # thẳng `plugin_manager.disable()` khi phát hiện vượt `spend.max_per_job`
+    # (doc 09 §5), nên PluginManager phải tồn tại trước khi Router (bên trong
+    # Runner) được tạo. `create_app()` tái dùng CÙNG instance này cho
+    # `paosctl plugin install/list/...` — không dựng 2 lần (khác CostEngine,
+    # nhẹ hơn nên chấp nhận dựng lại được; PluginManager giữ tham chiếu tới
+    # Registry đang sống, dựng 2 lần vẫn AN TOÀN nhưng không có lý do gì).
+    plugin_manager = PluginManager(
+        registry, events, PermissionGuard(store, events), resolved_workspace_root / "plugins"
+    )
+
+    async def _on_plugin_spend_exceeded(
+        plugin_id: str, capability_ref: str, amount: float, max_allowed: float
+    ) -> None:
+        await plugin_manager.disable(
+            plugin_id,
+            f"vượt spend.max_per_job ở {capability_ref}: {amount:.2f} > {max_allowed:.2f}",
+        )
+
     runner = Runner(
         manager,
         events,
@@ -121,6 +142,7 @@ async def build_daemon(
         resource_capacity=resource_capacity,
         energy_policy_path=energy_policy_path,
         time_policy_path=time_policy_path,
+        on_plugin_spend_exceeded=_on_plugin_spend_exceeded,
     )
     events.subscribe("runner", "kernel.process.created", runner.on_process_created)
 
@@ -204,7 +226,16 @@ async def build_daemon(
         payload={"version": _PAOS_VERSION, "uptime": 0},
     )
 
-    app = create_app(manager, events, runner, store, resolved_workspace_root, decision_engine)
+    app = create_app(
+        manager,
+        events,
+        runner,
+        store,
+        resolved_workspace_root,
+        decision_engine,
+        registry,
+        plugin_manager,
+    )
     return Daemon(
         store=store,
         events=events,

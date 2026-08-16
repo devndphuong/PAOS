@@ -5,6 +5,7 @@ không chặn load() (doc 09 §1 T3, ADR-0018, doc 19 P-M8-1)."""
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -209,3 +210,79 @@ async def test_plugin_crash_publishes_plugin_crashed_event(
 
     assert len(received) == 1
     assert received[0].payload["plugin_id"] == "paos.plugin.crashy"
+
+
+async def test_reload_plugins_picks_up_newly_installed_plugin(tmp_path: Path) -> None:
+    caps_dir = tmp_path / "capabilities"
+    plugins_dir = tmp_path / "plugins"
+    _write_fixture_capability(caps_dir)
+
+    reg = Registry(caps_dir, tmp_path / "providers", plugins_dir=plugins_dir)
+    reg.load()
+    assert reg.plugins() == []
+
+    _write_plugin(plugins_dir, "paos.plugin.demo")
+    await reg.reload_plugins()
+
+    assert [p.plugin_id for p in reg.plugins()] == ["paos.plugin.demo"]
+    assert reg.providers_for("text.generate", 1)[0].provider_id == "plugin.demo.echo"
+
+
+async def test_reload_plugins_stops_process_for_uninstalled_plugin(tmp_path: Path) -> None:
+    """`PluginManager.uninstall()` (P-M8-2, `apps/paosd/plugin_manager.py`) tự
+    `stop()` process TRƯỚC khi xóa thư mục (Windows khóa CWD của tiến trình
+    đang chạy — không `rmtree` được thư mục đó, khác Linux). Mô phỏng ĐÚNG
+    thứ tự đó ở đây; `reload_plugins()` vẫn phải dọn sạch tham chiếu tới
+    process đã dừng, không lỗi khi gọi `stop()` lần nữa."""
+    caps_dir = tmp_path / "capabilities"
+    plugins_dir = tmp_path / "plugins"
+    _write_fixture_capability(caps_dir)
+    plugin_dir = _write_plugin(plugins_dir, "paos.plugin.demo")
+    (plugin_dir / "fake_plugin.py").write_text(
+        (_FIXTURE_DIR / "fake_plugin.py").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+
+    reg = Registry(caps_dir, tmp_path / "providers", plugins_dir=plugins_dir)
+    reg.load()
+    adapter = reg.load_adapter("plugin.demo.echo")
+    await adapter.health()  # buộc subprocess THẬT spawn lên
+    process = reg.plugin_process("paos.plugin.demo")
+    assert process is not None and process.is_running is True
+
+    await process.stop()
+    shutil.rmtree(plugin_dir)
+    await reg.reload_plugins()  # không raise dù process cũ đã dừng sẵn
+
+    assert reg.plugins() == []
+    assert reg.plugin_process("paos.plugin.demo") is None
+
+
+async def test_reload_plugins_reuses_process_for_unchanged_plugin(tmp_path: Path) -> None:
+    caps_dir = tmp_path / "capabilities"
+    plugins_dir = tmp_path / "plugins"
+    _write_fixture_capability(caps_dir)
+    _write_plugin(plugins_dir, "paos.plugin.demo")
+
+    reg = Registry(caps_dir, tmp_path / "providers", plugins_dir=plugins_dir)
+    reg.load()
+    process_before = reg.plugin_process("paos.plugin.demo")
+
+    await reg.reload_plugins()
+    process_after = reg.plugin_process("paos.plugin.demo")
+
+    assert process_before is process_after  # KHÔNG respawn oan
+
+
+def test_disabled_plugin_excluded_from_providers_but_listed_separately(tmp_path: Path) -> None:
+    caps_dir = tmp_path / "capabilities"
+    plugins_dir = tmp_path / "plugins"
+    _write_fixture_capability(caps_dir)
+    plugin_dir = _write_plugin(plugins_dir, "paos.plugin.demo")
+    (plugin_dir / ".disabled").write_text("vượt quyền fs.write", encoding="utf-8")
+
+    reg = Registry(caps_dir, tmp_path / "providers", plugins_dir=plugins_dir)
+    reg.load()
+
+    assert reg.plugins() == []
+    assert [p.plugin_id for p in reg.disabled_plugins()] == ["paos.plugin.demo"]
+    assert reg.providers_for("text.generate", 1) == []

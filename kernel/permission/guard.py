@@ -49,11 +49,22 @@ class PermissionTier(StrEnum):
 # (apps/paosd/router.py::_check_budget) gọi khi tầng ngân sách có
 # `on_exceed: ask` bị vượt. CONFIRM mặc định luôn từ chối (xem check() bên
 # dưới) nên đây CHÍNH LÀ cơ chế "chặn và hỏi" P12 cần, không phải xây mới.
+#
+# P-M8-2 (doc 09 §2, doc 12 §2): "plugin.install" — `apps/paosd/
+# plugin_manager.py::PluginManager.install()` gọi SAU KHI người dùng đã
+# `click.confirm()` xong qua `paosctl plugin install` (đồng bộ, tương tác
+# trực tiếp — KHÁC `cost.budget_exceeded`, nơi CHƯA có xác nhận nào xảy ra
+# trước khi gọi `check()`). Gọi `check()` ở đây CHỈ để ghi Audit Log +
+# `permission.approval.requested` (dấu vết "quyền nào từng được duyệt" —
+# `paosctl audit --since 7d` đọc được), KHÔNG dùng `allowed` để chặn —
+# `PluginManager.install()` tự quyết định tiếp dựa trên xác nhận CLI đã có,
+# không đợi cơ chế Approval async (BL-021, docs/backlog.md, chưa xây).
 _CONFIRM_ACTIONS = frozenset(
     {
         "fs.write_outside_workspace",
         "exec.system_command_outside_whitelist",
         "cost.budget_exceeded",
+        "plugin.install",
     }
 )
 

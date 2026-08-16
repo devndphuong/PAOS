@@ -16,12 +16,14 @@ from apps.paosd.decision_engine import DecisionEngine
 from apps.paosd.knowledge_store import KGEdge, KGNode, KnowledgeStore
 from apps.paosd.memory_retriever import MemoryRetriever, RetrievedMemory
 from apps.paosd.memory_store import MemoryItem, MemoryStore
+from apps.paosd.plugin_manager import PluginManager, PluginSummary
 from apps.paosd.runner import Runner
 from kernel import clock
 from kernel.errors import PaosError
 from kernel.events.bus import EventBus, EventEnvelope
 from kernel.events.types import EventType
 from kernel.process.manager import Process, ProcessManager, ProcessState
+from kernel.registry.registry import Registry
 from kernel.state.db import StateStore
 from sdk.preference import decide_promotion
 
@@ -204,6 +206,56 @@ class MonthlyReportResponse(BaseModel):
     total_saved: float
 
 
+class PluginInstallRequest(BaseModel):
+    path: str  # đường dẫn local đã có sẵn plugin.yaml — paosctl tự git clone
+    # về 1 thư mục tạm TRƯỚC khi gọi (doc 12 §6, xem docstring plugin_manager.py)
+
+
+class PluginPermissionsResponse(BaseModel):
+    fs: dict[str, list[str]]
+    network: dict[str, list[str]]
+    exec: list[str]
+    spend: dict[str, Any]
+
+
+class PluginInstallResponse(BaseModel):
+    plugin_id: str
+    version: str
+    paos_api_range: str
+    compatible: bool
+    permissions: PluginPermissionsResponse
+
+
+class PluginSummaryResponse(BaseModel):
+    plugin_id: str
+    version: str
+    status: str
+    detail: str | None
+
+
+class PluginDisableRequest(BaseModel):
+    reason: str
+
+
+def _to_plugin_install_response(preview: Any) -> PluginInstallResponse:
+    return PluginInstallResponse(
+        plugin_id=preview.plugin_id,
+        version=preview.version,
+        paos_api_range=preview.paos_api_range,
+        compatible=preview.compatible,
+        permissions=PluginPermissionsResponse(**preview.permissions),
+    )
+
+
+def _to_plugin_summary_response(summary: PluginSummary) -> PluginSummaryResponse:
+    return PluginSummaryResponse(
+        plugin_id=summary.plugin_id,
+        version=summary.version,
+        status=summary.status,
+        detail=summary.detail,
+    )
+
+
 def _to_event_response(e: EventEnvelope) -> EventResponse:
     return EventResponse(
         event_id=e.event_id,
@@ -310,13 +362,15 @@ def _kg_edge_response(e: KGEdge) -> KGEdgeResponse:
     )
 
 
-def create_app(  # noqa: PLR0915 — đăng ký route tăng tuyến tính theo số endpoint, không phải độ phức tạp
+def create_app(  # noqa: PLR0915, PLR0917 — đăng ký route tăng tuyến tính theo số endpoint, không phải độ phức tạp; 8 tham số đều là dependency nhận từ ngoài (doc 04 §1), không nhóm gọn hơn được mà không mất rõ ràng
     manager: ProcessManager,
     events: EventBus,
     runner: Runner,
     store: StateStore,
     workspace_root: Path,
     decision_engine: DecisionEngine,
+    registry: Registry,
+    plugin_manager: PluginManager,
 ) -> FastAPI:
     """Lớp mỏng dịch HTTP <-> Kernel API (doc 04 §1) — không chứa logic nghiệp vụ.
     `store`/`workspace_root` chỉ dùng để dựng `ArtifactStore` (P-M4-3) — cùng
@@ -327,7 +381,11 @@ def create_app(  # noqa: PLR0915 — đăng ký route tăng tuyến tính theo s
     (P-M6-1) KHÁC — nhận từ ngoài (`wiring.py::build_daemon()`), không dựng tại
     chỗ, vì cùng 1 instance còn phải subscribe `record_outcome()` cho
     kernel.process.completed/failed — dựng 2 lần sẽ tách rời instance đang chấm
-    điểm khỏi instance đang học từ outcome."""
+    điểm khỏi instance đang học từ outcome. `registry`/`plugin_manager` (P-M8-2)
+    CŨNG nhận từ ngoài, cùng lý do — `wiring.py::build_daemon()` đã dựng
+    `plugin_manager` TRƯỚC Router (Router cần callback `on_plugin_spend_exceeded`
+    gọi thẳng nó), dựng lại 1 instance khác ở đây sẽ tách rời khỏi cái Router
+    đang dùng."""
     app = FastAPI(title="paosd")
     artifacts = ArtifactStore(store, workspace_root)
     memory_store = MemoryStore(store, events)
@@ -592,6 +650,53 @@ def create_app(  # noqa: PLR0915 — đăng ký route tăng tuyến tính theo s
             saved_local=report.saved_local,
             total_saved=report.saved_cache + report.saved_local,
         )
+
+    @app.get("/v1/plugins/inspect", response_model=PluginInstallResponse)
+    async def inspect_plugin(path: str) -> PluginInstallResponse:
+        """Doc 09 §2 "hiển thị quyền yêu cầu" TRƯỚC khi duyệt — `paosctl plugin
+        install` gọi endpoint này trước, hiện quyền cho người dùng, RỒI mới
+        gọi `POST /v1/plugins` nếu người dùng `click.confirm()` đồng ý."""
+        try:
+            preview = plugin_manager.inspect(Path(path))
+        except PaosError as exc:
+            raise HTTPException(status_code=400, detail=exc.to_dict()) from exc
+        return _to_plugin_install_response(preview)
+
+    @app.post("/v1/plugins", response_model=PluginInstallResponse)
+    async def install_plugin(body: PluginInstallRequest) -> PluginInstallResponse:
+        try:
+            preview = await plugin_manager.install(Path(body.path))
+        except PaosError as exc:
+            raise HTTPException(status_code=400, detail=exc.to_dict()) from exc
+        return _to_plugin_install_response(preview)
+
+    @app.get("/v1/plugins", response_model=list[PluginSummaryResponse])
+    async def list_plugins() -> list[PluginSummaryResponse]:
+        return [_to_plugin_summary_response(s) for s in plugin_manager.list_all()]
+
+    @app.delete("/v1/plugins/{plugin_id}")
+    async def uninstall_plugin(plugin_id: str) -> dict[str, str]:
+        try:
+            await plugin_manager.uninstall(plugin_id)
+        except PaosError as exc:
+            raise HTTPException(status_code=404, detail=exc.to_dict()) from exc
+        return {"plugin_id": plugin_id, "status": "removed"}
+
+    @app.post("/v1/plugins/{plugin_id}/enable")
+    async def enable_plugin(plugin_id: str) -> dict[str, str]:
+        try:
+            await plugin_manager.enable(plugin_id)
+        except PaosError as exc:
+            raise HTTPException(status_code=404, detail=exc.to_dict()) from exc
+        return {"plugin_id": plugin_id, "status": "enabled"}
+
+    @app.post("/v1/plugins/{plugin_id}/disable")
+    async def disable_plugin(plugin_id: str, body: PluginDisableRequest) -> dict[str, str]:
+        try:
+            await plugin_manager.disable(plugin_id, body.reason)
+        except PaosError as exc:
+            raise HTTPException(status_code=404, detail=exc.to_dict()) from exc
+        return {"plugin_id": plugin_id, "status": "disabled"}
 
     @app.get("/v1/health")
     async def health() -> dict[str, str]:

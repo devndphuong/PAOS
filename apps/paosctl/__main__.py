@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import tempfile
 import time
+from pathlib import Path
 from typing import Any
 
 import click
@@ -468,6 +471,110 @@ def knowledge_export(ctx: click.Context) -> None:
     with _client(ctx) as client:
         body = _post(client, "/v1/knowledge/export").json()
     click.echo(f"✓ Đã xuất {body['node_count']} node, {body['edge_count']} cạnh -> {body['path']}")
+
+
+@cli.group()
+def plugin() -> None:
+    """Cài/gỡ/bật/tắt plugin (doc 12 §2, doc 09 §2, ADR-0018, P-M8-2)."""
+
+
+def _resolve_plugin_source(source: str) -> Path:
+    """`source` là git URL → `git clone` về 1 thư mục tạm (paosctl chạy TRÊN
+    máy người dùng, ADR-0011 — paosd KHÔNG bao giờ tự chạy `git clone`, giữ
+    đúng "cài từ đường dẫn local luôn hoạt động dù không có mạng", doc 12 §6).
+    `source` là đường dẫn local → dùng nguyên, không copy trước — `paosd` tự
+    copy lúc install() thật."""
+    if source.startswith(("http://", "https://", "git@", "ssh://")):
+        tmp_dir = Path(tempfile.mkdtemp(prefix="paos-plugin-"))
+        try:
+            # S603/S607 — source do NGƯỜI DÙNG tự gõ trên CLI của chính họ;
+            # "git" tra PATH có chủ đích (máy dev đã cài git thật, environment-baseline.md).
+            subprocess.run(  # noqa: S603
+                ["git", "clone", "--depth", "1", source, str(tmp_dir)],  # noqa: S607
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            click.echo(f"✗ git clone thất bại: {exc.stderr}")
+            raise SystemExit(1) from exc
+        return tmp_dir
+    return Path(source).resolve()
+
+
+@plugin.command("install")
+@click.argument("source")
+@click.option("--yes", "-y", is_flag=True, help="Bỏ qua xác nhận (dùng trong script).")
+@click.pass_context
+def plugin_install(ctx: click.Context, source: str, yes: bool) -> None:
+    """Cài plugin từ đường dẫn local hoặc git URL — hiện TOÀN BỘ quyền yêu cầu
+    trước khi cài (doc 09 §2 CONFIRM "Cài/bật plugin")."""
+    local_path = _resolve_plugin_source(source)
+    with _client(ctx) as client:
+        preview = _get(client, "/v1/plugins/inspect", params={"path": str(local_path)}).json()
+
+    click.echo(
+        f"{preview['plugin_id']} v{preview['version']} (paos_api={preview['paos_api_range']})"
+    )
+    if not preview["compatible"]:
+        click.echo("✗ Không tương thích với phiên bản PAOS API hiện tại")
+        raise SystemExit(1)
+
+    perms = preview["permissions"]
+    click.echo("Quyền yêu cầu:")
+    click.echo(f"  fs.read:       {perms['fs']['read']}")
+    click.echo(f"  fs.write:      {perms['fs']['write']}")
+    click.echo(f"  network.allow: {perms['network']['allow']}")
+    click.echo(f"  exec:          {perms['exec']}")
+    click.echo(f"  spend:         {perms['spend']}")
+    if not yes:
+        click.confirm("Cấp toàn bộ quyền trên cho plugin này?", abort=True)
+
+    with _client(ctx) as client:
+        body = _post(client, "/v1/plugins", json={"path": str(local_path)}).json()
+    click.echo(f"✓ Đã cài {body['plugin_id']} v{body['version']}")
+
+
+@plugin.command("uninstall")
+@click.argument("plugin_id")
+@click.pass_context
+def plugin_uninstall(ctx: click.Context, plugin_id: str) -> None:
+    """Gỡ CODE plugin — KHÔNG xóa Project/Artifact plugin đã tạo (doc 12 §2)."""
+    with _client(ctx) as client:
+        _delete(client, f"/v1/plugins/{plugin_id}")
+    click.echo(f"✓ Đã gỡ {plugin_id}")
+
+
+@plugin.command("list")
+@click.pass_context
+def plugin_list(ctx: click.Context) -> None:
+    with _client(ctx) as client:
+        items = _get(client, "/v1/plugins").json()
+    if not items:
+        click.echo("(chưa cài plugin nào)")
+        return
+    for it in items:
+        detail = f" — {it['detail']}" if it["detail"] else ""
+        click.echo(f"{it['plugin_id']:<28}v{it['version']:<10}{it['status']}{detail}")
+
+
+@plugin.command("enable")
+@click.argument("plugin_id")
+@click.pass_context
+def plugin_enable(ctx: click.Context, plugin_id: str) -> None:
+    with _client(ctx) as client:
+        _post(client, f"/v1/plugins/{plugin_id}/enable")
+    click.echo(f"✓ Đã bật {plugin_id}")
+
+
+@plugin.command("disable")
+@click.argument("plugin_id")
+@click.argument("reason")
+@click.pass_context
+def plugin_disable(ctx: click.Context, plugin_id: str, reason: str) -> None:
+    with _client(ctx) as client:
+        _post(client, f"/v1/plugins/{plugin_id}/disable", json={"reason": reason})
+    click.echo(f"✓ Đã tắt {plugin_id}: {reason}")
 
 
 @cli.command()

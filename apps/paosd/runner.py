@@ -53,6 +53,7 @@ from __future__ import annotations
 import asyncio
 import itertools
 import json
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
@@ -128,6 +129,7 @@ class Runner:
         resource_capacity: dict[str, int] | None = None,
         energy_policy_path: Path | None = None,
         time_policy_path: Path | None = None,
+        on_plugin_spend_exceeded: Callable[[str, str, float, float], Awaitable[None]] | None = None,
     ) -> None:
         self._manager = manager
         self._events = events
@@ -151,7 +153,13 @@ class Runner:
         if time_policy_path is not None:
             router_kwargs["time_policy_path"] = time_policy_path
         self._router = Router(
-            registry, events, store, self._resource_semaphores, workspace_root, **router_kwargs
+            registry,
+            events,
+            store,
+            self._resource_semaphores,
+            workspace_root,
+            on_plugin_spend_exceeded=on_plugin_spend_exceeded,
+            **router_kwargs,
         )
         self._workflow_runner = WorkflowRunner(
             manager, events, registry, store, self._router, workspace_root
