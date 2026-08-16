@@ -7,9 +7,13 @@ cấm import sdk/ (MNT-06). Đây là nơi thay cho vòng lặp "chỉ thử pro
 TIÊN nạp được" cũ ở Runner._make_call_capability() (P-M2-1) — giờ fallback
 THẬT theo kết quả invoke(), không chỉ theo load().
 
-CHƯA làm ở M2 (doc 19 P-M2-3): công thức chấm điểm + provider ranking (M6) —
-chọn theo ĐÚNG thứ tự Registry.providers_for() trả về (ưu tiên khai báo, chưa
-đảm bảo ổn định — đó là nợ riêng, chưa phải phạm vi lát này).
+CHƯA làm ở M2 (doc 19 P-M2-3): công thức chấm điểm + provider ranking — chọn
+theo ĐÚNG thứ tự Registry.providers_for() trả về (ưu tiên khai báo, chưa đảm
+bảo ổn định). P-M6-2 đã lấp MỘT PHẦN: `_rank_by_quality()` xếp lại theo
+`provider_stats.quality_ewma` khi ≥1 ứng viên đủ `quality_n>=5` (doc 06 §2.2
+Q̂), cold start vẫn giữ nguyên thứ tự khai báo. CHƯA áp Ĉ/L̂/P/R theo trọng số
+đầy đủ (`routing.yaml`) — cần Cost/Energy Engine (M7) và profile/hot-reload
+(P-M6-3), xem docstring `_rank_by_quality()`.
 
 doc 06 §2.1 liệt kê 9 ràng buộc cứng — chỉ 3 làm được với dữ liệu ĐÃ CÓ hôm
 nay (enabled, breaker OPEN, privacy_class). 6 mục còn lại (health FAIL, budget,
@@ -33,6 +37,7 @@ from typing import Any
 import aiosqlite
 
 from apps.paosd.cache_store import CacheHit, CacheStore
+from apps.paosd.provider_stats import ProviderStats, normalize_task_class
 from kernel import clock, ids
 from kernel.errors import PaosError
 from kernel.events.bus import EventBus
@@ -115,6 +120,7 @@ class Router:
         self._resource_semaphores = resource_semaphores
         self._breakers: dict[str, _BreakerState] = {}
         self._cache = CacheStore(store, workspace_root / "cache")
+        self._provider_stats = ProviderStats(store)
 
     async def call(
         self,
@@ -153,6 +159,8 @@ class Router:
         candidates = self._classify(manifests, exclude_provider, contains_private_l3)
         await self._publish_privacy_blocked(decision_id, process_id, capability_ref, candidates)
         eligible = [c for c in candidates if c.eligible]
+        task_class = normalize_task_class(payload.get("task_class"))
+        eligible, ranked = await self._rank_by_quality(eligible, task_class)
 
         if spec.cacheable and spec.cache_key_fields and eligible:
             found = await self._lookup_cache(spec, capability_id, version, payload, eligible)
@@ -163,7 +171,9 @@ class Router:
                 )
                 return hit.result, hit.provider_id
 
-        fb = await self._run_fallback(eligible, decision_id, capability_ref, payload, process_id)
+        fb = await self._run_fallback(
+            eligible, decision_id, capability_ref, payload, process_id, task_class
+        )
 
         cache_key: str | None = None
         if spec.cacheable and spec.cache_key_fields and fb.chosen and fb.chosen_class:
@@ -171,7 +181,7 @@ class Router:
                 capability_id, version, payload, spec.cache_key_fields, fb.chosen_class
             )
 
-        rationale = self._rationale(candidates, fb.chosen, fb.error)
+        rationale = self._rationale(candidates, fb.chosen, fb.error, ranked=ranked)
         await self._write_decision(
             decision_id,
             process_id,
@@ -196,6 +206,25 @@ class Router:
             )
         return fb.result, fb.chosen
 
+    async def _rank_by_quality(
+        self, eligible: list[_Candidate], task_class: str
+    ) -> tuple[list[_Candidate], bool]:
+        """doc 06 §2.2 Q̂ — CHỈ xếp lại khi ≥1 ứng viên có `quality_n >= 5`
+        (đủ dữ liệu thật, doc 06). Cold start (mọi ứng viên n<5, gồm 100% test
+        hiện có trước P-M6-2) giữ NGUYÊN thứ tự khai báo — 0 hành vi đổi, chỉ
+        kích hoạt khi lịch sử thật đã tích lũy. CHƯA áp Ĉ/L̂/P/R theo trọng số
+        đầy đủ — cần Cost/Energy Engine (M7) và `routing.yaml` (P-M6-3)."""
+        scores: dict[str, float] = {}
+        for candidate in eligible:
+            stat = await self._provider_stats.get(candidate.manifest.provider_id, task_class)
+            if stat is None or not stat.has_enough_quality_samples or stat.quality_ewma is None:
+                continue
+            scores[candidate.manifest.provider_id] = stat.quality_ewma
+        if not scores:
+            return eligible, False
+        ranked = sorted(eligible, key=lambda c: -scores.get(c.manifest.provider_id, -1.0))
+        return ranked, True
+
     async def _run_fallback(
         self,
         eligible: list[_Candidate],
@@ -203,13 +232,16 @@ class Router:
         capability_ref: str,
         payload: dict[str, Any],
         process_id: str,
+        task_class: str,
     ) -> _FallbackOutcome:
         outcome = _FallbackOutcome()
         for attempt, candidate in enumerate(eligible, start=1):
             if attempt > 1:
                 await self._backoff(attempt)
 
-            attempt_outcome = await self._attempt(candidate, capability_ref, payload, process_id)
+            attempt_outcome = await self._attempt(
+                candidate, capability_ref, payload, process_id, task_class
+            )
             outcome.error = attempt_outcome.error
             if attempt_outcome.result is not None:
                 outcome.result = attempt_outcome.result
@@ -239,6 +271,7 @@ class Router:
         capability_ref: str,
         payload: dict[str, Any],
         process_id: str,
+        task_class: str,
     ) -> _AttemptOutcome:
         candidate.tried = True
         try:
@@ -266,10 +299,12 @@ class Router:
                 result = await adapter.invoke(capability_ref, payload, call_ctx)
         except ProviderError as exc:
             candidate.error_code = exc.code.value
-            self._record_failure(candidate.manifest.provider_id, retryable=exc.retryable)
+            await self._record_failure(
+                candidate.manifest.provider_id, task_class, retryable=exc.retryable
+            )
             return _AttemptOutcome(None, exc, stop=not exc.retryable)
 
-        self._record_success(candidate.manifest.provider_id)
+        await self._record_success(candidate.manifest.provider_id, task_class)
         return _AttemptOutcome(result, None)
 
     @staticmethod
@@ -374,12 +409,14 @@ class Router:
             return False
         return bool(clock.now() < state.open_until)
 
-    def _record_success(self, provider_id: str) -> None:
+    async def _record_success(self, provider_id: str, task_class: str) -> None:
         self._breakers.pop(provider_id, None)  # về CLOSED
+        await self._provider_stats.record_attempt(provider_id, task_class, succeeded=True)
 
-    def _record_failure(self, provider_id: str, *, retryable: bool) -> None:
+    async def _record_failure(self, provider_id: str, task_class: str, *, retryable: bool) -> None:
         if not retryable:
             return  # lỗi input/logic không phản ánh sức khoẻ provider (doc 06 §2.3)
+        await self._provider_stats.record_attempt(provider_id, task_class, succeeded=False)
         state = self._breakers.setdefault(provider_id, _BreakerState())
         if state.open_until is not None:
             # HALF_OPEN (open_until đã qua, vừa cho thử lại) mà VẪN lỗi — mở lại
@@ -392,13 +429,21 @@ class Router:
 
     @staticmethod
     def _rationale(
-        candidates: list[_Candidate], chosen: str | None, final_error: ProviderError | None
+        candidates: list[_Candidate],
+        chosen: str | None,
+        final_error: ProviderError | None,
+        *,
+        ranked: bool = False,
     ) -> str:
         if chosen is not None:
             tried_before = [c for c in candidates if c.tried and c.manifest.provider_id != chosen]
             if tried_before:
                 failed_ids = ", ".join(c.manifest.provider_id for c in tried_before)
                 return f"{chosen}: fallback sau khi {failed_ids} lỗi retryable"
+            if ranked:
+                return (
+                    f"{chosen}: quality_ewma cao nhất trong ứng viên đủ dữ liệu (n≥5, doc 06 §2.2)"
+                )
             return f"{chosen}: ưu tiên #1 theo thứ tự khai báo, khả dụng"
         reasons = "; ".join(
             f"{c.manifest.provider_id}={c.reason}" for c in candidates if not c.eligible

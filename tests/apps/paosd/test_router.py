@@ -175,6 +175,59 @@ async def test_call_succeeds_and_records_decision(
     assert "ưu tiên #1" in decision["rationale"]
 
 
+async def _seed_provider_quality(
+    store: StateStore, provider_id: str, task_class: str, quality_ewma: float, quality_n: int
+) -> None:
+    async def _insert(conn: aiosqlite.Connection) -> None:
+        await conn.execute(
+            "INSERT INTO provider_stats(provider_id, task_class, quality_ewma, quality_n, "
+            "success_count, fail_count, updated_at) VALUES (?, ?, ?, ?, 0, 0, ?)",
+            (provider_id, task_class, quality_ewma, quality_n, "2026-01-01T00:00:00+00:00"),
+        )
+
+    await store.write(_insert)
+
+
+async def test_ranks_by_quality_ewma_when_enough_samples(
+    two_provider_registry: Registry, events: EventBus, store: StateStore, tmp_path: Path
+) -> None:
+    """P-M6-2 (doc 06 §2.2) — provider #2 (theo thứ tự khai báo) có quality_ewma
+    cao hơn VÀ đủ n>=5 -> Router chọn #2 dù #1 đứng trước trong Registry."""
+    manifests = two_provider_registry.providers_for("text.generate", 1)
+    first_id, second_id = manifests[0].provider_id, manifests[1].provider_id
+    two_provider_registry.preload_adapter(first_id, _FakeAdapter())
+    two_provider_registry.preload_adapter(second_id, _FakeAdapter())
+    await _seed_provider_quality(store, first_id, "unknown", 0.5, 5)
+    await _seed_provider_quality(store, second_id, "unknown", 0.9, 5)
+
+    router = Router(two_provider_registry, events, store, {}, tmp_path)
+    _, chosen = await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
+
+    assert chosen == second_id
+    decision = await _latest_decision(store)
+    assert decision["chosen"] == second_id
+    assert "quality_ewma cao nhất" in decision["rationale"]
+
+
+async def test_ranking_ignored_when_fewer_than_5_samples(
+    two_provider_registry: Registry, events: EventBus, store: StateStore, tmp_path: Path
+) -> None:
+    """Cold start / dữ liệu chưa đủ (n<5, doc 06 §2.2) -> KHÔNG xếp lại, giữ
+    nguyên thứ tự khai báo — 0 rủi ro hồi quy cho hành vi trước P-M6-2."""
+    manifests = two_provider_registry.providers_for("text.generate", 1)
+    first_id, second_id = manifests[0].provider_id, manifests[1].provider_id
+    two_provider_registry.preload_adapter(first_id, _FakeAdapter())
+    two_provider_registry.preload_adapter(second_id, _FakeAdapter())
+    await _seed_provider_quality(store, second_id, "unknown", 0.95, 4)  # n=4 < 5
+
+    router = Router(two_provider_registry, events, store, {}, tmp_path)
+    _, chosen = await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
+
+    assert chosen == first_id
+    decision = await _latest_decision(store)
+    assert "ưu tiên #1 theo thứ tự khai báo" in decision["rationale"]
+
+
 async def test_exclude_provider_routes_to_next_candidate(
     two_provider_registry: Registry, events: EventBus, store: StateStore, tmp_path: Path
 ) -> None:

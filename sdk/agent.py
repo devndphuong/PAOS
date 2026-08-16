@@ -225,6 +225,7 @@ class AgentContext:
         self._report_progress = report_progress
         self._write_checkpoint = write_checkpoint
         self._last_provider_id: str | None = None
+        self._last_task_class: str | None = None
 
     async def call(
         self,
@@ -250,6 +251,7 @@ class AgentContext:
             capability_ref, payload, exclude_provider, contains_private_l3
         )
         self._last_provider_id = provider_id
+        self._last_task_class = payload.get("task_class")
         return result
 
     @property
@@ -259,6 +261,16 @@ class AgentContext:
         Review Agent loại trừ đúng provider đó (ADR-0008, `exclude_provider`).
         `None` nếu chưa gọi `call()` lần nào."""
         return self._last_provider_id
+
+    @property
+    def last_task_class(self) -> str | None:
+        """`task_class` của lượt `call()` gần nhất, nếu payload có khai (vd
+        `text.generate@1`, doc 06 §2.2) — P-M6-2. `write_artifact()` tự đọc
+        giá trị này để gắn vào `produced_by`, cho ProviderStats vòng phản hồi
+        sau (`quality.artifact.edited`) tra lại được provider/task_class đã
+        sinh ra artifact bị sửa. `None` nếu chưa `call()` lần nào, hoặc
+        capability đó không khai `task_class` trong payload."""
+        return self._last_task_class
 
     async def emit(self, event_type: str, payload: dict[str, Any]) -> None:
         if event_type not in self._manifest.emits:
@@ -316,6 +328,17 @@ class AgentContext:
         data = content.encode("utf-8")
         target.write_bytes(data)
 
+        # doc 03 §2.4 ví dụ produced_by có cả "provider" — trước P-M6-2 chỉ ghi
+        # "agent" (thiếu provider). Lấy từ last_provider_id/last_task_class (lượt
+        # call() gần nhất, thường là lượt sinh ra chính artifact này) — ProviderStats
+        # (P-M6-2, apps/paosd/provider_stats.py) tra lại 2 field này từ artifact bị
+        # sửa tay (quality.artifact.edited) để phạt đúng provider đã sinh ra nó.
+        produced_by: dict[str, str] = {"agent": self._agent_id}
+        if self._last_provider_id is not None:
+            produced_by["provider"] = self._last_provider_id
+        if self._last_task_class is not None:
+            produced_by["task_class"] = self._last_task_class
+
         artifact = Artifact(
             artifact_id=f"art_{ulid.ULID()}",
             process_id=self._process_id,
@@ -325,7 +348,7 @@ class AgentContext:
             mime=mime,
             sha256=hashlib.sha256(data).hexdigest(),
             bytes=len(data),
-            produced_by={"agent": self._agent_id},
+            produced_by=produced_by,
             supersedes=None,
             created_at=datetime.now(UTC).isoformat(),
         )

@@ -49,6 +49,7 @@ class ArtifactRecord:
     path: str
     mime: str
     created_at: str
+    produced_by: dict[str, str]
 
 
 @dataclass(frozen=True)
@@ -82,6 +83,7 @@ def _row_to_record(row: Any) -> ArtifactRecord:
         path=row[3],
         mime=row[4],
         created_at=row[5],
+        produced_by=json.loads(row[6]) if row[6] else {},
     )
 
 
@@ -93,7 +95,7 @@ class ArtifactStore:
     async def get(self, artifact_id: str) -> ArtifactRecord | None:
         async def _select(conn: aiosqlite.Connection) -> tuple[Any, ...] | None:
             cursor = await conn.execute(
-                "SELECT artifact_id, process_id, type, path, mime, created_at "
+                "SELECT artifact_id, process_id, type, path, mime, created_at, produced_by_json "
                 "FROM artifacts WHERE artifact_id = ?",
                 (artifact_id,),
             )

@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import httpx
+import pytest
 
 from apps.paosd.wiring import build_daemon
 from sdk.provider import Estimate, Health
@@ -265,6 +266,67 @@ async def test_escalation_attempts_counts_all_rounds_even_when_best_is_not_last(
     escalated = next(e for e in trace if e["type"] == "quality.escalated.to_human")
     assert escalated["payload"]["best_score"] == _aggregate_score(70)  # vòng 2, không phải vòng 3
     assert escalated["payload"]["attempts"] == 3  # KHÔNG phải 2
+
+
+async def test_self_correction_updates_provider_stats_quality_per_round(tmp_path: Path) -> None:
+    """P-M6-2 (doc 06 §2.4) — mỗi lượt judge (pass hoặc reject) phải cập nhật
+    `provider_stats` cho ĐÚNG provider đã sinh script lượt đó, task_class=
+    script_writing_vi (ScriptAgent.think(), agents/script/agent.py)."""
+    adapter = _ScriptedTextGenerateAdapter(
+        script_texts=[_script_text("ROUND_BAD"), _script_text("ROUND_GOOD")],
+        judge_scores={"ROUND_BAD": 40.0, "ROUND_GOOD": 92.0},
+    )
+    daemon = await build_daemon(
+        tmp_path / ".paos" / "state.db",
+        workspace_root=tmp_path / "workspace",
+        adapter_overrides={"stub.deterministic": adapter, "ollama.qwen2.5-14b": adapter},
+    )
+    try:
+        transport = httpx.ASGITransport(app=daemon.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                "/v1/jobs",
+                json={
+                    "intent": "video",
+                    "spec": {"plan": "Giới thiệu một quán cà phê nhỏ"},
+                    "name": "test-provider-stats",
+                    "workflow_ref": "workflow:script_with_review@1",
+                },
+            )
+            created = resp.json()
+            await _wait_for_terminal(client, created["pid"])
+
+        # Điểm CHÍNH XÁC (2 chữ số thập phân) đã dùng để cập nhật EWMA nằm
+        # trong artifact review — event `quality.review.*` chỉ mang bản làm
+        # tròn SỐ NGUYÊN (round(review["score"]), agents/review/agent.py),
+        # KHÔNG đủ chính xác để tái lập công thức EWMA ở đây.
+        review_artifacts = sorted(
+            (tmp_path / "workspace" / "artifacts" / created["process_id"]).glob("review_*.json")
+        )
+        assert len(review_artifacts) == 2
+        review_scores = [
+            json.loads(p.read_text(encoding="utf-8"))["score"] for p in review_artifacts
+        ]
+        expected_ewma = review_scores[0] / 100.0
+        expected_ewma = 0.2 * (review_scores[1] / 100.0) + 0.8 * expected_ewma
+
+        async def _select_provider_stats(conn: Any) -> list[Any]:
+            cursor = await conn.execute(
+                "SELECT provider_id, task_class, quality_ewma, quality_n FROM provider_stats "
+                "WHERE task_class = 'script_writing_vi'"
+            )
+            return await cursor.fetchall()
+
+        rows = await daemon.store.read(_select_provider_stats)
+        assert len(rows) == 1, (
+            "chỉ 1 provider local (stub/ollama đăng ký cùng capability) sinh script"
+        )
+        _, task_class, quality_ewma, quality_n = rows[0]
+        assert task_class == "script_writing_vi"
+        assert quality_n == 2  # 2 lượt (reject rồi pass)
+        assert quality_ewma == pytest.approx(expected_ewma)
+    finally:
+        await daemon.stop()
 
 
 async def test_judge_excludes_generator_provider(tmp_path: Path) -> None:

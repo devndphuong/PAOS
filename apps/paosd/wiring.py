@@ -23,6 +23,7 @@ from apps.paosd.knowledge_extractor import KnowledgeExtractor
 from apps.paosd.knowledge_store import KnowledgeStore
 from apps.paosd.memory_store import MemoryStore
 from apps.paosd.memory_writer import MemoryWriter
+from apps.paosd.provider_stats import ProviderCorrectionUpdater, ProviderStats
 from apps.paosd.runner import Runner
 from kernel.events.bus import EventBus
 from kernel.events.types import EventType
@@ -148,6 +149,19 @@ async def build_daemon(
     )
     events.subscribe(
         "knowledge_extractor_summary", "summary.created", knowledge_extractor.on_artifact_event
+    )
+
+    # ProviderCorrectionUpdater (P-M6-2, doc 06 §2.4) — "user.correction.made"
+    # CHÍNH LÀ quality.artifact.edited đã có từ M4-3 (xem docstring
+    # apps/paosd/provider_stats.py), phạt x3 provider đã sinh artifact bị sửa.
+    provider_stats = ProviderStats(store)
+    provider_correction = ProviderCorrectionUpdater(
+        provider_stats, ArtifactStore(store, resolved_workspace_root)
+    )
+    events.subscribe(
+        "provider_stats_correction",
+        "quality.artifact.edited",
+        provider_correction.on_artifact_edited,
     )
 
     await events.start()  # giao lại event chưa dispatch cho từng subscriber (REL-01) —

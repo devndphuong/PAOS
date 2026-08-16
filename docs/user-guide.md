@@ -84,6 +84,8 @@ curl -X POST localhost:8787/v1/jobs -d '{"intent":"video.create","name":"demo","
 # response trả lại workflow_ref đã CHỌN, không phải bạn tự khai
 ```
 
+**Router tự xếp hạng provider theo lịch sử chất lượng thật (mới — M6)** — mỗi lượt gọi capability đều ghi vào `provider_stats` (thành công/thất bại tức thời + EWMA điểm rubric theo `task_class`, α=0.2). Sau khi 1 provider có ≥5 quan sát chất lượng, Router bắt đầu ưu tiên provider điểm cao hơn thay vì chỉ theo thứ tự khai báo trong `providers/`. Sửa tay 1 artifact do AI sinh ra phạt nặng gấp 3 lần provider đã sinh ra nó (`quality.artifact.edited`, tín hiệu khách quan nhất theo doc 08 §5). Rationale ("quality_ewma cao nhất trong ứng viên đủ dữ liệu") đã ghi vào bảng `decisions` — `paosctl explain` CHƯA hiển thị trực tiếp, đó là `paosctl explain --decisions` (P-M6-3).
+
 **Theo dõi & giải thích mọi việc đang/đã làm** — không có "log" mù mờ, mọi quyết định dựng lại được đầy đủ từ Event Log.
 ```bash
 paosctl ps                 # liệt kê mọi job
@@ -102,7 +104,8 @@ paosctl cancel <pid>       # hủy 1 job đang chạy, không ảnh hưởng job
 - **Knowledge Graph chỉ nhận diện thuật ngữ có trong danh sách đã biết** (~40 mục, `sdk/kg_extract.py::KNOWN_TERMS`) — không phải NLU/LLM thật (quyết định có chủ đích, ADR-0028, để giữ tính TẤT ĐỊNH cần cho "rebuild từ replay"); bỏ sót thuật ngữ chưa có trong danh sách (BL-017). Quan hệ suy ra được CHỈ có `learned_from` (entity → artifact nguồn) — chưa suy luận `is_a`/`alternative_to` giữa các entity. Cơ chế phát hiện mâu thuẫn đã xây và kiểm thật nhưng chưa có đường trích `prefers`/`avoids` thật để kích hoạt (BL-018). Số node tích luỹ từ sử dụng thật còn ít — cần dùng PAOS qua thời gian, không phải thứ 1 lát cắt code tạo ra được.
 - **Privacy Filter chưa có caller thật nào bật cờ** — `contains_private_l3=True` CHẶN THẬT (kiểm bằng test đối kháng), nhưng chưa Agent nào đọc lại Memory L3 để cần dùng cờ này (BL-015/BL-019) — hạ tầng sẵn sàng, chờ caller thật. Cũng chưa có provider `class: cloud` THẬT nào trong `providers/` để thử nghiệm ngoài môi trường test.
 - `paosctl knowledge` không có lệnh `forget` (quyết định có chủ đích — doc 07 §4.4 nói KG không bao giờ xóa, dùng `invalidated_at`; xem ADR-0029, BL-020).
-- **Decision Engine mới chọn được WORKFLOW, chưa xếp hạng PROVIDER** (P-M6-1; provider ranking + EWMA là P-M6-2) — `Router` vẫn chọn provider theo thứ tự khai báo. `policies/intents.yaml` mới có đúng 1 intent thật (`video.create`) — chưa có 2 workflow cạnh tranh thật để chấm điểm phân biệt ngoài test.
+- **`policies/intents.yaml` mới có đúng 1 intent thật** (`video.create`) — chưa có 2 workflow cạnh tranh thật để Decision Engine chấm điểm phân biệt ngoài test (P-M6-1).
+- **Router mới xếp hạng theo Q̂ (quality_ewma) — chưa áp công thức 5 trọng số đầy đủ** (P-M6-2; `routing.yaml` + profile là P-M6-3) — chưa có Ĉ (cần Cost Engine, M7) hay L̂ (latency chưa track). `provider_stats` hôm nay chỉ có provider local/stub trong test — chưa provider `class: cloud` thật nào để thấy ranking thay đổi hành vi thật ngoài môi trường test.
 
 ### 1.3b Ví dụ minh hoạ — Decision Engine chọn workflow
 
@@ -128,7 +131,7 @@ sequenceDiagram
 
 ### 1.4 Sắp tới
 
-P-M6-1 vừa xong — **mở đầu Milestone 6 (Decision Engine)**: `apps/paosd/decision_engine.py` — đặc trưng hóa JobSpec thuần tất định, tra ứng viên workflow theo `policies/intents.yaml`, chấm điểm theo `decision_outcomes` (bảng mới, học từ Process đã kết thúc). `POST /v1/jobs` giờ chấp nhận thiếu `workflow_ref`. Việc **ngay tiếp theo**: **P-M6-2 — Provider ranking: `provider_stats`, EWMA, vòng phản hồi chất lượng** (công thức doc 06 §2.2, khác Decision Engine ở chỗ chọn PROVIDER cho 1 capability call, không phải WORKFLOW cho cả Job). Lộ trình đầy đủ ở [§3](#3-lộ-trình-sắp-tới) bên dưới.
+P-M6-2 vừa xong — `apps/paosd/provider_stats.py`: `provider_stats` (bảng mới, khóa `provider_id, task_class`), EWMA chất lượng (α=0.2, cần n≥5 mới dùng thống kê) cập nhật từ mỗi lượt `self_correction`, phạt ×3 khi người dùng tự sửa artifact (`quality.artifact.edited`). Router giờ xếp lại candidate theo `quality_ewma` khi đủ dữ liệu — trước đó luôn theo thứ tự khai báo. Việc **ngay tiếp theo**: **P-M6-3 — `routing.yaml` + profile (economy/quality/private) + hot reload + `paosctl explain --decisions`** (đóng Milestone 6 — công thức 5 trọng số đầy đủ cần chờ Cost Engine ở M7 mới áp được w_c/w_l thật). Lộ trình đầy đủ ở [§3](#3-lộ-trình-sắp-tới) bên dưới.
 
 ---
 
@@ -248,7 +251,7 @@ Theo kế hoạch 10 milestone (~31 tuần lập trình thuần, 11–15 tháng 
 | M3 | Agent & Workflow | Video plugin chạy hoàn chỉnh | ✅ Xong |
 | M4 | Quality & Self-Correction | Tự sửa, tự chấm điểm, ghi `edit_rate` | ✅ Xong |
 | M5 | Memory & Knowledge | Nhớ sở thích, xây Knowledge Graph | ✅ Phạm vi xong · 2/5 tiêu chí trọn vẹn |
-| M6 | Decision Engine | Tự chọn workflow phù hợp | 🔶 Đang làm — P-M6-1 xong (feature extraction + candidate + scoring) |
+| M6 | Decision Engine | Tự chọn workflow phù hợp | 🔶 Đang làm — P-M6-1/P-M6-2 xong (chọn workflow + xếp hạng provider theo quality_ewma) |
 | M7 | Cost / Energy / Time | Chạy đêm, tiết kiệm, đúng ngân sách | ⚪ Chưa tới |
 | M8 | Plugin System & UI | Cài plugin, có giao diện Web thật | ⚪ Chưa tới |
 | M9 | Research Plugin | Nghiên cứu chủ đề, tích luỹ tri thức thật | ⚪ Chưa tới |

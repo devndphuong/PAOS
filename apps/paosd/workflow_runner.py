@@ -20,6 +20,7 @@ from typing import Any
 
 import aiosqlite
 
+from apps.paosd.provider_stats import ProviderStats, normalize_task_class
 from apps.paosd.router import Router
 from kernel import clock
 from kernel.errors import ErrorCode as KernelErrorCode
@@ -90,6 +91,7 @@ class WorkflowRunner:
         self._router = router
         self._workspace_root = workspace_root
         self._tasks = TaskStore(store, events)
+        self._provider_stats = ProviderStats(store)
 
     async def run(
         self, process_id: str, spec: WorkflowSpec, inputs: dict[str, Any]
@@ -403,15 +405,18 @@ class WorkflowRunner:
         *,
         attempt: int,
         inputs: dict[str, Any],
-    ) -> tuple[dict[str, Any], list[Artifact], str | None]:
+    ) -> tuple[dict[str, Any], list[Artifact], str | None, str | None]:
         """1 lượt initialize->...->publish của agent TẠO NỘI DUNG trong vòng
         self_correction — tách khỏi `_run_self_correction()` chỉ để giảm độ
         dài hàm (PLR0915), không phải trừu tượng hoá tái dùng.
 
-        Trả thêm `ctx.last_provider_id` (KHÔNG qua `exec_result.data` — agent
-        không được phép biết/chuyển tiếp provider_id, P3 doc 04 §2.2, cổng 3
-        CI chặn thật) — orchestrator (tầng apps/, được phép biết) tự đọc thẳng
-        từ `AgentContext` nó vừa dựng, agent hoàn toàn không tham gia."""
+        Trả thêm `ctx.last_provider_id`/`ctx.last_task_class` (KHÔNG qua
+        `exec_result.data` — agent không được phép biết/chuyển tiếp provider_id,
+        P3 doc 04 §2.2, cổng 3 CI chặn thật) — orchestrator (tầng apps/, được
+        phép biết) tự đọc thẳng từ `AgentContext` nó vừa dựng, agent hoàn toàn
+        không tham gia. `last_task_class` mới (P-M6-2) — vòng phản hồi chất
+        lượng (doc 06 §2.4) cần biết task_class để cập nhật đúng ô
+        `provider_stats`."""
         ctx = self._build_agent_ctx(process_id, task_id, agent, prompts_dir)
         await agent.initialize(ctx)
         validation = await agent.validate(inputs)
@@ -441,7 +446,7 @@ class WorkflowRunner:
                 hint="ExecResult.data của agent dùng trong step self_correction phải có "
                 "field 'text' (nội dung cần chấm)",
             )
-        return exec_result.data, artifacts, ctx.last_provider_id
+        return exec_result.data, artifacts, ctx.last_provider_id, ctx.last_task_class
 
     async def _run_judge_attempt(
         self,
@@ -522,7 +527,12 @@ class WorkflowRunner:
             if attempt == total_attempts and total_attempts > 1:
                 gen_inputs["_force_alternate_prompt"] = True  # quy tắc 4
 
-            gen_data, gen_artifacts, generator_provider = await self._run_generate_attempt(
+            (
+                gen_data,
+                gen_artifacts,
+                generator_provider,
+                generator_task_class,
+            ) = await self._run_generate_attempt(
                 process_id,
                 task.task_id,
                 generate_agent,
@@ -545,6 +555,13 @@ class WorkflowRunner:
 
             review_dict = review_data["review"]
             score = float(review_dict["score"])
+            if generator_provider is not None:
+                # doc 06 §2.4 — mọi lượt judge (pass hoặc reject) là 1 quan sát
+                # chất lượng thật cho ĐÚNG provider đã sinh ra text lượt này (có
+                # thể khác provider ở lượt trước nếu Router đã fallback).
+                await self._provider_stats.record_quality(
+                    generator_provider, normalize_task_class(generator_task_class), score / 100.0
+                )
             current = {
                 "text": text,
                 "score": score,
