@@ -447,6 +447,37 @@ Không có `&&`/`||` để gộp nhiều điều kiện — muốn logic phức 
 
 ---
 
+## ADR-0032 — Giao thức JSON-RPC 2.0 qua stdio cho Plugin: newline-delimited, 3 method (`health`/`estimate`/`invoke`), 1 lượt gọi tại 1 thời điểm mỗi tiến trình
+
+**Trạng thái:** Accepted · 2026-08 · Quyết định P-M8-1 ([doc 19](19-prompt-library.md))
+
+**Bối cảnh:** ADR-0005 đã quyết định plugin chạy subprocess, giao tiếp JSON-RPC qua stdio — nhưng CHƯA chốt hình dạng message cụ thể (framing, method nào, thứ tự gọi, cách map lỗi). Đây là khoảng trống ADR-0018 (P-M8-0) đã lường trước và giao lại cho lát viết loader thật (P-M8-1) quyết định. `sdk/provider.py::ProviderAdapter` (Protocol `health()`/`estimate()`/`invoke()`) đã là giao diện Provider CHUẨN — plugin cung cấp `providers:` (doc 04 §5 `provides.providers`) phải lộ ra ĐÚNG 3 hành vi này để `Router`/`Registry` dùng được mà không cần biết provider đó chạy trong-process hay ngoài-process.
+
+**Quyết định:**
+- **Framing:** mỗi message = **1 dòng JSON UTF-8 kết thúc bằng `\n`** (newline-delimited), KHÔNG dùng khung `Content-Length:` kiểu LSP/MCP — đơn giản hơn, đủ dùng vì mỗi message là 1 lượt gọi Provider (payload thường vài KB, không phải luồng nhị phân lớn).
+- **Envelope:** đúng [JSON-RPC 2.0](https://www.jsonrpc.org/specification) — request `{"jsonrpc":"2.0","id":<int>,"method":<str>,"params":<object>}`, response thành công `{"jsonrpc":"2.0","id":<int>,"result":<object>}`, response lỗi `{"jsonrpc":"2.0","id":<int>,"error":{"code":<int>,"message":<str>,"data":{"paos_code":<str>,"retryable":<bool>,"hint":<str>,"context":<object>}}}`. `data.paos_code`/`retryable`/`hint`/`context` ánh xạ THẲNG vào `sdk.provider.ProviderError` phía `paosd` — plugin process không cần biết `ErrorCode` Python, chỉ cần trả đúng 4 field này.
+- **3 method, khớp NGUYÊN VĂN `ProviderAdapter`:** `health` (params `{}` → result `{"healthy": bool, "detail": str|null}`), `estimate` (params `{"capability": str, "payload": object}` → result `{"cost": float, "latency_ms": int, "confidence": float}`), `invoke` (params `{"capability": str, "payload": object, "ctx": {"call_id","process_id","task_id","deadline","budget_left","privacy_class"}}` → result = output dict đúng `output.schema.json` của capability đó, y hệt Provider in-process).
+- **1 lượt gọi tại 1 thời điểm mỗi `PluginProcess`** — gửi request, khóa (`asyncio.Lock`) chờ ĐÚNG 1 response tương ứng trước khi gửi request kế tiếp trên CÙNG process. KHÔNG pipeline nhiều `id` đang chờ song song.
+- **`RemotePluginProviderAdapter`** (`kernel/plugin/process.py`) implement `ProviderAdapter` Protocol y hệt adapter in-process — Registry/Router gọi `health()`/`estimate()`/`invoke()` bình thường, không phân biệt được Provider chạy trong hay ngoài process.
+- **stdout của subprocess CHỈ được chứa response JSON-RPC** — plugin muốn log thì ghi **stderr** (`paosd` đọc riêng stream này, gắn vào Trace khi plugin crash để chẩn đoán, KHÔNG lẫn vào luồng giao thức).
+
+**Lý do:**
+1. Newline-delimited JSON là dạng "boring" nhất đủ dùng (P11) — không cần viết parser khung độ dài kiểu LSP/MCP cho payload nhỏ (1 lượt Provider call), tránh 1 lớp phức tạp không tương xứng lợi ích ở quy mô v1.
+2. Đúng CHUẨN JSON-RPC 2.0 (không tự chế field) — khớp câu "tương thích khái niệm với các chuẩn tool-server hiện hành" ADR-0005 đã ghi, để nếu sau này cần đổi sang MCP thật (v2+) thì envelope cơ bản đã tương thích, chỉ đổi framing.
+3. Chỉ 3 method khớp `ProviderAdapter` — TÁI DÙNG giao diện đã có, không phát minh giao thức Agent/Workflow-qua-RPC ở lát này (đó là bề mặt LỚN hơn nhiều: cần proxy `self.call()`/`self.memory`/`self.write_artifact()` của SDK ngược lại cho plugin, chưa có ca dùng thật đòi hỏi ở P-M8-1/P-M8-2 — Document plugin P-M8-3 mới là caller thật đầu tiên, quyết định lúc đó nếu cần).
+4. 1 lượt gọi/1 thời điểm mỗi process tránh toàn bộ lớp phức tạp "khớp `id` với request đang chờ song song" — nếu cần gọi đồng thời, `Router` vốn đã điều phối concurrency ở tầng candidate/Task (không phải việc của giao thức RPC), tăng concurrency = tăng SỐ PluginProcess, không phải pipeline 1 process.
+5. stderr tách riêng cho log giữ ĐÚNG hợp đồng "stdout chỉ chứa message giao thức" — 1 dòng log lẫn vào stdout sẽ làm parser JSON hỏng ngay dòng đó, một lỗi khó chẩn đoán nếu không tách từ đầu.
+
+**Hệ quả:** Plugin viết bằng ngôn ngữ khác Python CHỈ cần đọc/ghi JSON qua stdin/stdout theo đúng 3 method này — không cần SDK Python `paos.sdk` (khớp đúng "cho phép plugin viết bằng ngôn ngữ khác" trong ADR-0005 §Lý do). Agent/Workflow-qua-RPC CHƯA làm — plugin cung cấp `provides.agents`/`provides.workflows` ở lát này chỉ được Registry NẠP TĨNH (biết tên tồn tại) nhưng CHƯA thực thi được qua subprocess thật (backlog, xem docs/backlog.md) — chỉ `provides.providers` chạy được đầu-cuối qua RPC ở P-M8-1.
+
+**Đã loại:**
+1. **Khung `Content-Length: N\r\n\r\n<json>` (kiểu LSP/MCP thật)** — chuẩn hơn cho payload lớn/nhị phân, tương thích trực tiếp nếu sau này đổi sang MCP SDK thật. Loại vì thêm 1 lớp đọc buffer theo độ dài byte cho lợi ích chưa cần ở v1 (payload Provider call luôn nhỏ, JSON text thuần) — có thể đổi framing sau mà không đổi envelope JSON-RPC bên trong (tuong thich nguoc P4).
+2. **WebSocket/HTTP local qua `localhost:<port>` thay vì stdio** — dễ debug hơn (curl/Postman gọi được), hỗ trợ nhiều client cùng lúc tự nhiên. Loại vì ADR-0005 ĐÃ CHỐT stdio (không bàn lại ở đây), và stdio tránh hẳn việc cấp phát port động/xung đột port giữa nhiều plugin — process con chỉ cần biết đọc/ghi 2 stream có sẵn, không cần logic "tìm port trống".
+3. **Pipeline nhiều request đang chờ song song trên 1 `PluginProcess` (khớp `id`)** — tận dụng I/O đồng thời tốt hơn khi 1 plugin cần trả lời nhiều yêu cầu cùng lúc. Loại vì thêm 1 bảng `id -> Future` đang chờ + xử lý race khi response về không đúng thứ tự, cho lợi ích chưa đo được ở quy mô v1 (1 người dùng, 1 máy, ADR-0011) — tăng số PluginProcess đơn giản hơn nhiều nếu cần thật.
+4. **Đưa Agent/Workflow chạy qua RPC luôn ở lát này** (không chỉ Provider) — đầy đủ hơn, khớp trọn `provides:` doc 04 §5 ngay từ đầu. Loại vì bề mặt proxy ngược (`self.call()`/`self.memory`/`self.write_artifact()`/`self.progress()`/`self.checkpoint()` của SDK) lớn hơn nhiều lần 3 method Provider, chưa có ca dùng thật đòi hỏi (P-M8-3 — Document plugin — mới là caller thật đầu tiên, quyết định thiết kế lúc CÓ nhu cầu cụ thể, không phải đoán trước — RSK-04).
+
+---
+
 ## Backlog ADR (chưa quyết định, cần trước milestone tương ứng)
 
 | Dự kiến | Chủ đề | Cần trước |

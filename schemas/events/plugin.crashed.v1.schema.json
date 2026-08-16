@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://schemas/events/plugin.crashed.v1.schema.json",
+  "title": "plugin.crashed payload",
+  "description": "doc 09 §5, P-M8-1 — PluginProcess thoát bất thường/treo quá wall_sec, phát TRƯỚC khi tự restart (tối đa 3 lần).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["plugin_id", "error"],
+  "properties": {
+    "plugin_id": { "type": "string" },
+    "error": { "type": "string" }
+  }
+}

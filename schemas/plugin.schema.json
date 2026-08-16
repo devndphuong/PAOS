@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://schemas/plugin.schema.json",
+  "title": "plugin.yaml manifest",
+  "description": "doc 04 §5 (hợp đồng dài hạn) + doc 09 §5 (sandbox) — hợp nhất 2 ví dụ thành 1 schema thật, doc 19 P-M8-1.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "name", "version", "paos_api", "provides", "permissions", "runtime", "signature"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^[a-z][a-z0-9_.]*$" },
+    "name": { "type": "string", "minLength": 1 },
+    "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+    "paos_api": { "type": "string", "minLength": 1 },
+    "provides": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "agents": { "type": "array", "items": { "type": "string" }, "default": [] },
+        "workflows": { "type": "array", "items": { "type": "string" }, "default": [] },
+        "capabilities": { "type": "array", "items": { "type": "string" }, "default": [] },
+        "providers": { "type": "array", "items": { "type": "string" }, "default": [] },
+        "rubrics": { "type": "array", "items": { "type": "string" }, "default": [] }
+      }
+    },
+    "permissions": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "fs": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "read": { "type": "array", "items": { "type": "string" }, "default": [] },
+            "write": { "type": "array", "items": { "type": "string" }, "default": [] }
+          }
+        },
+        "network": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "allow": { "type": "array", "items": { "type": "string" }, "default": [] }
+          }
+        },
+        "exec": { "type": "array", "items": { "type": "string" }, "default": [] },
+        "spend": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "max_per_job": { "type": "number" },
+            "currency": { "type": "string" }
+          }
+        }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "entry", "isolation"],
+      "properties": {
+        "type": { "type": "string", "enum": ["process"] },
+        "entry": { "type": "string", "minLength": 1 },
+        "isolation": { "type": "string", "enum": ["subprocess"] },
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "cpu_sec": { "type": "number", "exclusiveMinimum": 0 },
+            "rss_mb": { "type": "number", "exclusiveMinimum": 0 },
+            "wall_sec": { "type": "number", "exclusiveMinimum": 0 },
+            "open_files": { "type": "integer", "exclusiveMinimum": 0 }
+          }
+        }
+      }
+    },
+    "signature": { "type": ["string", "null"] }
+  }
+}

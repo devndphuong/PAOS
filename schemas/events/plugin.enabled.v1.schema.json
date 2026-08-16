@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://schemas/events/plugin.enabled.v1.schema.json",
+  "title": "plugin.enabled payload",
+  "description": "doc 12 §2, P-M8-2 — `paosctl plugin enable`, hoặc tự động sau khi cài xong.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["plugin_id", "version"],
+  "properties": {
+    "plugin_id": { "type": "string" },
+    "version": { "type": "string" }
+  }
+}

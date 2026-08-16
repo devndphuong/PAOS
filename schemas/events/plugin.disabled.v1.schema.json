@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://schemas/events/plugin.disabled.v1.schema.json",
+  "title": "plugin.disabled payload",
+  "description": "doc 12 §2, doc 09 §2 (FORBIDDEN -> tự disable), P-M8-2 — `paosctl plugin disable` tay, hoặc TỰ ĐỘNG khi plugin vượt quyền khai báo.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["plugin_id", "version"],
+  "properties": {
+    "plugin_id": { "type": "string" },
+    "version": { "type": "string" },
+    "reason": { "type": "string" }
+  }
+}

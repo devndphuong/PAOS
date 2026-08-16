@@ -79,6 +79,7 @@ ignore = [
 "tests/**" = ["S101", "PLR2004", "ASYNC240"]  # assert, magic number, Path I/O đồng bộ đều bình thường trong test
 "apps/paosctl/**" = ["T20"]               # CLI được phép in ra stdout
 "scripts/**" = ["T20"]                    # script CI độc lập, không có trace_id để log qua
+"tests/kernel/fixtures/plugin_process/fake_plugin.py" = ["T20"]  # subprocess giả — print() LÀ giao thức JSON-RPC stdout (ADR-0032), không phải debug log
 
 [tool.ruff.lint.pylint]
 max-args = 6

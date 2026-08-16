@@ -93,17 +93,23 @@ async def build_daemon(
     await store.start()
 
     events = EventBus(store)
+    resolved_workspace_root = workspace_root or _REPO_ROOT / "workspace"
     registry = Registry(
         _REPO_ROOT / "capabilities",
         _REPO_ROOT / "providers",
         _REPO_ROOT / "workflows",
         _REPO_ROOT / "agents",
         rubrics_dir=_REPO_ROOT / "rubrics",
+        # plugins_dir (P-M8-1, ADR-0018) — plugin CÀI ĐẶT (paosctl plugin
+        # install, P-M8-2) nằm trong workspace/, KHÔNG gốc repo (khác
+        # providers/agents/... built-in ở trên) — xem docstring
+        # kernel/registry/registry.py::Registry.__init__.
+        plugins_dir=resolved_workspace_root / "plugins",
+        events=events,
     )
     registry.load()
     for provider_id, adapter in (adapter_overrides or {}).items():
         registry.preload_adapter(provider_id, adapter)
-    resolved_workspace_root = workspace_root or _REPO_ROOT / "workspace"
     manager = ProcessManager(store, events)
     runner = Runner(
         manager,

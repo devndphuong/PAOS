@@ -30,6 +30,10 @@ import jsonschema
 import yaml
 
 from kernel.errors import ErrorCode, PaosError
+from kernel.events.bus import EventBus
+from kernel.events.types import EventType
+from kernel.plugin.manifest import PluginManifest, load_plugin_manifest, paos_api_compatible
+from kernel.plugin.process import PluginProcess
 from kernel.workflow.spec import WorkflowSpec, parse_workflow_spec
 
 
@@ -125,6 +129,40 @@ def load_provider_manifest(path: Path) -> ProviderManifest:
     )
 
 
+def _scan_provider_manifests(providers_dir: Path) -> list[ProviderManifest]:
+    """Quét `<providers_dir>/*/provider.yaml` — dùng CHUNG bởi
+    `Registry._scan_providers()` (thư mục `providers/` gốc repo) VÀ
+    `Registry._scan_plugins()` (thư mục `<plugin>/providers/` bên trong 1
+    plugin, ADR-0018) — cùng 1 định dạng `provider.yaml`, khác nhau ở NGUỒN
+    thư mục, không phải ở cách đọc."""
+    result: list[ProviderManifest] = []
+    if not providers_dir.exists():
+        return result
+    for provider_dir in providers_dir.iterdir():
+        manifest_path = provider_dir / "provider.yaml"
+        if not manifest_path.is_file():
+            continue
+        result.append(load_provider_manifest(manifest_path))
+    return result
+
+
+def _load_and_check_plugin_manifest(plugin_dir: Path) -> PluginManifest:
+    """`load_plugin_manifest()` + kiểm `paos_api` tương thích trong CÙNG 1 hàm
+    — tách khỏi `Registry._load_plugins()` chỉ để raise nằm trong 1 hàm riêng
+    (không phải raise-rồi-catch-ngay-trong-cùng-try, dễ đọc hơn khi có nhiều
+    plugin)."""
+    manifest = load_plugin_manifest(plugin_dir)
+    if not paos_api_compatible(manifest.paos_api_range):
+        raise PaosError(
+            ErrorCode.CONFLICT,
+            f"Plugin {manifest.plugin_id} yêu cầu paos_api="
+            f"{manifest.paos_api_range!r}, không tương thích",
+            hint="Cập nhật plugin hoặc PAOS cho khớp phiên bản API",
+            context={"plugin_id": manifest.plugin_id},
+        )
+    return manifest
+
+
 class Registry:
     def __init__(
         self,
@@ -133,6 +171,9 @@ class Registry:
         workflows_dir: Path | None = None,
         agents_dir: Path | None = None,
         rubrics_dir: Path | None = None,
+        *,
+        plugins_dir: Path | None = None,
+        events: EventBus | None = None,
     ) -> None:
         """`workflows_dir`/`agents_dir`/`rubrics_dir` tùy chọn (mặc định None =
         chưa cấu hình) — thêm sau capabilities/providers (P-M3-2, P-M3-4, P-M4-2),
@@ -141,12 +182,21 @@ class Registry:
         providers/agents — rubric YAML nạp LAZY qua `rubric_path()` (giống
         `get_workflow()`, doc 19 P-M3-2: số lượng rubric nhỏ, parse rẻ) và
         Registry chỉ trả về `Path`, KHÔNG parse (đó là `sdk.rubric.load_rubric()`
-        — Kernel không được import `sdk/`, xem MNT-06)."""
+        — Kernel không được import `sdk/`, xem MNT-06).
+
+        `plugins_dir` (P-M8-1, ADR-0018) — quét thêm `<plugins_dir>/*/plugin.yaml`,
+        merge `provides.providers` vào ĐÚNG `self._providers`/`_providers_by_id`
+        (tái dùng `_scan_provider_manifests()`, cùng định dạng `provider.yaml`
+        gốc repo). `events` (tùy chọn) — chỉ dùng để phát `plugin.crashed`
+        (doc 05 §3.9) khi 1 `PluginProcess` crash; `None` = không phát event
+        (test không cần dựng `EventBus` thật nếu không kiểm phần crash)."""
         self._capabilities_dir = capabilities_dir
         self._providers_dir = providers_dir
         self._workflows_dir = workflows_dir
         self._agents_dir = agents_dir
         self._rubrics_dir = rubrics_dir
+        self._plugins_dir = plugins_dir
+        self._events = events
         self._capabilities: dict[str, CapabilitySpec] = {}
         self._providers: list[ProviderManifest] = []
         self._providers_by_id: dict[str, ProviderManifest] = {}
@@ -154,14 +204,76 @@ class Registry:
         self._agents: dict[str, _AgentEntry] = {}
         self._agent_preload: dict[str, Any] = {}
         self._agent_class_cache: dict[str, type] = {}
+        self._plugins: list[PluginManifest] = []
+        self._plugin_processes: dict[str, PluginProcess] = {}
+        self._plugin_provider_owner: dict[str, str] = {}
+        self._plugin_load_errors: list[tuple[str, str]] = []
 
     def load(self) -> None:
-        """Quét capabilities/, providers/, agents/, nạp toàn bộ vào bộ nhớ. Gọi 1 lần lúc
-        khởi động (chưa hot-reload — đó là M8 khi có Event `plugin.installed`, doc 02 §3.5)."""
+        """Quét capabilities/, providers/, agents/, plugins/, nạp toàn bộ vào bộ
+        nhớ. Gọi 1 lần lúc khởi động; `reload_plugins()` (P-M8-2) hot-reload
+        RIÊNG phần plugin sau đó, không cần gọi lại `load()` toàn bộ."""
         self._capabilities = dict(self._scan_capabilities())
         self._providers = list(self._scan_providers())
         self._providers_by_id = {p.provider_id: p for p in self._providers}
         self._agents = dict(self._scan_agents())
+        self._load_plugins()
+
+    def _load_plugins(self) -> None:
+        """`plugins_dir` KHÔNG cấu hình → không quét gì (an toàn mặc định,
+        cùng tiền lệ `workflows_dir`/`agents_dir`). Plugin lỗi (manifest sai
+        schema, `paos_api` không tương thích) bị GHI LẠI (`_plugin_load_errors`)
+        chứ KHÔNG làm `load()` raise — 1 plugin cẩu thả không được phép chặn
+        toàn bộ daemon khởi động (doc 09 §1 T3, đúng tinh thần "plugin crash
+        không giết Kernel" áp dụng luôn cho lúc NẠP, không chỉ lúc CHẠY)."""
+        self._plugins = []
+        self._plugin_processes = {}
+        self._plugin_provider_owner = {}
+        self._plugin_load_errors = []
+        if self._plugins_dir is None or not self._plugins_dir.exists():
+            return
+
+        for plugin_dir in self._plugins_dir.iterdir():
+            if not plugin_dir.is_dir() or not (plugin_dir / "plugin.yaml").is_file():
+                continue
+            try:
+                manifest = _load_and_check_plugin_manifest(plugin_dir)
+            except PaosError as exc:
+                self._plugin_load_errors.append((plugin_dir.name, exc.message))
+                continue
+
+            self._plugins.append(manifest)
+            for provider_manifest in _scan_provider_manifests(plugin_dir / "providers"):
+                self._providers.append(provider_manifest)
+                self._providers_by_id[provider_manifest.provider_id] = provider_manifest
+                self._plugin_provider_owner[provider_manifest.provider_id] = manifest.plugin_id
+            self._plugin_processes[manifest.plugin_id] = PluginProcess(
+                manifest.plugin_id,
+                manifest.runtime.entry,
+                manifest.plugin_dir,
+                cpu_sec=manifest.runtime.limits.cpu_sec,
+                rss_mb=manifest.runtime.limits.rss_mb,
+                wall_sec=manifest.runtime.limits.wall_sec,
+                open_files=manifest.runtime.limits.open_files,
+                on_crash=self._on_plugin_crash if self._events is not None else None,
+            )
+
+    async def _on_plugin_crash(self, plugin_id: str, detail: str) -> None:
+        if self._events is None:  # chỉ gán làm on_crash khi self._events có giá trị — phòng thủ
+            return
+        await self._events.publish(
+            EventType.PLUGIN_CRASHED.value,
+            source="kernel.registry",
+            payload={"plugin_id": plugin_id, "error": detail},
+        )
+
+    def plugins(self) -> list[PluginManifest]:
+        return list(self._plugins)
+
+    def plugin_load_errors(self) -> list[tuple[str, str]]:
+        """`[(tên_thư_mục, lý_do_lỗi), ...]` — `paosctl plugin list` (P-M8-2)
+        đọc để báo plugin nào cài mà KHÔNG nạp được, thay vì âm thầm biến mất."""
+        return list(self._plugin_load_errors)
 
     def get_capability(self, capability_id: str, version: int) -> CapabilitySpec:
         key = _capability_key(capability_id, version)
@@ -236,9 +348,24 @@ class Registry:
     def load_adapter(self, provider_id: str) -> Any:
         """Nạp động instance adapter theo `provider.yaml::adapter` (P-M2-1,
         exit criteria doc 13 M2: "provider mới chỉ cần 1 file adapter + 1
-        YAML"). Cache theo provider_id — mỗi provider chỉ khởi tạo 1 lần."""
+        YAML"). Cache theo provider_id — mỗi provider chỉ khởi tạo 1 lần.
+
+        Provider đến từ plugin (`_plugin_provider_owner`, ADR-0018) đi NHÁNH
+        RIÊNG: dựng `sdk.plugin_adapter.RemotePluginProviderAdapter` (forward
+        qua `PluginProcess`/JSON-RPC, ADR-0032) thay vì `importlib` module
+        Python trong-process — cả 2 nhánh đều dùng `importlib.import_module()`
+        với CHUỖI TÊN MODULE (`"sdk.plugin_adapter"`/`manifest.adapter`),
+        KHÔNG phải `import` tĩnh, nên Kernel không vi phạm MNT-06 (invisible
+        với `import-linter`, xác nhận qua `make arch` — cùng đúng cơ chế
+        nhánh dưới đã dùng để nạp adapter thật từ `providers/` từ P-M2-1)."""
         if provider_id in self._adapter_cache:
             return self._adapter_cache[provider_id]
+
+        plugin_id = self._plugin_provider_owner.get(provider_id)
+        if plugin_id is not None:
+            instance = self._load_plugin_provider_adapter(provider_id, plugin_id)
+            self._adapter_cache[provider_id] = instance
+            return instance
 
         manifest = self._providers_by_id.get(provider_id)
         if manifest is None:
@@ -271,6 +398,26 @@ class Registry:
 
         self._adapter_cache[provider_id] = instance
         return instance
+
+    def _load_plugin_provider_adapter(self, provider_id: str, plugin_id: str) -> Any:
+        manifest = self._providers_by_id[provider_id]
+        process = self._plugin_processes[plugin_id]
+
+        provider_sdk = importlib.import_module("sdk.provider")
+        sdk_manifest = provider_sdk.ProviderManifest(
+            provider_id=manifest.provider_id,
+            implements=manifest.implements,
+            provider_class=manifest.provider_class,
+            privacy=manifest.privacy,
+            cost=manifest.cost,
+            limits=manifest.limits,
+            resources=manifest.resources,
+            health_check=manifest.health_check,
+            quality_hint=manifest.quality_hint,
+        )
+        plugin_adapter_module = importlib.import_module("sdk.plugin_adapter")
+        adapter_cls = plugin_adapter_module.RemotePluginProviderAdapter
+        return adapter_cls(process, sdk_manifest)
 
     def preload_agent(self, agent_id: str, version: int, instance: Any, extra_dir: Path) -> None:
         """Đặt sẵn 1 instance Agent CỐ ĐỊNH + thư mục phụ trợ, bỏ qua nạp động —
@@ -383,15 +530,7 @@ class Registry:
         )
 
     def _scan_providers(self) -> list[ProviderManifest]:
-        result: list[ProviderManifest] = []
-        if not self._providers_dir.exists():
-            return result
-        for provider_dir in self._providers_dir.iterdir():
-            manifest_path = provider_dir / "provider.yaml"
-            if not manifest_path.is_file():
-                continue
-            result.append(load_provider_manifest(manifest_path))
-        return result
+        return _scan_provider_manifests(self._providers_dir)
 
     def _scan_agents(self) -> dict[str, _AgentEntry]:
         result: dict[str, _AgentEntry] = {}

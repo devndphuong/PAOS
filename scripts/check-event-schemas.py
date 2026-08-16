@@ -113,6 +113,13 @@ PAST_TENSE_OK = {
     # tiếng Anh kỹ thuật (cùng nhóm "hit"/"cut"/"put" bất quy tắc) — bịa một
     # từ khác ("hitted") sẽ sai ngữ pháp, không phải chuẩn hơn.
     "hit",
+    # P-M8-1/P-M8-2 — "removed"/"enabled"/"disabled" (plugin.removed/enabled/
+    # disabled), ĐÃ có trong doc 05 gốc §3.9 (đặt tên sẵn từ đầu dự án, cùng
+    # nhóm "plugin.installed" — "installed" đã có sẵn trong danh sách). Cả 3
+    # đều thì quá khứ hợp lệ chuẩn, không cần bịa từ khác.
+    "removed",
+    "enabled",
+    "disabled",
 }
 
 errors: list[str] = []

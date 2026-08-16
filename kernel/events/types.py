@@ -147,3 +147,17 @@ class EventType(StrEnum):
     # provider đã tạo ra kết quả đang cache (số THẬT, không suy diễn từ giá
     # trung bình — cùng tinh thần ADR-0030 "không giả vờ có số").
     CAPABILITY_CACHE_HIT = "capability.cache.hit"
+
+    # Plugin (doc 09 §5, doc 12 §2, ADR-0005/ADR-0018/ADR-0032, doc 19 P-M8-1/
+    # P-M8-2) — doc 05 §3.9 đã nêu tên từ đầu ("plugin.installed/removed/
+    # enabled/disabled" payload "plugin_id, version"; "plugin.crashed" payload
+    # "plugin_id, error"). `kernel/registry/registry.py::Registry._on_plugin_crash()`
+    # là caller thật đầu tiên cho CRASHED (P-M8-1) — phát khi 1 `PluginProcess`
+    # thoát bất thường/treo quá `wall_sec`, TRƯỚC khi tự restart (tối đa 3 lần,
+    # doc 09 §5). `apps/paosd/plugin_manager.py` (P-M8-2) là caller đầu tiên
+    # cho 4 event còn lại — install/uninstall/enable/disable qua `paosctl plugin`.
+    PLUGIN_INSTALLED = "plugin.installed"
+    PLUGIN_REMOVED = "plugin.removed"
+    PLUGIN_ENABLED = "plugin.enabled"
+    PLUGIN_DISABLED = "plugin.disabled"
+    PLUGIN_CRASHED = "plugin.crashed"
