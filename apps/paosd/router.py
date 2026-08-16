@@ -47,6 +47,7 @@ from kernel import clock, ids
 from kernel.errors import PaosError
 from kernel.events.bus import EventBus
 from kernel.events.types import EventType
+from kernel.permission.guard import PermissionGuard
 from kernel.redact import redact
 from kernel.registry.registry import CapabilitySpec, ProviderManifest, Registry
 from kernel.state.db import StateStore
@@ -175,6 +176,7 @@ class Router:
         self._provider_stats = ProviderStats(store)
         self._routing_policy_path = routing_policy_path
         self._cost_engine = CostEngine(store, budget_policy_path)
+        self._permission_guard = PermissionGuard(store, events)
 
     async def call(
         self,
@@ -201,10 +203,11 @@ class Router:
         vi của bất kỳ caller nào đã có hôm nay (8 Agent thật đều không truyền).
 
         `profile` (P-M6-3, doc 06 §2.2) — chọn bộ trọng số trong
-        `policies/routing.yaml::profiles`. Mặc định `"default"`. CHƯA có
-        caller nào tự đổi profile theo ngữ cảnh (rule "budget_used_pct>80 ->
-        force_profile economy" cần Cost Engine, M7) — tham số đã sẵn sàng,
-        chờ caller thật."""
+        `policies/routing.yaml::profiles`. Mặc định `"default"` — khi đó Router
+        TỰ nâng lên `"economy"` nếu chi tiêu hôm nay đã vượt `warn_at_pct`
+        (`policies/budget.yaml`, doc 06 §6 "budget_used_pct>80 -> force_profile
+        economy", P-M7-1). Truyền `profile` khác `"default"` rõ ràng luôn thắng
+        — Router không ghi đè lựa chọn caller đã tự quyết định."""
         capability_id, version_str = capability_ref.split("@")
         version = int(version_str)
         manifests = self._registry.providers_for(capability_id, version)
@@ -221,7 +224,8 @@ class Router:
         await self._publish_privacy_blocked(decision_id, process_id, capability_ref, candidates)
         eligible = [c for c in candidates if c.eligible]
         task_class = normalize_task_class(payload.get("task_class"))
-        eligible, ranked = await self._rank_candidates(eligible, task_class, profile)
+        effective_profile = await self._resolve_profile(process_id, profile)
+        eligible, ranked = await self._rank_candidates(eligible, task_class, effective_profile)
 
         if spec.cacheable and spec.cache_key_fields and eligible:
             found = await self._lookup_cache(spec, capability_id, version, payload, eligible)
@@ -266,6 +270,19 @@ class Router:
                 cache_key, capability_id, version, fb.chosen_class, fb.chosen, fb.result
             )
         return fb.result, fb.chosen
+
+    async def _resolve_profile(self, process_id: str, profile: str) -> str:
+        """doc 06 §6 "budget_used_pct>80 -> force_profile economy" (P-M7-1).
+        Chỉ tự nâng khi caller KHÔNG tự chỉ định profile (`profile ==
+        "default"`) — caller đã tự quyết định thì Router không ghi đè.
+        `estimated_cost=0.0` — chỉ cần đọc `day_used_pct`, không kiểm 1 candidate
+        cụ thể nào (đó là việc của `_check_budget()`)."""
+        if profile != _DEFAULT_PROFILE:
+            return profile
+        check = await self._cost_engine.check_budget(process_id, 0.0)
+        if check.day_used_pct > check.warn_at_pct:
+            return "economy"
+        return profile
 
     async def _rank_candidates(
         self, eligible: list[_Candidate], task_class: str, profile: str
@@ -450,12 +467,22 @@ class Router:
             f"BUDGET_{(check.tier_name or '').upper()}_{(check.action or '').upper()}"
         )
         if check.action == "ask":
+            # PermissionGuard CONFIRM (kernel/permission/guard.py) — audit_log +
+            # phát permission.approval.requested. Mặc định luôn allowed=False
+            # ("im lặng không bao giờ là đồng ý", doc 09 §3) — Router tự raise
+            # BUDGET_EXCEEDED sau, approval_id chỉ để tra cứu sau này.
+            decision = await self._permission_guard.check(
+                "cost.budget_exceeded",
+                actor=process_id,
+                target=candidate.manifest.provider_id,
+                detail={"tier": check.tier_name or "", "estimated_cost": estimate.cost},
+            )
             error = ProviderError(
                 "BUDGET_EXCEEDED",
                 f"Vượt ngân sách {check.tier_name} — cần xác nhận trước khi tiếp tục",
                 retryable=False,
                 hint="Xem policies/budget.yaml::budgets — chờ kỳ ngân sách mới hoặc sửa policy",
-                context={"tier": check.tier_name or ""},
+                context={"tier": check.tier_name or "", "approval_id": decision.approval_id or ""},
             )
             return _AttemptOutcome(None, error, stop=True)
         error = ProviderError(

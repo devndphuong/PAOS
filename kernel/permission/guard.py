@@ -44,10 +44,16 @@ class PermissionTier(StrEnum):
 # thiện đúng lúc milestone liên quan cần chúng (doc 13 M2 §"Bản đầu"):
 # vượt ngân sách -> M7, gửi dữ liệu cá nhân ra cloud -> M5, cài/bật plugin ->
 # M8, truy cập domain mạng mới -> M8, xoá Project -> chưa có milestone gán.
+#
+# P-M7-1 (doc 06 §3.2 mốc 2, doc 19): "cost.budget_exceeded" — Router
+# (apps/paosd/router.py::_check_budget) gọi khi tầng ngân sách có
+# `on_exceed: ask` bị vượt. CONFIRM mặc định luôn từ chối (xem check() bên
+# dưới) nên đây CHÍNH LÀ cơ chế "chặn và hỏi" P12 cần, không phải xây mới.
 _CONFIRM_ACTIONS = frozenset(
     {
         "fs.write_outside_workspace",
         "exec.system_command_outside_whitelist",
+        "cost.budget_exceeded",
     }
 )
 

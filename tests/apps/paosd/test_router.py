@@ -20,6 +20,7 @@ import aiosqlite
 import pytest
 import yaml
 
+from apps.paosd.cost_engine import CostEngine
 from apps.paosd.router import Router
 from kernel import clock as clock_module
 from kernel.events.bus import EventBus, EventEnvelope
@@ -378,10 +379,117 @@ async def test_budget_ask_blocks_call_entirely(
     with pytest.raises(ProviderError) as exc_info:
         await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
     assert exc_info.value.code.value == "BUDGET_EXCEEDED"
+    assert exc_info.value.context["approval_id"]  # PermissionGuard CONFIRM (P-M7-1 phần 2)
     decision = await _latest_decision(store)
     assert decision["chosen"] is None
     candidates = json.loads(decision["candidates_json"])
     assert candidates[0]["reason"] == "BUDGET_PER_JOB_ASK"
+
+
+async def test_budget_ask_goes_through_permission_guard_audit_trail(
+    events: EventBus, store: StateStore, tmp_path: Path
+) -> None:
+    """P-M7-1 phần 2 — "chặn VÀ hỏi": budget ask phải đi qua PermissionGuard
+    thật (audit_log ghi CONFIRM + phát permission.approval.requested), không
+    chỉ raise lỗi suông."""
+    caps_dir = tmp_path / "capabilities"
+    providers_dir = tmp_path / "providers"
+    _write_fixture_capability(caps_dir)
+    _write_provider(providers_dir, "provider.pricey", "p_a")
+    reg = Registry(caps_dir, providers_dir)
+    reg.load()
+    reg.preload_adapter("provider.pricey", _FakeAdapter(estimate_cost=999.0))
+
+    received: list[EventEnvelope] = []
+
+    async def _capture(envelope: EventEnvelope) -> None:
+        received.append(envelope)
+
+    events.subscribe("test", "permission.approval.requested", _capture)
+
+    budget_path = tmp_path / "policies" / "budget.yaml"
+    _write_budget_policy(
+        budget_path, {"per_job": {"max": 20, "currency": "JPY", "on_exceed": "ask"}}
+    )
+    router = Router(reg, events, store, {}, tmp_path, budget_policy_path=budget_path)
+
+    with pytest.raises(ProviderError):
+        await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
+
+    assert len(received) == 1
+    assert received[0].payload["action"] == "cost.budget_exceeded"
+    assert received[0].payload["target"] == "provider.pricey"
+
+    async def _audit_rows(conn: aiosqlite.Connection) -> list[Any]:
+        cursor = await conn.execute("SELECT action, tier, target FROM audit_log ORDER BY id")
+        return await cursor.fetchall()
+
+    rows = await store.read(_audit_rows)
+    assert any(r[0] == "cost.budget_exceeded" and r[1] == "CONFIRM" for r in rows)
+
+
+async def test_profile_auto_upgrades_to_economy_when_day_budget_warn_exceeded(
+    events: EventBus, store: StateStore, tmp_path: Path
+) -> None:
+    """P-M7-1 phần 2 (doc 06 §6) — chi tiêu hôm nay vượt warn_at_pct -> Router
+    tự chọn profile "economy" (w_c cao) thay vì "default", KHI caller không tự
+    truyền profile khác."""
+    caps_dir = tmp_path / "capabilities"
+    providers_dir = tmp_path / "providers"
+    _write_fixture_capability(caps_dir)
+    _write_provider(providers_dir, "provider.local", "p_local", provider_class="local")
+    _write_provider(providers_dir, "provider.cloud", "p_cloud", provider_class="cloud")
+    reg = Registry(caps_dir, providers_dir)
+    reg.load()
+    reg.preload_adapter("provider.local", _FakeAdapter())
+    reg.preload_adapter("provider.cloud", _FakeAdapter())
+    # đủ n>=5 cho cả 2, cloud nhỉnh hơn 1 chút -> "default"/"quality" chọn cloud,
+    # "economy" (w_c cao, w_q thấp) phải đảo sang local.
+    await _seed_provider_quality(store, "provider.local", "unknown", 0.60, 5)
+    await _seed_provider_quality(store, "provider.cloud", "unknown", 0.65, 5)
+
+    budget_path = tmp_path / "policies" / "budget.yaml"
+    budget_path.parent.mkdir(parents=True, exist_ok=True)
+    budget_path.write_text(
+        yaml.safe_dump(
+            {
+                "version": 1,
+                "budgets": {"per_day": {"max": 100, "currency": "JPY", "on_exceed": "ask"}},
+                "warn_at_pct": 80,
+            }
+        ),
+        encoding="utf-8",
+    )
+    cost_engine = CostEngine(store, budget_path)
+    await cost_engine.record_actual(
+        process_id="proc_prev",
+        task_id=None,
+        provider_id="provider.cloud",
+        capability="text.generate@1",
+        manifest_cost={"unit": "token", "in": 1.0, "out": 0.0, "currency": "JPY"},
+        usage={"in_tokens": 85, "out_tokens": 0},  # 85% > warn_at_pct=80
+    )
+
+    routing_path = tmp_path / "policies" / "routing.yaml"
+    _write_routing_policy(
+        routing_path,
+        {
+            "default": {"w_q": 0.90, "w_c": 0.0, "w_l": 0.0, "w_p": 0.10, "w_r": 0.0},
+            "profiles": {"economy": {"w_q": 0.05, "w_c": 0.0, "w_l": 0.0, "w_p": 0.95, "w_r": 0.0}},
+        },
+    )
+    router = Router(
+        reg,
+        events,
+        store,
+        {},
+        tmp_path,
+        routing_policy_path=routing_path,
+        budget_policy_path=budget_path,
+    )
+
+    _, chosen = await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
+    assert chosen == "provider.local"  # economy (w_p cao) thắng, không phải default (w_q cao)
 
 
 async def test_budget_force_local_skips_cloud_falls_back_to_local(

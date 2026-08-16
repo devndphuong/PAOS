@@ -129,6 +129,13 @@
 **Vì sao chấp nhận tạm thời:** xây `knowledge forget` (xóa cứng node/edge) sẽ MÂU THUẪN TRỰC TIẾP với chính sách đã tài liệu hóa ở doc 07 §4.4 — không phải nợ kỹ thuật, mà là phạm vi CỐ Ý không làm để không phá vỡ một quyết định thiết kế đã chốt trước đó (P-M5-3).
 **Điều kiện trả nợ:** không phải "trả nợ" theo nghĩa thông thường — nếu nhu cầu thật xuất hiện (người dùng muốn 1 node/edge riêng tư ngừng ảnh hưởng truy hồi mà không phá vỡ lịch sử nhận thức), giải pháp đúng là `paosctl knowledge invalidate <edge_id>` (set `invalidated_at`, giữ nguyên hàng — khớp thiết kế đã có), KHÔNG PHẢI xóa cứng. Đây cũng chính là cách trả BL-018 (chưa có caller nào set `invalidated_at`).
 
+### BL-021 · PermissionGuard CONFIRM chưa có luồng chờ người duyệt thật (kể cả sau khi thêm `cost.budget_exceeded`)
+
+**Phát sinh:** P-M2-5 (docstring `kernel/permission/guard.py` đã ghi rõ từ đầu), tái xác nhận ở P-M7-1 (2026-08-16, doc 19) khi thêm action CONFIRM thứ 3.
+**Hiện trạng:** `PermissionGuard.check()` cho tier CONFIRM (`fs.write_outside_workspace`, `exec.system_command_outside_whitelist`, và từ P-M7-1: `cost.budget_exceeded`) luôn trả `allowed=False` NGAY LẬP TỨC dạng "pending" — ghi audit_log, phát `permission.approval.requested`, nhưng KHÔNG có cơ chế chờ người dùng thật sự trả lời (không có `ProcessState` riêng để chờ, `paosctl` chưa có lệnh duyệt/từ chối, không có timeout 24h). Với `cost.budget_exceeded`, hệ quả là Router raise `BUDGET_EXCEEDED` ngay — đúng tinh thần P12 "an toàn mặc định" (chặn trước, không bao giờ âm thầm chi tiêu), nhưng người dùng không có đường nào để THỰC SỰ "đồng ý chi thêm" mà không sửa `policies/budget.yaml` thủ công.
+**Vì sao chấp nhận tạm thời:** doc 09 §3 tự nói rõ từ M2-5: "luồng chờ người duyệt thật chưa làm ở M2 — trả pending". P-M7-1 chỉ cần cơ chế "chặn và hỏi" (exit criteria docs 19), không yêu cầu approve/reject thật — tự xây thêm 1 state máy trạng thái mới (WAITING_APPROVAL) cho 1 action CONFIRM là trừu tượng hoá sớm khi chưa rõ UI thật (M8) cần hình dạng gì.
+**Điều kiện trả nợ:** khi có UI thật (M8) hoặc `paosctl` cần hỏi xác nhận tương tác — thiết kế `ProcessState.WAITING_APPROVAL` (đã có chỗ trong enum dạng WAITING chung, doc 02 §3.1), `paosctl approval approve/reject <approval_id>`, timeout 24h tự động reject. Áp dụng ĐỒNG THỜI cho cả 3 action CONFIRM hiện có, không chỉ `cost.budget_exceeded`.
+
 ---
 
 ## Mục chưa phân loại

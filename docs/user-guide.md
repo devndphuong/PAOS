@@ -89,6 +89,12 @@ curl -X POST localhost:8787/v1/jobs -d '{"intent":"video.create","name":"demo","
 paosctl explain <pid> --decisions   # xem lại rationale: vì sao provider này được chọn
 ```
 
+**Ngân sách 3 tầng — không bao giờ âm thầm tiêu tiền (mới — M7)** — mỗi lượt gọi capability được ước lượng chi phí (`estimate()`, đã có sẵn từ M2) TRƯỚC khi chạy, so với ngân sách `per_job/per_day/per_month` (`policies/budget.yaml`). Vượt tầng `per_job` (mặc định `on_exceed: ask`) → **chặn ngay**, đi qua Permission Guard (audit_log + `permission.approval.requested`) — không thử provider khác, không tự ý chi thêm (P12). Vượt tầng `per_day`/`per_month` (`force_local`/`block_cloud`) → chỉ loại provider cloud khỏi ứng viên, tự chuyển sang local. Sau khi gọi thành công, chi phí THẬT (từ `usage` provider trả về) được ghi vào `cost_entries`. Chi tiêu hôm nay vượt `warn_at_pct` → Router tự chuyển sang hồ sơ `economy`.
+```bash
+# provider.yaml::cost hôm nay đều 0đ (chưa có provider cloud thật) — xem
+# cost_entries qua sqlite3 workspace/.paos/state.db "select * from cost_entries"
+```
+
 **Theo dõi & giải thích mọi việc đang/đã làm** — không có "log" mù mờ, mọi quyết định dựng lại được đầy đủ từ Event Log.
 ```bash
 paosctl ps                 # liệt kê mọi job
@@ -109,8 +115,9 @@ paosctl cancel <pid>       # hủy 1 job đang chạy, không ảnh hưởng job
 - **Privacy Filter chưa có caller thật nào bật cờ** — `contains_private_l3=True` CHẶN THẬT (kiểm bằng test đối kháng), nhưng chưa Agent nào đọc lại Memory L3 để cần dùng cờ này (BL-015/BL-019) — hạ tầng sẵn sàng, chờ caller thật. Cũng chưa có provider `class: cloud` THẬT nào trong `providers/` để thử nghiệm ngoài môi trường test.
 - `paosctl knowledge` không có lệnh `forget` (quyết định có chủ đích — doc 07 §4.4 nói KG không bao giờ xóa, dùng `invalidated_at`; xem ADR-0029, BL-020).
 - **`policies/intents.yaml` mới có đúng 1 intent thật** (`video.create`) — chưa có 2 workflow cạnh tranh thật để Decision Engine chấm điểm phân biệt ngoài test (P-M6-1).
-- **Router xếp hạng được 3/5 số hạng (Q̂/P/R) — chưa có Ĉ/L̂** (cần Cost Engine M7 + latency tracking chưa xây) — công thức đầy đủ 5 trọng số vẫn chưa dùng được, dù `routing.yaml` đã có đủ 5 cột. `provider_stats` hôm nay chỉ có provider local/stub trong test — chưa provider `class: cloud` thật nào để thấy ranking thay đổi hành vi thật ngoài môi trường test.
-- **Chưa có rule engine tự đổi `profile` theo ngữ cảnh** (vd "budget_used_pct>80 → economy") — `Router.call(profile=...)` đã nhận tham số, nhưng chưa caller nào tự truyền profile khác `"default"`; rule đó cần Cost Engine (M7).
+- **Router xếp hạng được 3/5 số hạng (Q̂/P/R) — chưa dùng Ĉ để CHẤM ĐIỂM** (CostEngine đã CHẶN vượt ngân sách, nhưng `_rank_candidates()` chưa đưa chi phí vào công thức xếp hạng — 2 việc khác nhau: "được phép gọi không" vs "gọi ai tốt hơn"). L̂ (latency) vẫn chưa track. `provider_stats`/`cost_entries` hôm nay chỉ có provider local/stub trong test — chưa provider `class: cloud` thật nào (mọi `cost:` hôm nay đều 0đ) để thấy ngân sách/ranking đổi hành vi thật ngoài môi trường test.
+- **Ước lượng ngân sách chỉ per-CALL, chưa per-JOB** (mốc 1 doc 06 §3.2 "ước lượng tổng trước khi chạy" — chưa làm, cần duyệt DAG với input các bước sau CHƯA resolve lúc Job mới tạo, vấn đề riêng).
+- **PermissionGuard CONFIRM chưa có luồng chờ người duyệt thật** — `cost.budget_exceeded` (như 2 action CONFIRM khác từ M2-5) trả "pending" ngay, chưa có `paosctl` hỏi xác nhận / hết hạn 24h — đang HOÃN từ M2-5, chưa milestone nào nhận (BL-021, `docs/backlog.md`).
 
 ### 1.3b Ví dụ minh hoạ — Decision Engine chọn workflow
 
@@ -136,7 +143,7 @@ sequenceDiagram
 
 ### 1.4 Sắp tới
 
-P-M6-3 vừa xong — **đóng phạm vi lát cắt Milestone 6** (P-M6-1 → P-M6-3): `policies/routing.yaml` (trọng số default + 3 profile), `Router` chấm điểm `w_q·Q̂ + w_p·P + w_r·R` theo profile, đọc lại file mỗi lần gọi (hot reload thật), `paosctl explain --decisions` xem lại rationale. Việc **ngay tiếp theo**: **P-M7-1 — Cost Engine: estimate → record → ngân sách 3 tầng** (mở đầu Milestone 7 — đây cũng là mảnh ghép còn thiếu để Router dùng được Ĉ/L̂, hoàn tất công thức doc 06 §2.2). Lộ trình đầy đủ ở [§3](#3-lộ-trình-sắp-tới) bên dưới.
+P-M7-1 vừa xong — **mở đầu Milestone 7 (Cost/Energy/Time)**: `apps/paosd/cost_engine.py` — `estimate()` (đã có từ M2-2) so với ngân sách `policies/budget.yaml` TRƯỚC mỗi lượt gọi, `cost_entries` (bảng có từ M0, 0 writer tới giờ) ghi chi phí THẬT sau khi gọi thành công. `on_exceed: ask` đi qua `PermissionGuard` CONFIRM thật (không tự chế) — chặn ngay, không âm thầm chi tiêu (P12). Chi tiêu vượt `warn_at_pct` → Router tự chuyển hồ sơ `economy` (đóng nốt liên kết doc 06 §6, tham số `profile` từ P-M6-3 giờ có caller thật). Việc **ngay tiếp theo**: **P-M7-2 — Energy Engine: GPU/CPU/pin/nhiệt, hàng đợi thay vì chạy đè**. Lộ trình đầy đủ ở [§3](#3-lộ-trình-sắp-tới) bên dưới.
 
 ---
 
@@ -257,7 +264,7 @@ Theo kế hoạch 10 milestone (~31 tuần lập trình thuần, 11–15 tháng 
 | M4 | Quality & Self-Correction | Tự sửa, tự chấm điểm, ghi `edit_rate` | ✅ Xong |
 | M5 | Memory & Knowledge | Nhớ sở thích, xây Knowledge Graph | ✅ Phạm vi xong · 2/5 tiêu chí trọn vẹn |
 | M6 | Decision Engine | Tự chọn workflow phù hợp | ✅ Phạm vi xong — chọn workflow + xếp hạng provider (Q̂/P/R) + routing.yaml/profile + explain --decisions. Chờ M7 (Ĉ/L̂) mới đủ 5/5 số hạng |
-| M7 | Cost / Energy / Time | Chạy đêm, tiết kiệm, đúng ngân sách | ⚪ Chưa tới |
+| M7 | Cost / Energy / Time | Chạy đêm, tiết kiệm, đúng ngân sách | 🔶 Đang làm — P-M7-1 xong (Cost Engine: estimate/record/ngân sách 3 tầng) |
 | M8 | Plugin System & UI | Cài plugin, có giao diện Web thật | ⚪ Chưa tới |
 | M9 | Research Plugin | Nghiên cứu chủ đề, tích luỹ tri thức thật | ⚪ Chưa tới |
 | — | Hardening | Đạt toàn bộ chỉ tiêu chất lượng phi chức năng | ⚪ Liên tục |

@@ -56,6 +56,7 @@ class BudgetCheck:
     action: str | None
     tier_name: str | None
     day_used_pct: float
+    warn_at_pct: float
 
 
 def _load_budget_policy(path: Path) -> BudgetPolicy | None:
@@ -134,7 +135,9 @@ class CostEngine:
         sau CHƯA resolve, xem docstring module `apps/paosd/router.py`)."""
         policy = _load_budget_policy(self._budget_policy_path)
         if policy is None:
-            return BudgetCheck(allowed=True, action=None, tier_name=None, day_used_pct=0.0)
+            return BudgetCheck(
+                allowed=True, action=None, tier_name=None, day_used_pct=0.0, warn_at_pct=100.0
+            )
 
         now = clock.now()
         start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
@@ -155,9 +158,19 @@ class CostEngine:
                 continue
             if used_by_tier[tier_name] + estimated_cost > tier.max:
                 return BudgetCheck(
-                    allowed=False, action=tier.on_exceed, tier_name=tier_name, day_used_pct=day_pct
+                    allowed=False,
+                    action=tier.on_exceed,
+                    tier_name=tier_name,
+                    day_used_pct=day_pct,
+                    warn_at_pct=policy.warn_at_pct,
                 )
-        return BudgetCheck(allowed=True, action=None, tier_name=None, day_used_pct=day_pct)
+        return BudgetCheck(
+            allowed=True,
+            action=None,
+            tier_name=None,
+            day_used_pct=day_pct,
+            warn_at_pct=policy.warn_at_pct,
+        )
 
     async def _sum_for_process(self, process_id: str) -> float:
         async def _select(conn: aiosqlite.Connection) -> float:
