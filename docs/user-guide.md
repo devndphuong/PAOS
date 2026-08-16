@@ -1,6 +1,6 @@
 # Hướng dẫn sử dụng & Luồng dự án
 
-> Tài liệu SỐNG — cập nhật mỗi khi có chức năng mới (P-CLOSE của mỗi lát cắt), không phải ảnh chụp một lần. Khác với `docs/00-20` (đặc tả thiết kế, ổn định), file này mô tả **thực trạng chạy được hôm nay**, cùng nhóm với `docs/backlog.md`/`docs/environment-baseline.md`. Cập nhật gần nhất: lát cắt **P-M4-3** (2026-08-16) — **M4 hoàn tất**.
+> Tài liệu SỐNG — cập nhật mỗi khi có chức năng mới (P-CLOSE của mỗi lát cắt), không phải ảnh chụp một lần. Khác với `docs/00-20` (đặc tả thiết kế, ổn định), file này mô tả **thực trạng chạy được hôm nay**, cùng nhóm với `docs/backlog.md`/`docs/environment-baseline.md`. Cập nhật gần nhất: lát cắt **P-M5-0** (2026-08-16) — 2 ADR còn nợ trước M5 đã chốt, chưa có code mới (đúng phạm vi P-M5-0: chỉ quyết định, không code).
 
 ---
 
@@ -71,7 +71,7 @@ paosctl cancel <pid>       # hủy 1 job đang chạy, không ảnh hưởng job
 
 ### 1.4 Sắp tới
 
-M4 (Quality & Self-Correction) đã hoàn tất. Việc **ngay tiếp theo**: **P-M5-0 — chốt ADR-0015 (vector search + embedding) và ADR-0016 (chiến lược chunking)** trước khi bắt đầu code M5 (Memory & Knowledge — 5 tầng memory, retrieval lai, consolidation hàng đêm, Knowledge Graph, Privacy Filter). Lộ trình đầy đủ ở [§3](#3-lộ-trình-sắp-tới) bên dưới.
+M4 (Quality & Self-Correction) đã hoàn tất. Hai ADR còn nợ trước M5 vừa chốt (P-M5-0, 2026-08-16): **ADR-0015** — `sqlite-vec` cho vector search (xác nhận lại ADR-0002) + `bge-m3` qua Ollama cho embedding (đa ngôn ngữ, chạy local, hợp nội dung tiếng Việt); **ADR-0016** — chunking bằng cửa sổ token cố định (512 token, overlap 64) có tái lập được tuyệt đối. Việc **ngay tiếp theo**: **P-M5-1 — dựng 5 tầng memory + retrieval lai** (bắt đầu code M5 thật). Lộ trình đầy đủ ở [§3](#3-lộ-trình-sắp-tới) bên dưới.
 
 ---
 

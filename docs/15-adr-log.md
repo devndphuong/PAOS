@@ -141,6 +141,55 @@
 
 ---
 
+## ADR-0015 — `sqlite-vec` cho vector search (xác nhận ADR-0002); `bge-m3` qua Ollama cho embedding
+**Trạng thái:** Accepted · 2026-08 · Quyết định P-M5-0 ([doc 19](19-prompt-library.md)), chốt trước M5
+
+**Bối cảnh:** doc 07 §3 (Truy hồi) đặt "Vector search (top-k=8, ngưỡng cosine ≥ 0.62)" là bước 3 của chiến lược lai. Doc 03 §3 đã "chừa cột" `memory_vectors(memory_id, embedding BLOB, model TEXT, dim INTEGER)` với chú thích `sqlite-vec`, và ADR-0002 đã nhắc "vector search qua sqlite-vec" như một hệ quả phụ — nhưng chưa từng có ADR riêng cân nhắc phương án, và chưa chọn MODEL embedding cụ thể. Quy mô dữ liệu là MỘT người dùng, MỘT máy (ADR-0011): L3 (sở thích cá nhân) cỡ hàng trăm mục; L4 (World Cache — tài liệu đã đọc, đã chunk theo ADR-0016) cỡ vài nghìn tới thấp chục nghìn chunk sau nhiều năm sử dụng thật — không phải quy mô cần ANN (approximate nearest neighbor) thật sự.
+
+**Quyết định:**
+1. **Vector search: `sqlite-vec`** (xác nhận lại ADR-0002, không đổi). Dùng virtual table `vec0` của `sqlite-vec` lưu ngay trong `state.db` hiện có; tìm kiếm brute-force (flat, chính xác 100%, không xấp xỉ) trên cosine similarity — đủ nhanh (<50ms ước tính) ở quy mô vài chục nghìn vector 1024 chiều trên CPU thường.
+2. **Embedding mặc định: `bge-m3`** (BAAI, 568M tham số, 1024 chiều, hỗ trợ >100 ngôn ngữ bao gồm tiếng Việt tốt), chạy qua provider Ollama đã có sẵn từ M0 (`providers/ollama/`) — capability mới `text.embed@1` (song song `text.generate@1`, cùng lớp Capability). Chạy 100% local (LOC-03), không cần tài khoản cloud.
+3. `memory_vectors.model`/`dim` lưu kèm mỗi vector để PHÁT HIỆN lệch model — đổi embedding model bắt buộc re-embed toàn bộ (không âm thầm trộn vector từ 2 model khác nhau vào cùng 1 lần tìm kiếm).
+
+**Lý do:** nội dung PAOS (script video, ghi chú, tài liệu người dùng đọc) chủ yếu **tiếng Việt** — chất lượng đa ngôn ngữ là tiêu chí quyết định, không phải tốc độ thô; `bge-m3` xếp hạng cao trên benchmark đa ngôn ngữ (MTEB) và có hỗ trợ tiếng Việt thật, hơn hẳn các model embedding phổ biến khác vốn tối ưu chủ yếu cho tiếng Anh. Ở quy mô dữ liệu MỘT người dùng, chi phí "chậm hơn ANN" của brute-force sqlite-vec là không đáng kể so với lợi ích "0 dịch vụ nền, 1 file trạng thái duy nhất" (ADR-0002/ADR-0007/P11).
+
+**Hệ quả:** cần định nghĩa capability mới `text.embed@1` (`capabilities/text.embed/1/`, input_schema/output_schema theo ADR-0022) — việc này thuộc P-M5-1, ADR này chỉ CHỐT lựa chọn, chưa triển khai. `bge-m3` (568M) nặng hơn các lựa chọn nhẹ đã cân nhắc — trên máy không GPU/GPU yếu (xem `docs/environment-baseline.md`), embed qua CPU sẽ chậm hơn model nhỏ; chấp nhận được vì phần lớn việc embed xảy ra ở Consolidation Job chạy đêm (doc 07 §5.2), không chặn tương tác trực tiếp của người dùng — chỉ embed CÂU TRUY VẤN (ngắn, tức thời) mới nằm trên đường tương tác, và 1 câu ngắn embed nhanh bất kể model. Đổi model sau này = job backfill re-embed toàn bộ `memory_vectors` (chưa thiết kế job đó ở ADR này).
+
+**Đã loại — vector search:**
+1. **FAISS** — thư viện ANN chuẩn công nghiệp, hiệu năng đỉnh cao ở quy mô triệu vector, rất trưởng thành. Loại vì không có persistence built-in (phải tự viết lớp lưu/khôi phục index song song `state.db`, mất tính "1 file = trạng thái" của ADR-0002), biên dịch native phức tạp hơn trên Windows, và lợi ích ANN không bù được overhead vận hành ở quy mô vài chục nghìn vector — vi phạm P11 (Boring technology).
+2. **Vector DB ngoài (Qdrant/Weaviate/Milvus)** — mạnh, API rõ ràng, scale ngang tốt cho hệ thống nhiều người dùng. Loại vì đòi thêm một tiến trình dịch vụ chạy song song `paosd` — đúng loại rủi ro ADR-0002/ADR-0007 (0 dịch vụ nền) và ADR-0011 (1 người, 1 máy) đã cố tránh từ đầu; hoàn toàn thừa cho quy mô dữ liệu thật.
+3. **usearch** — thư viện ANN nhúng nhẹ hơn FAISS, header-only, có binding Python, không cần dịch vụ riêng. Loại vì vẫn là một index RIÊNG ngoài SQLite (thêm 1 định dạng file cần tự đồng bộ với `state.db` — sai lúc restore/backup dễ làm 2 nguồn lệch nhau), trong khi `sqlite-vec` cho persistence "miễn phí" ngay trong file đã có, đúng tinh thần ADR-0002.
+
+**Đã loại — embedding model:**
+1. **`all-MiniLM-L6-v2`** — cực nhẹ (22M tham số), rất nhanh trên CPU, chuẩn phổ biến trong RAG tiếng Anh. Loại vì huấn luyện chủ yếu tiếng Anh — tiếng Việt yếu; 384 chiều thấp giảm khả năng phân biệt ngữ nghĩa cho nội dung đa dạng tích luỹ nhiều năm.
+2. **`nomic-embed-text`** (qua Ollama) — context dài (8192 token), model embedding phổ biến nhất trong hệ sinh thái Ollama, nhẹ hơn `bge-m3` đáng kể. Loại vì cũng tối ưu chủ yếu cho tiếng Anh, đa ngôn ngữ yếu hơn rõ rệt so với `bge-m3` trên benchmark MTEB đa ngôn ngữ — không đạt tiêu chí quyết định (chất lượng tiếng Việt).
+3. **Cloud embedding API (OpenAI `text-embedding-3-small`, Cohere `embed-multilingual-v3`)** — chất lượng/đa ngôn ngữ tốt nhất hiện có, không tốn tài nguyên máy cá nhân. Loại làm MẶC ĐỊNH vì Memory L3 tuyệt đối không được rời máy khi `privacy: private` (doc 07 §6, ADR-0007/P2) — vi phạm ngay từ nguyên tắc gốc nếu dùng cho L3. Có thể để ngỏ như một provider CLASS=cloud thay thế CHỈ cho L4 World Cache có `privacy: shared` — không phải phạm vi quyết định của ADR này, cân nhắc lại ở M5 nếu có nhu cầu thật.
+
+---
+
+## ADR-0016 — Chunking: cửa sổ token cố định có overlap, hàm thuần tái lập được
+**Trạng thái:** Accepted · 2026-08 · Quyết định P-M5-0 ([doc 19](19-prompt-library.md)), chốt trước M5
+
+**Bối cảnh:** doc 01 mô tả luồng xử lý tài liệu dài "OCR → chunk → dịch → tóm tắt" (ingest vào L4 World Cache, doc 07 §1) — văn bản dài phải chia nhỏ trước khi embed (ADR-0015), vừa vì giới hạn ngữ cảnh thực tế của việc tạo ra một vector "có ý nghĩa" (nhồi cả tài liệu vào 1 vector làm loãng ngữ nghĩa), vừa để đơn vị truy hồi (doc 07 §3) đủ nhỏ, đủ liên quan. Ràng buộc bắt buộc từ doc 19 P-M5-0: **chunking phải tái lập được — cùng tài liệu, cùng cấu hình → cùng chunk**, mọi lần, mọi máy.
+
+**Quyết định:** chunking theo **cửa sổ token cố định có overlap** (fixed-size token window), KHÔNG theo ranh giới ngữ nghĩa (câu/đoạn văn) ở v1:
+- `chunk_size` mặc định **512 token** (đo bằng tokenizer CỦA CHÍNH embedding model đã chọn ở ADR-0015 — XLM-RoBERTa tokenizer của `bge-m3`, giới hạn thật của model là 8192 token nhưng 512 giữ mỗi chunk tập trung 1 ý, khớp thực hành phổ biến cho RAG).
+- `overlap` mặc định **64 token** (~12.5%) — chunk kế tiếp lặp lại 64 token cuối của chunk trước, giảm mất ngữ cảnh khi một câu/ý bị cắt đúng ở ranh giới.
+- Cắt theo **ranh giới từ** (tách theo khoảng trắng trước khi gộp token) — không bao giờ cắt giữa một từ, đặc biệt quan trọng với tiếng Việt (tổ hợp dấu thanh dễ vỡ nếu cắt sai vị trí byte/ký tự).
+- Chunking là **hàm thuần**: `chunk(text, config) -> list[Chunk]`, không đọc trạng thái ẩn, không phụ thuộc thời điểm chạy hay phiên bản model đang dùng lúc gọi — cùng `text` + cùng `config` → CÙNG kết quả tuyệt đối, mọi lúc, mọi máy.
+- Re-chunk khi VÀ CHỈ KHI: nội dung tài liệu đổi (hash nội dung khác) HOẶC `chunk_size`/`overlap` đổi (một `chunk_config_version` lưu kèm để nhận diện lệch cấu hình, cùng tinh thần `memory_vectors.model` ở ADR-0015).
+
+**Lý do:** cửa sổ cố định là baseline đơn giản nhất đạt được yêu cầu tái lập TUYỆT ĐỐI — bất kỳ hình thức "chunking ngữ nghĩa" nào dùng LLM để tự quyết định ranh giới ý đều không tất định (đổi provider/model qua thời gian → chunk khác nhau cho CÙNG tài liệu, phá vỡ khả năng so sánh/rebuild). Overlap 12.5% đánh đổi một lượng nhỏ dung lượng lưu trùng lặp để giảm đáng kể rủi ro mất ngữ cảnh ở biên — hợp lý ở quy mô dữ liệu cá nhân.
+
+**Hệ quả:** chunk có thể cắt giữa câu/đoạn văn tự nhiên — chất lượng truy hồi ở biên chunk kém hơn semantic chunking lý tưởng; chấp nhận cho v1, nâng cấp khi có bằng chứng thật đo được vấn đề (P4 — chưa có 2 ca dùng thật cần semantic chunking). Tokenizer gắn chặt với embedding model đã chọn (ADR-0015) — đổi embedding model kéo theo đổi tokenizer, bắt buộc re-chunk TOÀN BỘ trước khi re-embed (thứ tự: re-chunk → re-embed, không thể chỉ re-embed với chunk cũ nếu tokenizer đổi).
+
+**Đã loại:**
+1. **Semantic chunking (tách theo câu/đoạn văn bằng NLP, hoặc để LLM tự quyết định ranh giới ý)** — chất lượng truy hồi tốt hơn ở biên chunk, giữ nguyên vẹn một ý trong một chunk. Loại ở v1 vì: dùng LLM phá vỡ thẳng yêu cầu tái lập được (không tất định qua thời gian/model); ngay cả dùng NLP tất định (vd sentence tokenizer tiếng Việt) thì độ phức tạp thêm (cần thư viện NLP tiếng Việt riêng, xử lý viết tắt/số thứ tự dễ nhầm ranh giới câu) không tương xứng lợi ích đo được ở quy mô dữ liệu cá nhân hiện tại.
+2. **Chunk theo số KÝ TỰ thay vì token** — đơn giản hơn (không cần tokenizer lúc chunk, tách rời khỏi lựa chọn model), tính toán rẻ hơn. Loại vì tiếng Việt có mật độ ký tự/token khác biệt đáng kể so với tiếng Anh (dấu thanh, âm ghép, từ Hán-Việt) — cùng số ký tự có thể chênh lệch số token đáng kể giữa các đoạn văn khác nhau, khiến chunk không đồng đều về "lượng ngữ nghĩa" thật sự đưa vào embedding model, triệt tiêu chính lợi ích của việc giới hạn theo token.
+3. **Không overlap (cắt liền mạch, non-overlapping)** — đơn giản nhất, không tốn thêm dung lượng lưu trùng lặp giữa các chunk. Loại vì mất ngữ cảnh nghiêm trọng khi một ý quan trọng bị cắt đúng ở ranh giới chunk — ý đó bị chia đôi, không chunk nào giữ đủ ngữ cảnh để truy hồi đúng; đánh đổi ~12.5% dung lượng lấy overlap là hợp lý so với rủi ro mất thông tin.
+
+---
+
 ## ADR-0021 — Framework web chỉ sống ở `apps/paosd/`
 **Trạng thái:** Accepted · 2026-08 · Quyết định Ngày 0 ([doc 18 §3](18-day0-implementation-playbook.md))
 
@@ -241,11 +290,11 @@ Không có `&&`/`||` để gộp nhiều điều kiện — muốn logic phức 
 
 | Dự kiến | Chủ đề | Cần trước |
 |---|---|---|
-| ADR-0015 | Chọn thư viện vector search cụ thể + mô hình embedding | M5 |
-| ADR-0016 | Chiến lược chunking tài liệu dài | M5 |
 | ADR-0017 | Công nghệ UI (Web local vs Tauri) | M8 |
 | ADR-0018 | Định dạng và cơ chế phân phối plugin | M8 |
 | ADR-0019 | Chiến lược đồng bộ nhiều máy | v2 |
 | ADR-0020 | Chữ ký số cho plugin | v2 |
+
+**ADR-0015/0016 đã chốt (P-M5-0, 2026-08-16)** — xem đầy đủ ở trên, đúng lúc cần trước M5.
 
 **Về thứ tự số:** ADR-0015→0020 được đánh số trước (đặt chỗ khi backlog được nhận diện) nhưng quyết định sau, đúng lúc milestone cần. ADR-0021→0024 lại được **quyết định sớm hơn** — chúng là các quyết định kỹ thuật bắt buộc phải chốt ngay ở Ngày 0 để M0 có nền để đứng ([doc 18 §3](18-day0-implementation-playbook.md)), nên số ADR không đơn điệu theo thời gian chốt. Số ADR chỉ là định danh duy nhất, không phải thứ tự thời gian — đọc **Trạng thái** và ngày để biết cái nào đã Accepted.
