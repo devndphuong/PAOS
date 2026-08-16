@@ -1,6 +1,6 @@
 # Hướng dẫn sử dụng & Luồng dự án
 
-> Tài liệu SỐNG — cập nhật mỗi khi có chức năng mới (P-CLOSE của mỗi lát cắt), không phải ảnh chụp một lần. Khác với `docs/00-20` (đặc tả thiết kế, ổn định), file này mô tả **thực trạng chạy được hôm nay**, cùng nhóm với `docs/backlog.md`/`docs/environment-baseline.md`. Cập nhật gần nhất: lát cắt **P-M5-2** (2026-08-16) — PAOS bắt đầu tự học sở thích từ hành vi quan sát được (chưa qua Agent nào dùng lại).
+> Tài liệu SỐNG — cập nhật mỗi khi có chức năng mới (P-CLOSE của mỗi lát cắt), không phải ảnh chụp một lần. Khác với `docs/00-20` (đặc tả thiết kế, ổn định), file này mô tả **thực trạng chạy được hôm nay**, cùng nhóm với `docs/backlog.md`/`docs/environment-baseline.md`. Cập nhật gần nhất: lát cắt **P-M5-3** (2026-08-16) — Knowledge Graph cá nhân: `KnowledgeExtractor` tự trích entity từ artifact thật vào `kg_nodes`/`kg_edges`, mọi edge có provenance, truy hồi lai (doc 07 §3) giờ đủ 5/5 bước (KG walk 2-hop mới thêm).
 
 ---
 
@@ -63,6 +63,13 @@ paosctl memory search "tone chuyên nghiệp" --tier L3  # truy hồi lai, xếp
 paosctl memory review           # gộp theo trạng thái áp dụng, tầng L3 mặc định
 ```
 
+**Knowledge Graph cá nhân tự lớn dần theo mỗi job (mới — M5)** — mỗi kịch bản/dàn ý/tóm tắt sinh ra được quét qua danh sách thuật ngữ đã biết (MongoDB, Docker, Database...), tạo/củng cố node + gắn cạnh `learned_from` về artifact nguồn — mọi cạnh đều truy được "vì sao PAOS biết cái này" (doc 07 §4.4). `paosctl memory search` giờ tự dùng KG này (bước 2, "KG walk 2-hop") khi câu hỏi nhắc tới một entity đã biết, không chỉ vector search.
+```bash
+paosctl knowledge list --type Technology     # duyệt node theo loại
+paosctl knowledge show <node_id>             # 1 node kèm mọi cạnh — provenance đầy đủ
+paosctl knowledge export                     # xuất knowledge/graph.jsonld (thủ công, doc 07 §4.4)
+```
+
 **Theo dõi & giải thích mọi việc đang/đã làm** — không có "log" mù mờ, mọi quyết định dựng lại được đầy đủ từ Event Log.
 ```bash
 paosctl ps                 # liệt kê mọi job
@@ -78,12 +85,13 @@ paosctl cancel <pid>       # hủy 1 job đang chạy, không ảnh hưởng job
 - **Cơ chế tự sửa kịch bản (M4) chưa nối vào luồng sản xuất video thật** — mới chạy ở 1 luồng riêng (`workflows/script_with_review/`) để chứng minh cơ chế đúng, chưa thay bước viết kịch bản trong UC1 (BL-009).
 - **Eval harness (M4) mới có bộ mẫu nhỏ (6 mẫu)**, chưa phải quy mô 30-50 mẫu đầy đủ (BL-011); `scripts/run_eval.py` cũng chưa cưỡng chế "judge khác provider generator" như luồng production (BL-010).
 - **Học được nhưng chưa AI nào dùng lại** — `MemoryWriter` tự học sở thích thật (P-M5-2), nhưng chưa Agent nào (`PlanningAgent`, `ScriptAgent`...) đọc lại để áp dụng — "học" xong, chưa "dùng" (BL-015). Sửa tay hạ confidence ở MỨC CẢ JOB, chưa phân biệt được trường nào sai (BL-016).
-- **Truy hồi lai (M5) mới có 4/5 bước** — thiếu bước Knowledge Graph walk (BL-013, chờ KG ở P-M5-3). `paosctl memory` chưa có lệnh `forget` (nút quên, chờ P-M5-4).
+- **Knowledge Graph chỉ nhận diện thuật ngữ có trong danh sách đã biết** (~40 mục, `sdk/kg_extract.py::KNOWN_TERMS`) — không phải NLU/LLM thật (quyết định có chủ đích, ADR-0028, để giữ tính TẤT ĐỊNH cần cho "rebuild từ replay"); bỏ sót thuật ngữ chưa có trong danh sách (BL-017). Quan hệ suy ra được CHỈ có `learned_from` (entity → artifact nguồn) — chưa suy luận `is_a`/`alternative_to` giữa các entity. Cơ chế phát hiện mâu thuẫn đã xây và kiểm thật nhưng chưa có đường trích `prefers`/`avoids` thật để kích hoạt (BL-018). Số node tích luỹ từ sử dụng thật còn ít — cần dùng PAOS qua thời gian, không phải thứ 1 lát cắt code tạo ra được.
+- `paosctl memory` chưa có lệnh `forget` (nút quên, chờ P-M5-4 — Privacy Filter).
 - **Chưa tự chọn cách làm tốt nhất** (Decision Engine, M6) — workflow phải chỉ định tay qua `workflow_ref`.
 
 ### 1.4 Sắp tới
 
-P-M5-2 vừa xong: `sdk/preference.py` (công thức `confidence` doc 07 §2.1) + `MemoryWriter` (nghe `kernel.process.created`/`quality.artifact.edited` thật, học/hạ sở thích tự động) + `paosctl memory review`. "Consolidation job hàng đêm" ở đây chạy PHẢN ỨNG THEO EVENT (không phải lịch cron — doc 18 §8 đã hoãn lịch tự động tới trước M7), việc còn lại của tầm nhìn doc 07 §5.2 (báo cáo hàng tuần, EWMA provider/prompt) chưa thuộc phạm vi M5. Việc **ngay tiếp theo**: **P-M5-3 — Knowledge Graph + extractor + provenance**. Lộ trình đầy đủ ở [§3](#3-lộ-trình-sắp-tới) bên dưới.
+P-M5-3 vừa xong: `kg_nodes`/`kg_edges` (migration 008) + `sdk/kg_extract.py` (trích entity tất định, ADR-0028) + `KnowledgeStore`/`KnowledgeExtractor` (`apps/paosd/`) + `GET/POST /v1/knowledge/*` + `paosctl knowledge list/show/export` + KG walk 2-hop nối vào `MemoryRetriever` (trả nợ BL-013, đủ 5/5 bước truy hồi lai doc 07 §3). Việc **ngay tiếp theo**: **P-M5-4 — Privacy Filter + `paosctl memory/knowledge` mở rộng + nút quên**. Lộ trình đầy đủ ở [§3](#3-lộ-trình-sắp-tới) bên dưới.
 
 ---
 
@@ -202,7 +210,7 @@ Theo kế hoạch 10 milestone (~31 tuần lập trình thuần, 11–15 tháng 
 | M2 | Capability & Provider | Đổi provider không sửa code | ✅ Xong |
 | M3 | Agent & Workflow | Video plugin chạy hoàn chỉnh | ✅ Xong |
 | M4 | Quality & Self-Correction | Tự sửa, tự chấm điểm, ghi `edit_rate` | ✅ Xong |
-| M5 | Memory & Knowledge | Nhớ sở thích, xây Knowledge Graph | 🟡 Đang làm · 3/5 |
+| M5 | Memory & Knowledge | Nhớ sở thích, xây Knowledge Graph | 🟡 Đang làm · 4/5 |
 | M6 | Decision Engine | Tự chọn workflow phù hợp | ⚪ Chưa tới |
 | M7 | Cost / Energy / Time | Chạy đêm, tiết kiệm, đúng ngân sách | ⚪ Chưa tới |
 | M8 | Plugin System & UI | Cài plugin, có giao diện Web thật | ⚪ Chưa tới |

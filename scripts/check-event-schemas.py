@@ -96,6 +96,11 @@ PAST_TENSE_OK = {
     # có trong doc 05 gốc §3.7 (đặt tên sẵn từ đầu dự án, cùng tiền lệ
     # "progress"/"rendered" — lần này khớp PAST_TENSE_OK ngay từ đầu).
     "written",
+    # P-M5-3 — "detected" (knowledge.conflict.detected), thì quá khứ hợp lệ
+    # chuẩn, ĐÃ có trong doc 05 gốc §3.7 (đặt tên sẵn từ đầu dự án, cùng tiền
+    # lệ "written" ở trên). "created" (knowledge.node.created/knowledge.edge.created)
+    # đã có sẵn trong danh sách từ trước, không cần thêm.
+    "detected",
 }
 
 errors: list[str] = []

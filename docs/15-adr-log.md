@@ -288,6 +288,27 @@ Không có `&&`/`||` để gộp nhiều điều kiện — muốn logic phức 
 
 ---
 
+## ADR-0028 — Trích entity cho Knowledge Graph: danh sách thuật ngữ đã biết, tất định, không LLM
+**Trạng thái:** Accepted · 2026-08 · Quyết định P-M5-3 ([doc 19](19-prompt-library.md))
+
+**Bối cảnh:** doc 07 §4 định nghĩa Knowledge Graph cá nhân (12 loại node, 13 loại quan hệ) và yêu cầu `KnowledgeExtractor` tự động biến văn bản artifact (script, plan, summary) thành node/edge có provenance. Doc 13 M5 exit criterion "Rebuild KG từ replay event cho kết quả tương đương" đặt một ràng buộc cứng: toàn bộ pipeline trích xuất phải là **hàm thuần của event log** — cùng chuỗi event, phát lại theo cùng thứ tự, ở bất kỳ máy nào, bất kỳ lúc nào, phải cho ra một đồ thị TƯƠNG ĐƯƠNG. Đây là ràng buộc chưa milestone nào trước đó phải đối mặt trực tiếp ở mức "nội dung tự do do người dùng viết" (khác `sdk/rubric.py`/`sdk/eval.py` vốn chấm điểm, không sinh dữ liệu mới ghi vào một kho tri thức tích luỹ dài hạn).
+
+**Quyết định:** `sdk/kg_extract.py::extract_entities()` trích entity bằng cách khớp CHÍNH XÁC (không phân biệt hoa/thường) một danh sách thuật ngữ đã biết cố định trong code (`KNOWN_TERMS`, ví dụ MongoDB/PostgreSQL/Docker/Database...), KHÔNG gọi ra ngoài, KHÔNG dùng LLM. Quan hệ suy ra được CHỈ có 1 loại: mỗi entity trích từ 1 artifact được gắn cạnh `learned_from` tới node `Source` đại diện artifact đó (đúng nguyên văn ví dụ doc 07 §4.3) — không suy luận `is_a`/`alternative_to`/`depends_on`... giữa các entity cùng xuất hiện trong 1 văn bản.
+
+**Lý do:**
+1. **Tất định là điều kiện CẦN, không phải "nên có"** — LLM sinh văn bản không tất định qua thời gian (đổi model/checkpoint/nhiệt độ decode giữa 2 lần chạy cho kết quả khác nhau), vi phạm thẳng exit criterion "rebuild từ replay" ở trên. Cache tuyệt đối kết quả LLM cho MỌI văn bản artifact từng có là không thực tế (là chính bài toán "lưu lại toàn bộ output LLM mãi mãi", không giải quyết gì so với việc không tất định).
+2. **Suy luận quan hệ ngữ nghĩa (`is_a`, `alternative_to`...) đòi NLU thật** — một bảng tra cứu tất định không có cách nào biết "PostgreSQL là một lựa chọn thay thế MongoDB" từ câu văn tự do mà không đoán mò/sai nhiều. Giả vờ suy luận được bằng heuristic (vd "2 entity cùng câu → is_a lẫn nhau") sẽ tạo ra rất nhiều cạnh SAI, phá chất lượng đồ thị (doc 07 §4.4) ngay từ lần dùng thật đầu tiên — vi phạm P8 (THẬT THÀ hơn giả vờ).
+3. **Độ phủ thấp hơn NER tổng quát là đánh đổi CHẤP NHẬN ĐƯỢC cho v1** — mở rộng `KNOWN_TERMS` là việc lặp lại đơn giản (thêm dòng), không phải rủi ro kiến trúc, đúng tinh thần ADR-0016 (chọn baseline đơn giản, tái lập được, nâng cấp khi có bằng chứng thật đo được cần).
+
+**Hệ quả:** `KnowledgeExtractor` (P-M5-3) sẽ bỏ sót nhiều entity thật chưa có trong danh sách (đặc biệt thuật ngữ mới/hiếm) — chấp nhận được vì độ CHÍNH XÁC của những gì có trong KG quan trọng hơn độ ĐẦY ĐỦ ở giai đoạn này (doc 07 §4.4 "chất lượng đồ thị" đặt trước số lượng). Cơ chế phát hiện mâu thuẫn (`CONTRADICTORY_RELATIONS`, `KnowledgeStore.create_edge()`) được xây SẴN và kiểm bằng test thật, nhưng KHÔNG có đường trích `prefers`/`avoids` thật từ văn bản tự do ở lát cắt này — sẵn sàng cho caller tương lai (M9 Research Plugin, hoặc mở rộng extractor) khi có tín hiệu đáng tin hơn để dùng (doc 07 §2 preference learning từ HÀNH VI quan sát được, không phải parse câu văn, là mô hình đã chọn cho tín hiệu prefers/avoids — xem `apps/paosd/memory_writer.py`).
+
+**Đã loại:**
+1. **Capability LLM mới (`text.extract_entities@1`, theo mẫu ADR-0004/ADR-0022)** — nhất quán kiến trúc nhất (mọi truy cập AI qua Capability), tận dụng được model thật đã có (`ollama`/`gpt`) cho chất lượng trích xuất cao hơn nhiều so với bảng tra cố định. Loại vì không tất định (lý do #1 ở trên) trừ khi cache kết quả tuyệt đối theo `sha256(nội dung)` — khả thi về mặt kỹ thuật (giống content-addressed cache đã có, doc 03 §5) nhưng đổi bài toán "trích entity" thành "cache mọi kết quả LLM mãi mãi, không bao giờ re-run dù model tốt hơn ra đời" — một ràng buộc nặng hơn lợi ích thu được ở quy mô artifact hiện tại (script/plan/summary ngắn), có thể cân nhắc lại khi có nhu cầu thật lớn hơn (M9).
+2. **Heuristic tổng quát "mọi từ viết hoa là entity" (naive capitalization-based NER)** — không cần danh sách thủ công, tự mở rộng theo nội dung mới. Loại vì độ chính xác thấp, đặc biệt với tiếng Việt (không có quy ước viết hoa danh từ riêng nghiêm ngặt như tiếng Anh, đầu câu/sau dấu chấm dễ nhầm) — sẽ tạo rất nhiều node rác ngay từ lần chạy thật đầu tiên, đúng loại lỗi doc 07 §4.4 muốn tránh.
+3. **Thư viện NER tất định có sẵn (spaCy, underthesea cho tiếng Việt)** — chất lượng cao hơn bảng tra tay, vẫn tất định (không gọi LLM). Loại vì thêm phụ thuộc ngoài nặng (model NER vài trăm MB, cần tải/quản lý version riêng biệt khỏi ADR-0015 đã chọn cho embedding) chỉ để giải quyết vấn đề "nhận diện danh từ riêng" mà một bảng tra ~40 mục đã đủ cho quy mô nội dung thật hiện có (script/plan video, không phải kho văn bản khổng lồ) — vi phạm P11 (Boring technology), cân nhắc lại nếu `KNOWN_TERMS` phình to tới mức khó bảo trì tay.
+
+---
+
 ## Backlog ADR (chưa quyết định, cần trước milestone tương ứng)
 
 | Dự kiến | Chủ đề | Cần trước |

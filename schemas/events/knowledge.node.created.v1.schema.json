@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://schemas/events/knowledge.node.created.v1.schema.json",
+  "title": "knowledge.node.created payload",
+  "description": "doc 05 §3.7, doc 07 §4, P-M5-3 — apps/paosd/knowledge_store.py::KnowledgeStore.create_or_reinforce_node() phát khi 1 node MỚI được tạo (không phát khi chỉ củng cố node đã có).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["node_id", "type", "label"],
+  "properties": {
+    "node_id": { "type": "string" },
+    "type": { "type": "string" },
+    "label": { "type": "string" }
+  }
+}

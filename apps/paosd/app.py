@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +10,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from apps.paosd.artifact_store import ArtifactNotEditable, ArtifactNotFound, ArtifactStore
+from apps.paosd.knowledge_store import KGEdge, KGNode, KnowledgeStore
 from apps.paosd.memory_retriever import MemoryRetriever, RetrievedMemory
 from apps.paosd.memory_store import MemoryItem, MemoryStore
 from apps.paosd.runner import Runner
@@ -122,6 +124,39 @@ class MemoryItemResponse(BaseModel):
     matched_via: str | None = None
 
 
+class KGNodeResponse(BaseModel):
+    node_id: str
+    type: str
+    label: str
+    aliases: list[str]
+    confidence: float
+    first_seen: str
+    last_seen: str
+
+
+class KGEdgeResponse(BaseModel):
+    edge_id: str
+    src: str
+    dst: str
+    rel: str
+    weight: float
+    confidence: float
+    provenance: dict[str, Any]
+    created_at: str
+    invalidated_at: str | None
+
+
+class KGNodeDetailResponse(BaseModel):
+    node: KGNodeResponse
+    edges: list[KGEdgeResponse]
+
+
+class KGExportResponse(BaseModel):
+    path: str
+    node_count: int
+    edge_count: int
+
+
 def _to_event_response(e: EventEnvelope) -> EventResponse:
     return EventResponse(
         event_id=e.event_id,
@@ -173,6 +208,32 @@ def _memory_item_response(
     )
 
 
+def _kg_node_response(n: KGNode) -> KGNodeResponse:
+    return KGNodeResponse(
+        node_id=n.node_id,
+        type=n.type,
+        label=n.label,
+        aliases=n.aliases,
+        confidence=n.confidence,
+        first_seen=n.first_seen,
+        last_seen=n.last_seen,
+    )
+
+
+def _kg_edge_response(e: KGEdge) -> KGEdgeResponse:
+    return KGEdgeResponse(
+        edge_id=e.edge_id,
+        src=e.src,
+        dst=e.dst,
+        rel=e.rel,
+        weight=e.weight,
+        confidence=e.confidence,
+        provenance=e.provenance,
+        created_at=e.created_at,
+        invalidated_at=e.invalidated_at,
+    )
+
+
 def create_app(  # noqa: PLR0915 — đăng ký route tăng tuyến tính theo số endpoint, không phải độ phức tạp
     manager: ProcessManager,
     events: EventBus,
@@ -184,11 +245,13 @@ def create_app(  # noqa: PLR0915 — đăng ký route tăng tuyến tính theo s
     `store`/`workspace_root` chỉ dùng để dựng `ArtifactStore` (P-M4-3) — cùng
     tiền lệ `Router` tự dựng `CacheStore` nội bộ (`apps/paosd/router.py`),
     không cần một tầng "wiring" riêng cho 1 DAO nhỏ. `MemoryRetriever` (P-M5-1)
-    tái dùng `runner.router` — KHÔNG dựng Router thứ 2 song song."""
+    tái dùng `runner.router` — KHÔNG dựng Router thứ 2 song song. `KnowledgeStore`
+    (P-M5-3) cùng vai trò — dựng tại chỗ, không qua wiring riêng."""
     app = FastAPI(title="paosd")
     artifacts = ArtifactStore(store, workspace_root)
     memory_store = MemoryStore(store, events)
-    memory_retriever = MemoryRetriever(store, memory_store, runner.router)
+    knowledge_store = KnowledgeStore(store, events)
+    memory_retriever = MemoryRetriever(store, memory_store, runner.router, knowledge_store)
 
     @app.post("/v1/jobs", response_model=CreateJobResponse)
     async def create_job(body: CreateJobRequest) -> CreateJobResponse:
@@ -333,6 +396,39 @@ def create_app(  # noqa: PLR0915 — đăng ký route tăng tuyến tính theo s
             raise HTTPException(status_code=400, detail="Cần ít nhất 'tier' hoặc 'q'")
         items = await memory_store.list_by_tier(tier, limit=limit)
         return [_memory_item_response(i, score=None, matched_via=None) for i in items]
+
+    @app.get("/v1/knowledge/nodes", response_model=list[KGNodeResponse])
+    async def list_kg_nodes(type: str | None = None, limit: int = 100) -> list[KGNodeResponse]:
+        """doc 07 §4 — duyệt Knowledge Graph. `paosctl knowledge list`."""
+        nodes = await knowledge_store.list_nodes(type=type, limit=limit)
+        return [_kg_node_response(n) for n in nodes]
+
+    @app.get("/v1/knowledge/nodes/{node_id}", response_model=KGNodeDetailResponse)
+    async def get_kg_node(node_id: str) -> KGNodeDetailResponse:
+        """1 node kèm mọi cạnh chạm nó (cả 2 chiều) — `paosctl knowledge show`,
+        trả lời "vì sao PAOS biết cái này" (doc 07 §4.4, provenance)."""
+        node = await knowledge_store.get_node(node_id)
+        if node is None:
+            raise HTTPException(status_code=404, detail=f"Node '{node_id}' không tồn tại")
+        edges = await knowledge_store.edges_for_node(node_id)
+        return KGNodeDetailResponse(
+            node=_kg_node_response(node), edges=[_kg_edge_response(e) for e in edges]
+        )
+
+    @app.post("/v1/knowledge/export", response_model=KGExportResponse)
+    async def export_kg() -> KGExportResponse:
+        """doc 07 §4.4 — xuất `knowledge/graph.jsonld`. THỦ CÔNG (doc 18 §8:
+        "chạy thủ công thay vì lịch tự động" — không có scheduler infra tới
+        trước M7), gọi qua `paosctl knowledge export`."""
+        graph = await knowledge_store.export_jsonld()
+        out_path = workspace_root / "knowledge" / "graph.jsonld"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(graph, ensure_ascii=False, indent=2), encoding="utf-8")
+        return KGExportResponse(
+            path=str(out_path.relative_to(workspace_root)),
+            node_count=len(graph["@graph"]),
+            edge_count=len(graph["kg_edges"]),
+        )
 
     @app.get("/v1/health")
     async def health() -> dict[str, str]:

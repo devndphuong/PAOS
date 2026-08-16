@@ -95,3 +95,10 @@ class EventType(StrEnum):
     # CHƯA thêm — thuộc P-M5-2 (preference learning/consolidation job), chưa
     # có caller thật ở lát cắt này.
     MEMORY_ITEM_WRITTEN = "memory.item.written"
+
+    # Knowledge Graph (doc 05 §3.7, doc 07 §4, P-M5-3) — doc 05 đã liệt 3 tên
+    # này từ đầu dự án. apps/paosd/knowledge_store.py::KnowledgeStore là
+    # caller thật đầu tiên cho cả 3 (create_or_reinforce_node/create_edge).
+    KNOWLEDGE_NODE_CREATED = "knowledge.node.created"
+    KNOWLEDGE_EDGE_CREATED = "knowledge.edge.created"
+    KNOWLEDGE_CONFLICT_DETECTED = "knowledge.conflict.detected"

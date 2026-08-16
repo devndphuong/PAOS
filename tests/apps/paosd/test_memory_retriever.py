@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 
+from apps.paosd.knowledge_store import KnowledgeStore
 from apps.paosd.memory_retriever import MemoryRetriever
 from apps.paosd.memory_store import MemoryStore
 from kernel.events.bus import EventBus
@@ -37,6 +38,11 @@ def events(store: StateStore) -> EventBus:
 @pytest.fixture
 def memory_store(store: StateStore, events: EventBus) -> MemoryStore:
     return MemoryStore(store, events)
+
+
+@pytest.fixture
+def knowledge_store(store: StateStore, events: EventBus) -> KnowledgeStore:
+    return KnowledgeStore(store, events)
 
 
 class _FakeRouter:
@@ -66,9 +72,12 @@ def fake_router() -> _FakeRouter:
 
 @pytest.fixture
 def retriever(
-    store: StateStore, memory_store: MemoryStore, fake_router: _FakeRouter
+    store: StateStore,
+    memory_store: MemoryStore,
+    fake_router: _FakeRouter,
+    knowledge_store: KnowledgeStore,
 ) -> MemoryRetriever:
-    return MemoryRetriever(store, memory_store, fake_router)  # type: ignore[arg-type]
+    return MemoryRetriever(store, memory_store, fake_router, knowledge_store)  # type: ignore[arg-type]
 
 
 async def _write_with_vector(

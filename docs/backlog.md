@@ -80,11 +80,10 @@
 **Vì sao chấp nhận tạm thời:** event `quality.escalated.to_human` đã mang đủ thông tin audit tối thiểu (best_score, attempts, reason) cho M4 exit criteria; đây là nợ tuân thủ ADR-0014 chưa gây hư hại chức năng nào, không thuộc phạm vi P-M4-3 (eval harness/edit_rate).
 **Điều kiện trả nợ:** lát cắt tiếp theo chạm `_run_self_correction` — thêm 1 hàng `decisions` (`scope='self_correction_escalation'`, `candidates_json` = điểm từng vòng, `chosen`='escalate', `rationale`=lý do) ngay trước khi phát event, cùng khuôn mẫu `router.py::_write_decision`.
 
-### BL-013 · `MemoryRetriever` chưa triển khai bước 2 (Knowledge Graph walk) của truy hồi lai
+### BL-013 · ~~`MemoryRetriever` chưa triển khai bước 2 (Knowledge Graph walk) của truy hồi lai~~ — ĐÃ TRẢ (P-M5-3, 2026-08-16)
 **Phát sinh:** P-M5-1 (2026-08-16, doc 19).
-**Hiện trạng:** `apps/paosd/memory_retriever.py::MemoryRetriever.search()` chỉ triển khai 4/5 bước doc 07 §3: (1) exact key lookup, (3) vector search, (4) recency boost, (5) rerank + ngân sách token. Bước (2) — "Knowledge Graph walk (2 hop từ entity trong yêu cầu)" — hoàn toàn chưa có, vì Knowledge Graph (`kg_nodes`/`kg_edges`, doc 03 §3) chưa tồn tại.
-**Vì sao chấp nhận tạm thời:** đúng thứ tự milestone đã lên kế hoạch — Knowledge Graph là P-M5-3, sau P-M5-1 (memory + retrieval) này. Xây bước 2 trước khi có KG là trừu tượng hoá cho dữ liệu chưa tồn tại (P4).
-**Điều kiện trả nợ:** P-M5-3 — sau khi `kg_nodes`/`kg_edges` có dữ liệu thật, thêm bước walk 2-hop vào `search()` giữa bước 1 và bước 3, merge kết quả cùng cách bước 3 đang làm (seen_ids tránh trùng lặp).
+**Hiện trạng (trước khi trả):** `apps/paosd/memory_retriever.py::MemoryRetriever.search()` chỉ triển khai 4/5 bước doc 07 §3: (1) exact key lookup, (3) vector search, (4) recency boost, (5) rerank + ngân sách token. Bước (2) — "Knowledge Graph walk (2 hop từ entity trong yêu cầu)" — hoàn toàn chưa có, vì Knowledge Graph (`kg_nodes`/`kg_edges`, doc 03 §3) chưa tồn tại.
+**Đã trả (P-M5-3, 2026-08-16):** `KnowledgeStore.walk()` (`apps/paosd/knowledge_store.py`) duyệt BFS 2-hop thật trên `kg_edges`. `MemoryRetriever._kg_walk()` trích entity trong câu truy vấn (`sdk/kg_extract.py::extract_entities`, CÙNG hàm dùng để nạp KG), tìm node khớp, duyệt 2-hop, bọc mỗi (entity → quan hệ → node lân cận) thành một `MemoryItem` TỔNG HỢP (`memory_id` tiền tố `kg:`, không ghi DB) để tái dùng máy rerank/ngân sách token sẵn có — chạy giữa bước 1 và bước 3, `seen_ids` tránh trùng lặp đúng như dự tính ở mục "Điều kiện trả nợ" cũ. Kiểm bằng `tests/apps/paosd/test_knowledge_extractor_integration.py::test_memory_search_uses_kg_walk_for_related_entity_in_query` (HTTP end-to-end thật, không mock).
 
 ### BL-014 · `memory_items` có cột `expires_at` (TTL cho L4) nhưng chưa có job dọn hết hạn
 **Phát sinh:** P-M5-1 (2026-08-16, doc 19).
@@ -103,6 +102,18 @@
 **Hiện trạng:** `MemoryWriter.on_artifact_edited()` hạ confidence CỦA MỌI sở thích đang gán `scope_id` = process đã sinh artifact bị sửa — nếu 1 job dùng cả `duration_sec` lẫn `tone`, sửa tay vì `tone` sai cũng hạ nhầm confidence của `duration_sec` (dù có thể nó đúng). Không có cách xác định CHÍNH XÁC trường nào gây ra lần sửa — payload `quality.artifact.edited` (`schemas/events/quality.artifact.edited.v1.schema.json`) không mang theo thông tin đó.
 **Vì sao chấp nhận tạm thời:** tương quan chính xác cần biết Agent đã DÙNG giá trị sở thích nào để sinh ra đoạn nào của artifact — cần cơ chế truy vết chi tiết hơn (vd đánh dấu trong Plan/prompt), chưa tồn tại và BL-015 cho thấy chưa Agent nào dùng sở thích đã học để việc này có ý nghĩa thật.
 **Điều kiện trả nợ:** sau khi BL-015 được trả (Agent bắt đầu dùng sở thích đã học) — nếu tương quan sai mức job gây hại thật (sở thích ĐÚNG bị hạ oan), thiết kế cách gắn preference_id cụ thể vào Decision Record của lượt sinh, đọc lại lúc `on_artifact_edited` thay vì demote hàng loạt theo `scope_id`.
+
+### BL-017 · `KnowledgeExtractor` chỉ nhận diện entity trong `sdk/kg_extract.py::KNOWN_TERMS` (~40 mục), bỏ sót phần lớn thuật ngữ thật
+**Phát sinh:** P-M5-3 (2026-08-16, doc 19), quyết định ở ADR-0028.
+**Hiện trạng:** `extract_entities()` khớp CHÍNH XÁC (không phân biệt hoa/thường) một danh sách thuật ngữ cố định trong code — bất kỳ công nghệ/công cụ/khái niệm nào KHÔNG có trong danh sách sẽ hoàn toàn không được trích, dù xuất hiện rõ ràng trong artifact. Đây là đánh đổi CÓ CHỦ Ý (ADR-0028): chính xác cao, độ phủ thấp, thay vì NLU/LLM thật (không tất định, phá "rebuild từ replay").
+**Vì sao chấp nhận tạm thời:** ADR-0028 đã cân nhắc kỹ 3 phương án khác (LLM capability, capitalization heuristic, thư viện NER) và loại cả 3 vì lý do kiến trúc/chất lượng, không phải vì thiếu thời gian. Mở rộng danh sách là việc lặp lại đơn giản, không đổi kiến trúc.
+**Điều kiện trả nợ:** liên tục, khi phát hiện thuật ngữ thật hay dùng bị bỏ sót (quan sát qua `paosctl knowledge list` sau một thời gian dùng thật) — thêm dòng vào `KNOWN_TERMS` (`sdk/kg_extract.py`). Không cần ADR mới trừ khi đổi CƠ CHẾ trích xuất (vd chuyển sang NER thật).
+
+### BL-018 · Cơ chế phát hiện mâu thuẫn của `KnowledgeStore.create_edge()` chưa có đường trích thật từ `KnowledgeExtractor`
+**Phát sinh:** P-M5-3 (2026-08-16, doc 19).
+**Hiện trạng:** `KnowledgeStore.create_edge()` phát hiện mâu thuẫn thật (`CONTRADICTORY_RELATIONS` — hiện chỉ có cặp `prefers`/`avoids`, `sdk/kg_extract.py`) khi 2 cạnh đối lập cùng nối 1 cặp (src, dst) — cơ chế CÓ THẬT, kiểm bằng `tests/apps/paosd/test_knowledge_store.py::test_create_edge_detects_conflict_keeps_both_and_emits_event` (gọi thẳng store, không qua extractor). Nhưng `KnowledgeExtractor` (P-M5-3, đường trích DUY NHẤT hiện có, xem ADR-0028) chỉ tạo cạnh `learned_from` — heuristic tất định (danh sách thuật ngữ) không đủ tin cậy để suy luận `prefers`/`avoids` từ văn bản tự do (đó là preference learning THẬT, mô hình đã chọn ở `apps/paosd/memory_writer.py`, dựa trên HÀNH VI quan sát được — không phải parse câu văn). Kết quả: cơ chế phát hiện mâu thuẫn tồn tại nhưng CHƯA từng kích hoạt từ luồng sử dụng thật.
+**Vì sao chấp nhận tạm thời:** doc 07 §4.4 yêu cầu cơ chế phát hiện mâu thuẫn tồn tại và đáng tin — xây nó SẴN, kiểm thật, đúng nguyên tắc "provenance/conflict detection là trọng tâm lát cắt này" — nhưng KHÔNG bịa một đường trích prefers/avoids giả chỉ để có caller (P8, THẬT THÀ hơn giả vờ đủ).
+**Điều kiện trả nợ:** khi có nguồn tín hiệu prefers/avoids thật gắn được vào KG — ứng viên gần nhất: M9 (Research Plugin) khi Agent tổng hợp kết quả nghiên cứu có thể phát hiện "người dùng chọn A thay vì B nhiều lần" như 1 quan sát hành vi, hoặc mở rộng `MemoryWriter` (đã học preference ở mức `memory_items`) để đồng thời ghi cạnh `prefers`/`avoids` vào KG khi 1 sở thích đạt `AUTO_APPLY` (doc 07 §2.1).
 
 ---
 

@@ -326,6 +326,64 @@ def memory_review(ctx: click.Context, tier: str) -> None:
             click.echo(f"  {key:<20} {it['content']:<24} confidence={it['confidence']:.2f}")
 
 
+@cli.group()
+def knowledge() -> None:
+    """Xem Knowledge Graph cá nhân (doc 07 §4, P-M5-3)."""
+
+
+@knowledge.command("list")
+@click.option("--type", "node_type", default=None, help="Lọc theo loại node, vd Technology.")
+@click.option("--limit", default=100, show_default=True)
+@click.pass_context
+def knowledge_list(ctx: click.Context, node_type: str | None, limit: int) -> None:
+    """Liệt kê node — mới thấy gần đây trước."""
+    with _client(ctx) as client:
+        params: dict[str, Any] = {"limit": limit}
+        if node_type:
+            params["type"] = node_type
+        nodes = _get(client, "/v1/knowledge/nodes", params=params).json()
+    if not nodes:
+        click.echo("(chưa có node nào trong Knowledge Graph)")
+        return
+    for n in nodes:
+        click.echo(f"{n['node_id']}  [{n['type']}]  {n['label']}  confidence={n['confidence']:.2f}")
+
+
+@knowledge.command("show")
+@click.argument("node_id")
+@click.pass_context
+def knowledge_show(ctx: click.Context, node_id: str) -> None:
+    """1 node kèm mọi cạnh — trả lời "vì sao PAOS biết cái này" (provenance)."""
+    with _client(ctx) as client:
+        body = _get(client, f"/v1/knowledge/nodes/{node_id}").json()
+    n = body["node"]
+    click.echo(f"{n['node_id']} [{n['type']}] {n['label']} — confidence={n['confidence']:.2f}")
+    if n["aliases"]:
+        click.echo(f"  aliases: {', '.join(n['aliases'])}")
+    click.echo(f"  first_seen={n['first_seen']}  last_seen={n['last_seen']}")
+    if not body["edges"]:
+        click.echo("  (chưa có cạnh nào)")
+        return
+    click.echo("  cạnh:")
+    for e in body["edges"]:
+        arrow = "->" if e["src"] == node_id else "<-"
+        other = e["dst"] if e["src"] == node_id else e["src"]
+        status = "" if e["invalidated_at"] is None else " [invalidated]"
+        click.echo(
+            f"    {arrow} {e['rel']} {arrow} {other}  confidence={e['confidence']:.2f}{status}"
+        )
+
+
+@knowledge.command("export")
+@click.pass_context
+def knowledge_export(ctx: click.Context) -> None:
+    """Xuất toàn bộ KG ra `knowledge/graph.jsonld` (doc 07 §4.4) — THỦ CÔNG,
+    không có lịch chạy tự động (doc 18 §8, chưa có scheduler infra tới M7)."""
+    with _client(ctx) as client:
+        body = _post(client, "/v1/knowledge/export").json()
+    click.echo(f"✓ Đã xuất {body['node_count']} node, {body['edge_count']} cạnh -> {body['path']}")
+
+
 @cli.command()
 @click.pass_context
 def doctor(ctx: click.Context) -> None:

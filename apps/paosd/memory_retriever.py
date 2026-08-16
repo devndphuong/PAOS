@@ -1,10 +1,8 @@
-"""MemoryRetriever — truy hồi lai (doc 07 §3, P-M5-1).
+"""MemoryRetriever — truy hồi lai (doc 07 §3, P-M5-1, P-M5-3).
 
-Triển khai 4/5 bước của doc 07 §3: (1) exact key lookup, (3) vector search,
-(4) recency boost, (5) rerank + cắt theo ngân sách token. **Bước (2) — Knowledge
-Graph walk (2 hop) — CHƯA LÀM**: Knowledge Graph chưa tồn tại (P-M5-3). Đây là
-khoảng trống CÓ CHỦ ĐÍCH, không phải bỏ sót — ghi rõ ở đây thay vì giả vờ đủ 5
-bước (P8, THẬT THÀ).
+Triển khai đủ 5 bước của doc 07 §3: (1) exact key lookup, (2) Knowledge Graph
+walk 2-hop (P-M5-3, trả nợ BL-013 — trước đây bỏ trống vì KG chưa tồn tại),
+(3) vector search, (4) recency boost, (5) rerank + cắt theo ngân sách token.
 
 Vector search dùng bảng THƯỜNG `memory_vectors` + hàm `vec_distance_cosine()`
 của `sqlite-vec` (không phải virtual table `vec0`) — xem addendum ADR-0015
@@ -18,9 +16,11 @@ from typing import Any
 
 from sqlite_vec import serialize_float32
 
+from apps.paosd.knowledge_store import KnowledgeStore
 from apps.paosd.memory_store import MemoryItem, MemoryStore, row_to_item
 from apps.paosd.router import Router
 from kernel.state.db import StateStore
+from sdk.kg_extract import extract_entities
 
 _COSINE_SIMILARITY_THRESHOLD = 0.62  # doc 07 §3 bước 3
 _TOP_K = 8  # doc 07 §3 bước 3
@@ -32,6 +32,12 @@ _RECENCY_WINDOW = timedelta(days=7)
 _DEFAULT_TOKEN_BUDGET = 2000  # doc 07 §3 bước 5
 # process_id giả cho Decision Record khi lệnh gọi không gắn với Process thật.
 _QUERY_PROCESS_ID = "memory_retrieval"
+_KG_WALK_HOPS = 2  # doc 07 §3 bước 2, nguyên văn "2 hop"
+# doc 07 §3 không cho công thức điểm cụ thể cho bước KG walk — quyết định
+# module (P-M5-3): mỗi hop xa thêm giảm độ liên quan 30%, cùng tinh thần
+# "gần thì tin hơn" của _RECENCY_BOOST ở bước 4.
+_KG_WALK_HOP_DECAY = 0.7
+_KG_SYNTHETIC_PREFIX = "kg:"
 
 _VECTOR_SEARCH_SQL = (
     "WITH scored AS ("
@@ -53,10 +59,17 @@ class RetrievedMemory:
 
 
 class MemoryRetriever:
-    def __init__(self, store: StateStore, memory_store: MemoryStore, router: Router) -> None:
+    def __init__(
+        self,
+        store: StateStore,
+        memory_store: MemoryStore,
+        router: Router,
+        knowledge_store: KnowledgeStore,
+    ) -> None:
         self._store = store
         self._memory_store = memory_store
         self._router = router
+        self._knowledge_store = knowledge_store
 
     async def search(
         self,
@@ -67,8 +80,9 @@ class MemoryRetriever:
         token_budget: int = _DEFAULT_TOKEN_BUDGET,
         process_id: str | None = None,
     ) -> list[RetrievedMemory]:
-        """`query` rỗng bỏ qua bước 3 (vector search) — chỉ còn bước 1 (nếu có
-        `key`), hữu ích cho lookup thuần theo key không cần embed."""
+        """`query` rỗng bỏ qua bước 2 (KG walk) và bước 3 (vector search) —
+        chỉ còn bước 1 (nếu có `key`), hữu ích cho lookup thuần theo key
+        không cần embed/KG."""
         results: list[RetrievedMemory] = []
         seen_ids: set[str] = set()
 
@@ -79,6 +93,11 @@ class MemoryRetriever:
                 seen_ids.add(exact.memory_id)
 
         if query.strip():
+            kg_hits = await self._kg_walk(query)
+            new_kg_hits = [h for h in kg_hits if h.item.memory_id not in seen_ids]
+            results.extend(new_kg_hits)
+            seen_ids.update(h.item.memory_id for h in new_kg_hits)
+
             embed_result, _ = await self._router.call(
                 "text.embed@1", {"text": query}, process_id or _QUERY_PROCESS_ID
             )
@@ -88,8 +107,48 @@ class MemoryRetriever:
         boosted = [self._apply_recency_boost(r) for r in results]
         final = self._rerank_and_cut(boosted, token_budget)
         for r in final:
-            await self._memory_store.touch(r.item.memory_id)
+            # Kết quả bước 2 (KG walk) là MemoryItem TỔNG HỢP, không có hàng
+            # thật trong memory_items (xem docstring _kg_walk) — touch() sẽ
+            # UPDATE 0 hàng (vô hại nhưng vô nghĩa), bỏ qua cho gọn.
+            if not r.item.memory_id.startswith(_KG_SYNTHETIC_PREFIX):
+                await self._memory_store.touch(r.item.memory_id)
         return final
+
+    async def _kg_walk(self, query: str) -> list[RetrievedMemory]:
+        """doc 07 §3 bước 2 — Knowledge Graph walk 2-hop từ entity xuất hiện
+        trong câu truy vấn (BL-013, trả nợ ở P-M5-3). `sdk.kg_extract.extract_entities`
+        — CÙNG hàm trích entity dùng để NẠP dữ liệu vào KG
+        (`apps/paosd/knowledge_extractor.py`) — tìm entity trong `query`, rồi
+        `KnowledgeStore.walk()` duyệt 2 hop quanh node khớp.
+
+        Kết quả KHÔNG phải hàng thật trong `memory_items` (Knowledge Graph là
+        2 bảng riêng, doc 03 §3) — mỗi (entity → quan hệ → node lân cận) tìm
+        được bọc thành một `MemoryItem` TỔNG HỢP, CHỈ tồn tại trong bộ nhớ
+        của lượt gọi này (`memory_id` tiền tố `kg:` để phân biệt, không bao
+        giờ ghi xuống DB) — cách này tái dùng nguyên vẹn máy rerank/cắt ngân
+        sách token đã có ở bước 4/5 thay vì dựng đường xử lý song song riêng
+        cho kết quả KG. doc 07 §3 không quy định chính xác hình dạng dữ liệu
+        bước này phải trả về khi hợp nhất — đây là quyết định module."""
+        results: list[RetrievedMemory] = []
+        for entity in extract_entities(query):
+            start = await self._knowledge_store.find_node(entity.type.value, entity.label)
+            if start is None:
+                continue
+            for hop, edge, other in await self._knowledge_store.walk(start, hops=_KG_WALK_HOPS):
+                content = f"{entity.label} --{edge.rel}--> {other.label}"
+                score = edge.confidence * (_KG_WALK_HOP_DECAY ** (hop - 1))
+                synthetic = MemoryItem(
+                    memory_id=f"{_KG_SYNTHETIC_PREFIX}{edge.edge_id}",
+                    tier="L3",
+                    scope_id=None,
+                    kind="kg_fact",
+                    key=None,
+                    content=content,
+                    confidence=edge.confidence,
+                    source={"kg_edge_id": edge.edge_id, "src": edge.src, "dst": edge.dst},
+                )
+                results.append(RetrievedMemory(item=synthetic, score=score, matched_via="kg_walk"))
+        return results
 
     async def _vector_search(
         self, query_vector: list[float], *, tier: str | None

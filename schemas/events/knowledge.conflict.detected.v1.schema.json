@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://schemas/events/knowledge.conflict.detected.v1.schema.json",
+  "title": "knowledge.conflict.detected payload",
+  "description": "doc 05 §3.7, doc 07 §4.4, P-M5-3 — apps/paosd/knowledge_store.py::KnowledgeStore.create_edge() phát khi 1 cạnh mới mâu thuẫn với 1 cạnh đang hoạt động giữa cùng cặp (src, dst) (sdk/kg_extract.py::CONTRADICTORY_RELATIONS). Cả 2 cạnh được GIỮ LẠI, không cạnh nào bị invalidate tự động — event này chỉ để đánh dấu, con người xét lại sau (doc 07 §4.4).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["node_id", "old", "new"],
+  "properties": {
+    "node_id": { "type": "string" },
+    "old": { "type": "string" },
+    "new": { "type": "string" }
+  }
+}

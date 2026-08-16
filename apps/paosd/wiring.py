@@ -17,6 +17,9 @@ from typing import Any
 from fastapi import FastAPI
 
 from apps.paosd.app import create_app
+from apps.paosd.artifact_store import ArtifactStore
+from apps.paosd.knowledge_extractor import KnowledgeExtractor
+from apps.paosd.knowledge_store import KnowledgeStore
 from apps.paosd.memory_store import MemoryStore
 from apps.paosd.memory_writer import MemoryWriter
 from apps.paosd.runner import Runner
@@ -111,6 +114,24 @@ async def build_daemon(
     )
     events.subscribe(
         "memory_writer_edit", "quality.artifact.edited", memory_writer.on_artifact_edited
+    )
+
+    # KnowledgeExtractor (P-M5-3, doc 07 §4) — quan sát 3 event tạo-artifact
+    # THẬT đã có caller (agents/planning|script|summarize), trích entity vào
+    # Knowledge Graph. 3 tên subscriber riêng — cùng lý do 2 tên của
+    # MemoryWriter ở trên (EventBus.subscribe ánh xạ 1 tên -> ĐÚNG 1 pattern),
+    # cả 3 trỏ về CÙNG 1 handler (logic giống hệt nhau, chỉ khác nguồn event).
+    knowledge_extractor = KnowledgeExtractor(
+        KnowledgeStore(store, events), ArtifactStore(store, resolved_workspace_root)
+    )
+    events.subscribe(
+        "knowledge_extractor_plan", "plan.created", knowledge_extractor.on_artifact_event
+    )
+    events.subscribe(
+        "knowledge_extractor_script", "script.created", knowledge_extractor.on_artifact_event
+    )
+    events.subscribe(
+        "knowledge_extractor_summary", "summary.created", knowledge_extractor.on_artifact_event
     )
 
     await events.start()  # giao lại event chưa dispatch cho từng subscriber (REL-01) —

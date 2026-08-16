@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://schemas/events/knowledge.edge.created.v1.schema.json",
+  "title": "knowledge.edge.created payload",
+  "description": "doc 05 §3.7, doc 07 §4, P-M5-3 — apps/paosd/knowledge_store.py::KnowledgeStore.create_edge() phát khi 1 cạnh MỚI được tạo (không phát khi chỉ củng cố cạnh đang hoạt động đã có).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["src", "rel", "dst", "confidence"],
+  "properties": {
+    "src": { "type": "string" },
+    "rel": { "type": "string" },
+    "dst": { "type": "string" },
+    "confidence": { "type": "number" }
+  }
+}
