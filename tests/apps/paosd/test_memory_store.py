@@ -1,0 +1,137 @@
+"""Kiểm MemoryStore (doc 03 §3, doc 07, P-M5-1) — DAO thuần, không I/O ngoài
+`state.db`, cùng khuôn mẫu tests/apps/paosd/test_cache_store.py (nếu có) /
+test_artifact_store thông qua build_daemon."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from apps.paosd.memory_store import MemoryStore
+from kernel.events.bus import EventBus
+from kernel.state.db import StateStore
+
+
+@pytest.fixture
+async def store(tmp_path: Path):
+    s = StateStore(tmp_path / ".paos" / "state.db")
+    await s.start()
+    yield s
+    await s.stop()
+
+
+@pytest.fixture
+def events(store: StateStore) -> EventBus:
+    return EventBus(store)
+
+
+@pytest.fixture
+def memory_store(store: StateStore, events: EventBus) -> MemoryStore:
+    return MemoryStore(store, events)
+
+
+async def test_write_then_get_roundtrip(memory_store: MemoryStore) -> None:
+    item = await memory_store.write(tier="L3", content="thích tone chuyên nghiệp", key="tone")
+    got = await memory_store.get(item.memory_id)
+    assert got is not None
+    assert got.content == "thích tone chuyên nghiệp"
+    assert got.tier == "L3"
+    assert got.key == "tone"
+    assert got.confidence == 0.7  # mặc định doc 03
+
+
+async def test_get_unknown_id_returns_none(memory_store: MemoryStore) -> None:
+    assert await memory_store.get("mem_khong_ton_tai") is None
+
+
+async def test_get_by_key_finds_latest_when_duplicate_keys(memory_store: MemoryStore) -> None:
+    await memory_store.write(tier="L3", content="bản cũ", key="tone")
+    newest = await memory_store.write(tier="L3", content="bản mới", key="tone")
+    found = await memory_store.get_by_key("L3", "tone")
+    assert found is not None
+    assert found.memory_id == newest.memory_id
+    assert found.content == "bản mới"
+
+
+async def test_get_by_key_unknown_returns_none(memory_store: MemoryStore) -> None:
+    assert await memory_store.get_by_key("L3", "khong_ton_tai") is None
+
+
+async def test_list_by_tier_filters_correctly(memory_store: MemoryStore) -> None:
+    await memory_store.write(tier="L3", content="a", key="k1")
+    await memory_store.write(tier="L3", content="b", key="k2")
+    await memory_store.write(tier="L4", content="c", key="k3")
+
+    l3_items = await memory_store.list_by_tier("L3")
+    assert len(l3_items) == 2
+    l4_items = await memory_store.list_by_tier("L4")
+    assert len(l4_items) == 1
+
+
+async def test_list_by_tier_filters_by_scope_id(memory_store: MemoryStore) -> None:
+    await memory_store.write(tier="L2", content="a", scope_id="proj_1")
+    await memory_store.write(tier="L2", content="b", scope_id="proj_2")
+
+    scoped = await memory_store.list_by_tier("L2", scope_id="proj_1")
+    assert len(scoped) == 1
+    assert scoped[0].content == "a"
+
+
+async def test_write_redacts_secret_looking_content(memory_store: MemoryStore) -> None:
+    """doc 09 §6, SEC-01 — cùng bộ lọc đã dùng cho artifact/event."""
+    item = await memory_store.write(
+        tier="L4", content="API key: sk-abcdef1234567890 dùng để gọi provider"
+    )
+    assert "sk-abcdef1234567890" not in item.content
+    assert "***REDACTED***" in item.content
+    got = await memory_store.get(item.memory_id)
+    assert got is not None
+    assert "sk-abcdef1234567890" not in got.content
+
+
+async def test_write_emits_memory_item_written_event(
+    memory_store: MemoryStore, events: EventBus
+) -> None:
+    received = []
+
+    async def _handler(envelope):  # type: ignore[no-untyped-def]
+        received.append(envelope)
+
+    events.subscribe("watcher", "memory.item.written", _handler)
+    item = await memory_store.write(tier="L3", content="x", key="pref.x")
+
+    assert len(received) == 1
+    assert received[0].payload == {"memory_id": item.memory_id, "tier": "L3", "key": "pref.x"}
+
+
+async def test_touch_updates_last_used_at_and_use_count(memory_store: MemoryStore) -> None:
+    item = await memory_store.write(tier="L3", content="x", key="pref.x")
+    assert item.last_used_at is None
+    assert item.use_count == 0
+
+    await memory_store.touch(item.memory_id)
+    touched = await memory_store.get(item.memory_id)
+    assert touched is not None
+    assert touched.last_used_at is not None
+    assert touched.use_count == 1
+
+    await memory_store.touch(item.memory_id)
+    touched_again = await memory_store.get(item.memory_id)
+    assert touched_again is not None
+    assert touched_again.use_count == 2
+
+
+async def test_write_with_embedding_stores_vector_row(memory_store: MemoryStore) -> None:
+    item = await memory_store.write(
+        tier="L3", content="x", key="pref.x", embedding=([0.1, 0.2, 0.3], "stub.embed")
+    )
+
+    async def _select(conn):  # type: ignore[no-untyped-def]
+        cursor = await conn.execute(
+            "SELECT model, dim FROM memory_vectors WHERE memory_id = ?", (item.memory_id,)
+        )
+        return await cursor.fetchone()
+
+    row = await memory_store._store.read(_select)
+    assert row == ("stub.embed", 3)

@@ -144,6 +144,13 @@ class Runner:
             manager, events, registry, store, self._router, workspace_root
         )
 
+    @property
+    def router(self) -> Router:
+        """Lộ ra cho `apps/paosd/app.py` dựng `MemoryRetriever` (P-M5-1) — tái
+        dùng CÙNG instance Router (breaker state/cache nhất quán), không dựng
+        Router thứ 2 song song."""
+        return self._router
+
     async def on_process_created(self, envelope: EventEnvelope) -> None:
         """Chạy đồng bộ trong dispatch() — chỉ 2 lần ghi DB, đủ nhanh để không
         đáng tách. Thực thi Agent thật sự nằm ở worker_loop()/_run_one()."""

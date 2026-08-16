@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://capabilities/text.embed/1/output.schema.json",
+  "title": "text.embed@1 output",
+  "description": "doc 04 §2.1, ADR-0015.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["embedding", "dim", "model"],
+  "properties": {
+    "embedding": {
+      "type": "array",
+      "items": { "type": "number" },
+      "minItems": 1
+    },
+    "dim": { "type": "integer", "minimum": 1 },
+    "model": { "type": "string" },
+    "usage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "in_tokens": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "meta": { "type": "object" }
+  }
+}

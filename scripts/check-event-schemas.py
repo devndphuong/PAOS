@@ -92,6 +92,10 @@ PAST_TENSE_OK = {
     # P-M4-3 — "edited" (quality.artifact.edited), thì quá khứ hợp lệ chuẩn,
     # KHÔNG có trong doc 05 gốc — event mới, cùng tiền lệ "subtitle.created".
     "edited",
+    # P-M5-1 — "written" (memory.item.written), thì quá khứ hợp lệ chuẩn, ĐÃ
+    # có trong doc 05 gốc §3.7 (đặt tên sẵn từ đầu dự án, cùng tiền lệ
+    # "progress"/"rendered" — lần này khớp PAST_TENSE_OK ngay từ đầu).
+    "written",
 }
 
 errors: list[str] = []

@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://schemas/events/memory.item.written.v1.schema.json",
+  "title": "memory.item.written payload",
+  "description": "doc 05 §3.7, doc 07, P-M5-1 — apps/paosd/memory_store.py::MemoryStore.write() phát khi 1 mục ký ức được ghi vào memory_items (bất kỳ tầng L1-L4).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["memory_id", "tier"],
+  "properties": {
+    "memory_id": { "type": "string" },
+    "tier": { "type": "string", "enum": ["L0", "L1", "L2", "L3", "L4"] },
+    "key": { "type": ["string", "null"] }
+  }
+}

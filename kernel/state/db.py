@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 import aiosqlite
+import sqlite_vec
 
 from kernel import clock
 from kernel.errors import ErrorCode, PaosError
@@ -22,6 +23,18 @@ _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 _BUSY_TIMEOUT_MS = 200
 _BEGIN_RE = re.compile(r"\bBEGIN\b", re.IGNORECASE)
 _END_RE = re.compile(r"\bEND\b", re.IGNORECASE)
+
+
+async def _load_vec_extension(conn: aiosqlite.Connection) -> None:
+    """`sqlite-vec` (ADR-0015) — hàm toán học vector (`vec_distance_cosine`...),
+    KHÔNG phải phụ thuộc lớp AI (không biết gì về capability/agent nào gọi
+    nó, giống R-tree có sẵn của SQLite) — an toàn ở tầng Kernel theo tinh
+    thần P1. Nạp trên MỌI kết nối (`start()` lẫn `read()`, doc 17 §3: chỉ
+    module này được mở kết nối tới `state.db`) vì `read()` mở một connection
+    MỚI mỗi lần gọi."""
+    await conn.enable_load_extension(True)
+    await conn.load_extension(sqlite_vec.loadable_path())
+    await conn.enable_load_extension(False)
 
 
 def _split_sql_statements(sql: str) -> list[str]:
@@ -87,6 +100,7 @@ class StateStore:
 
         self._write_conn = await aiosqlite.connect(self._db_path, isolation_level=None)
         try:
+            await _load_vec_extension(self._write_conn)
             await self._bootstrap(existed_before)
         except sqlite3.DatabaseError as exc:
             # aiosqlite.connect() không tự validate định dạng file — file hỏng thật
@@ -210,6 +224,7 @@ class StateStore:
         """Đọc qua kết nối read-only riêng — chạy song song được, không qua actor."""
         uri = f"{self._db_path.resolve().as_uri()}?mode=ro"
         async with aiosqlite.connect(uri, uri=True, isolation_level=None) as conn:
+            await _load_vec_extension(conn)
             return await fn(conn)
 
     async def next_pid(self) -> int:

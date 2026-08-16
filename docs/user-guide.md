@@ -1,6 +1,6 @@
 # Hướng dẫn sử dụng & Luồng dự án
 
-> Tài liệu SỐNG — cập nhật mỗi khi có chức năng mới (P-CLOSE của mỗi lát cắt), không phải ảnh chụp một lần. Khác với `docs/00-20` (đặc tả thiết kế, ổn định), file này mô tả **thực trạng chạy được hôm nay**, cùng nhóm với `docs/backlog.md`/`docs/environment-baseline.md`. Cập nhật gần nhất: lát cắt **P-M5-0** (2026-08-16) — 2 ADR còn nợ trước M5 đã chốt, chưa có code mới (đúng phạm vi P-M5-0: chỉ quyết định, không code).
+> Tài liệu SỐNG — cập nhật mỗi khi có chức năng mới (P-CLOSE của mỗi lát cắt), không phải ảnh chụp một lần. Khác với `docs/00-20` (đặc tả thiết kế, ổn định), file này mô tả **thực trạng chạy được hôm nay**, cùng nhóm với `docs/backlog.md`/`docs/environment-baseline.md`. Cập nhật gần nhất: lát cắt **P-M5-1** (2026-08-16) — lưu trữ + truy hồi lai cho memory đã chạy được thật.
 
 ---
 
@@ -52,6 +52,12 @@ paosctl artifact edit <artifact_id> ban-da-sua.txt  # nộp lại — in ra edit
 python scripts/run_eval.py --provider ollama   # cần Ollama đang chạy; --provider stub để chỉ thử hạ tầng offline
 ```
 
+**Tìm lại ký ức đã lưu (mới — M5)** — truy hồi lai: khớp đúng theo key trước (nhanh, tất định), rồi mới tới tìm theo ngữ nghĩa (vector, ngưỡng cosine ≥ 0.62), ưu tiên ký ức dùng gần đây (doc 07 §3). Chưa tự động học — đây là hạ tầng lưu/tìm; PAOS tự ghi nhớ sở thích qua Event là P-M5-2.
+```bash
+paosctl memory list L3                              # duyệt thô theo tầng (L0-L4)
+paosctl memory search "tone chuyên nghiệp" --tier L3  # truy hồi lai, xếp hạng theo điểm
+```
+
 **Theo dõi & giải thích mọi việc đang/đã làm** — không có "log" mù mờ, mọi quyết định dựng lại được đầy đủ từ Event Log.
 ```bash
 paosctl ps                 # liệt kê mọi job
@@ -66,12 +72,13 @@ paosctl cancel <pid>       # hủy 1 job đang chạy, không ảnh hưởng job
 - **Model LLM thật (Ollama) chưa bật an toàn** — mặc định dùng provider "giả lập xác định" (`stub.deterministic`) để mọi thứ chạy nhanh, offline, kiểm chứng được (xem `docs/backlog.md` BL-004). Kết quả sinh ra hiện KHÔNG phải văn bản do AI thật viết.
 - **Cơ chế tự sửa kịch bản (M4) chưa nối vào luồng sản xuất video thật** — mới chạy ở 1 luồng riêng (`workflows/script_with_review/`) để chứng minh cơ chế đúng, chưa thay bước viết kịch bản trong UC1 (BL-009).
 - **Eval harness (M4) mới có bộ mẫu nhỏ (6 mẫu)**, chưa phải quy mô 30-50 mẫu đầy đủ (BL-011); `scripts/run_eval.py` cũng chưa cưỡng chế "judge khác provider generator" như luồng production (BL-010).
-- **Chưa nhớ sở thích người dùng** (giọng đọc ưa thích, độ dài quen dùng...) — mỗi job độc lập, đó là phạm vi M5.
+- **Chưa TỰ ĐỘNG học sở thích người dùng** — hạ tầng lưu/truy hồi memory đã chạy được (P-M5-1), nhưng phải ghi tay qua `MemoryStore.write()` (chưa có API ghi qua HTTP/CLI). Tự động "quan sát Event → học sở thích" là P-M5-2.
+- **Truy hồi lai (M5) mới có 4/5 bước** — thiếu bước Knowledge Graph walk (BL-013, chờ KG ở P-M5-3). `paosctl memory` chưa có lệnh `forget` (nút quên, chờ P-M5-4).
 - **Chưa tự chọn cách làm tốt nhất** (Decision Engine, M6) — workflow phải chỉ định tay qua `workflow_ref`.
 
 ### 1.4 Sắp tới
 
-M4 (Quality & Self-Correction) đã hoàn tất. Hai ADR còn nợ trước M5 vừa chốt (P-M5-0, 2026-08-16): **ADR-0015** — `sqlite-vec` cho vector search (xác nhận lại ADR-0002) + `bge-m3` qua Ollama cho embedding (đa ngôn ngữ, chạy local, hợp nội dung tiếng Việt); **ADR-0016** — chunking bằng cửa sổ token cố định (512 token, overlap 64) có tái lập được tuyệt đối. Việc **ngay tiếp theo**: **P-M5-1 — dựng 5 tầng memory + retrieval lai** (bắt đầu code M5 thật). Lộ trình đầy đủ ở [§3](#3-lộ-trình-sắp-tới) bên dưới.
+P-M5-1 vừa xong: lưu trữ memory (`memory_items`/`memory_vectors`, capability `text.embed@1`, `bge-m3` qua Ollama hoặc `stub.embed` offline) + truy hồi lai 4/5 bước (doc 07 §3) chạy được thật qua `GET /v1/memory` và `paosctl memory list|search`. Việc **ngay tiếp theo**: **P-M5-2 — Consolidation job hàng đêm + preference learning** (tự động quan sát Event, học sở thích, không cần ghi tay). Lộ trình đầy đủ ở [§3](#3-lộ-trình-sắp-tới) bên dưới.
 
 ---
 
@@ -190,7 +197,7 @@ Theo kế hoạch 10 milestone (~31 tuần lập trình thuần, 11–15 tháng 
 | M2 | Capability & Provider | Đổi provider không sửa code | ✅ Xong |
 | M3 | Agent & Workflow | Video plugin chạy hoàn chỉnh | ✅ Xong |
 | M4 | Quality & Self-Correction | Tự sửa, tự chấm điểm, ghi `edit_rate` | ✅ Xong |
-| M5 | Memory & Knowledge | Nhớ sở thích, xây Knowledge Graph | ⚪ Kế tiếp |
+| M5 | Memory & Knowledge | Nhớ sở thích, xây Knowledge Graph | 🟡 Đang làm · 1/5 |
 | M6 | Decision Engine | Tự chọn workflow phù hợp | ⚪ Chưa tới |
 | M7 | Cost / Energy / Time | Chạy đêm, tiết kiệm, đúng ngân sách | ⚪ Chưa tới |
 | M8 | Plugin System & UI | Cài plugin, có giao diện Web thật | ⚪ Chưa tới |

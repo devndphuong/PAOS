@@ -9,6 +9,8 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from apps.paosd.artifact_store import ArtifactNotEditable, ArtifactNotFound, ArtifactStore
+from apps.paosd.memory_retriever import MemoryRetriever, RetrievedMemory
+from apps.paosd.memory_store import MemoryItem, MemoryStore
 from apps.paosd.runner import Runner
 from kernel.errors import PaosError
 from kernel.events.bus import EventBus, EventEnvelope
@@ -103,6 +105,21 @@ class ArtifactEditResponse(BaseModel):
     edit_rate: float
 
 
+class MemoryItemResponse(BaseModel):
+    memory_id: str
+    tier: str
+    scope_id: str | None
+    kind: str | None
+    key: str | None
+    content: str
+    confidence: float
+    salience: float
+    created_at: str
+    last_used_at: str | None
+    score: float | None = None
+    matched_via: str | None = None
+
+
 def _to_event_response(e: EventEnvelope) -> EventResponse:
     return EventResponse(
         event_id=e.event_id,
@@ -134,6 +151,25 @@ def _to_response(p: Process) -> ProcessResponse:
     )
 
 
+def _memory_item_response(
+    item: MemoryItem, *, score: float | None, matched_via: str | None
+) -> MemoryItemResponse:
+    return MemoryItemResponse(
+        memory_id=item.memory_id,
+        tier=item.tier,
+        scope_id=item.scope_id,
+        kind=item.kind,
+        key=item.key,
+        content=item.content,
+        confidence=item.confidence,
+        salience=item.salience,
+        created_at=item.created_at,
+        last_used_at=item.last_used_at,
+        score=score,
+        matched_via=matched_via,
+    )
+
+
 def create_app(  # noqa: PLR0915 — đăng ký route tăng tuyến tính theo số endpoint, không phải độ phức tạp
     manager: ProcessManager,
     events: EventBus,
@@ -144,9 +180,12 @@ def create_app(  # noqa: PLR0915 — đăng ký route tăng tuyến tính theo s
     """Lớp mỏng dịch HTTP <-> Kernel API (doc 04 §1) — không chứa logic nghiệp vụ.
     `store`/`workspace_root` chỉ dùng để dựng `ArtifactStore` (P-M4-3) — cùng
     tiền lệ `Router` tự dựng `CacheStore` nội bộ (`apps/paosd/router.py`),
-    không cần một tầng "wiring" riêng cho 1 DAO nhỏ."""
+    không cần một tầng "wiring" riêng cho 1 DAO nhỏ. `MemoryRetriever` (P-M5-1)
+    tái dùng `runner.router` — KHÔNG dựng Router thứ 2 song song."""
     app = FastAPI(title="paosd")
     artifacts = ArtifactStore(store, workspace_root)
+    memory_store = MemoryStore(store, events)
+    memory_retriever = MemoryRetriever(store, memory_store, runner.router)
 
     @app.post("/v1/jobs", response_model=CreateJobResponse)
     async def create_job(body: CreateJobRequest) -> CreateJobResponse:
@@ -273,6 +312,24 @@ def create_app(  # noqa: PLR0915 — đăng ký route tăng tuyến tính theo s
         return ArtifactEditResponse(
             edited_artifact_id=result.edited_artifact_id, edit_rate=result.edit_rate
         )
+
+    @app.get("/v1/memory", response_model=list[MemoryItemResponse])
+    async def query_memory(
+        tier: str | None = None, q: str | None = None, key: str | None = None, limit: int = 20
+    ) -> list[MemoryItemResponse]:
+        """doc 04 §1 — truy vấn memory. `q` có → chạy truy hồi lai thật (doc 07
+        §3, cần gọi `text.embed@1`); không có `q` → chỉ liệt kê theo `tier`
+        (duyệt thô, không cần embed, đúng vai trò `paosctl memory list`)."""
+        if q:
+            results: list[RetrievedMemory] = await memory_retriever.search(q, tier=tier, key=key)
+            return [
+                _memory_item_response(r.item, score=r.score, matched_via=r.matched_via)
+                for r in results
+            ]
+        if tier is None:
+            raise HTTPException(status_code=400, detail="Cần ít nhất 'tier' hoặc 'q'")
+        items = await memory_store.list_by_tier(tier, limit=limit)
+        return [_memory_item_response(i, score=None, matched_via=None) for i in items]
 
     @app.get("/v1/health")
     async def health() -> dict[str, str]:

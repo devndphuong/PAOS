@@ -14,6 +14,7 @@ dependencies = [
     "jsonschema>=4.23",     # ADR-0022 — validate hợp đồng Event/Capability
     "python-ulid>=3.0",     # ADR-0023 — thay thế: tự cài đặt ~40 dòng
     "aiosqlite>=0.20",      # ADR-0024 — driver cho single-writer actor
+    "sqlite-vec>=0.1.9",    # ADR-0015 — vector search (hàm toán học, không phải AI SDK)
     "pyyaml>=6.0",          # manifest, policy
     "httpx>=0.27",          # chỉ dùng trong providers/, KHÔNG trong kernel/
     "click>=8.1",           # ADR-0025 — thư viện CLI cho paosctl
@@ -93,7 +94,7 @@ disallow_any_explicit = false
 show_error_codes = true
 
 [[tool.mypy.overrides]]
-module = ["ulid.*", "jsonschema.*"]
+module = ["ulid.*", "jsonschema.*", "sqlite_vec.*"]
 ignore_missing_imports = true
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,7 @@
+[
+  {},
+  {"text": ""},
+  {"text": 123},
+  {"text": "hợp lệ", "unexpected_field": "không được phép"},
+  {"task_class": "thiếu text bắt buộc"}
+]

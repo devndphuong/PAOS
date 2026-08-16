@@ -257,6 +257,44 @@ def artifact_edit(ctx: click.Context, artifact_id: str, edited_file: str) -> Non
     click.echo(f"✓ Đã ghi bản sửa {body['edited_artifact_id']} — edit_rate={body['edit_rate']:.1%}")
 
 
+@cli.group()
+def memory() -> None:
+    """Xem ký ức đã lưu (doc 07, P-M5-1)."""
+
+
+@memory.command("list")
+@click.argument("tier")
+@click.option("--limit", default=20, show_default=True)
+@click.pass_context
+def memory_list(ctx: click.Context, tier: str, limit: int) -> None:
+    """Liệt kê ký ức theo tầng (L0-L4) — duyệt thô, không cần embed."""
+    with _client(ctx) as client:
+        items = _get(client, "/v1/memory", params={"tier": tier, "limit": limit}).json()
+    if not items:
+        click.echo(f"(không có ký ức nào ở tầng {tier})")
+        return
+    for it in items:
+        click.echo(f"{it['memory_id']}  [{it['key'] or '-'}]  {it['content']}")
+
+
+@memory.command("search")
+@click.argument("query")
+@click.option("--tier", default=None, help="Giới hạn tìm trong 1 tầng, vd L3.")
+@click.pass_context
+def memory_search(ctx: click.Context, query: str, tier: str | None) -> None:
+    """Truy hồi lai (doc 07 §3): exact key + vector search + recency boost."""
+    params: dict[str, Any] = {"q": query}
+    if tier:
+        params["tier"] = tier
+    with _client(ctx) as client:
+        items = _get(client, "/v1/memory", params=params).json()
+    if not items:
+        click.echo("(không tìm thấy ký ức nào phù hợp)")
+        return
+    for it in items:
+        click.echo(f"{it['score']:.3f} [{it['matched_via']}] {it['content']}")
+
+
 @cli.command()
 @click.pass_context
 def doctor(ctx: click.Context) -> None:

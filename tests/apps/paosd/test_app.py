@@ -14,11 +14,13 @@ import httpx
 import pytest
 
 from apps.paosd.app import create_app
+from apps.paosd.memory_store import MemoryStore
 from apps.paosd.runner import Runner
 from kernel.events.bus import EventBus, EventEnvelope
 from kernel.process.manager import ProcessManager
 from kernel.registry.registry import Registry
 from kernel.state.db import StateStore
+from providers.stub_embed.adapter import _embed
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -250,3 +252,60 @@ async def test_replay_redelivers_events_in_range(
     assert resp.status_code == 200
     assert resp.json()["replayed"] == 1
     assert len(received) == 2  # giao lại thêm 1 lần nữa
+
+
+async def test_query_memory_requires_tier_or_q(client: httpx.AsyncClient) -> None:
+    resp = await client.get("/v1/memory")
+    assert resp.status_code == 400
+
+
+async def test_query_memory_lists_by_tier_without_q(
+    client: httpx.AsyncClient, store: StateStore, events: EventBus
+) -> None:
+    ms = MemoryStore(store, events)
+    await ms.write(tier="L3", content="thích video 60-90 giây", key="pref.duration")
+    await ms.write(tier="L3", content="tone chuyên nghiệp", key="pref.tone")
+    await ms.write(tier="L4", content="tài liệu MongoDB", key=None)
+
+    resp = await client.get("/v1/memory", params={"tier": "L3"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body) == 2
+    assert all(item["score"] is None for item in body)
+
+
+async def test_query_memory_search_returns_ranked_vector_hits(
+    client: httpx.AsyncClient, store: StateStore, events: EventBus
+) -> None:
+    ms = MemoryStore(store, events)
+    target = "thích video 60-90 giây, tone chuyên nghiệp"
+    unrelated = "quả táo đỏ ngon ngọt trong vườn"
+    await ms.write(
+        tier="L3", content=target, key="pref.duration", embedding=(_embed(target), "stub.embed")
+    )
+    await ms.write(
+        tier="L3", content=unrelated, key="unrelated", embedding=(_embed(unrelated), "stub.embed")
+    )
+
+    resp = await client.get("/v1/memory", params={"tier": "L3", "q": target})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body) == 1
+    assert body[0]["content"] == target
+    assert body[0]["matched_via"] == "vector"
+    assert body[0]["score"] == pytest.approx(1.0)
+
+
+async def test_query_memory_search_finds_exact_key_even_with_low_similarity_query(
+    client: httpx.AsyncClient, store: StateStore, events: EventBus
+) -> None:
+    ms = MemoryStore(store, events)
+    await ms.write(tier="L3", content="tone chuyên nghiệp", key="pref.tone")
+
+    resp = await client.get(
+        "/v1/memory",
+        params={"tier": "L3", "q": "một câu bất kỳ không liên quan", "key": "pref.tone"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert any(item["matched_via"] == "exact_key" for item in body)

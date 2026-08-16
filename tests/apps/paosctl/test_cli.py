@@ -13,16 +13,19 @@ from __future__ import annotations
 import asyncio
 import socket
 import threading
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from contextlib import closing
 from pathlib import Path
+from typing import Any
 
 import pytest
 import uvicorn
 from click.testing import CliRunner
 
 from apps.paosctl.__main__ import cli
-from apps.paosd.wiring import build_daemon
+from apps.paosd.memory_store import MemoryStore
+from apps.paosd.wiring import Daemon, build_daemon
+from providers.stub_embed.adapter import _embed
 
 
 def _free_port() -> int:
@@ -46,11 +49,19 @@ class _ReadyServer(uvicorn.Server):
 
 
 class _BackgroundDaemon(threading.Thread):
-    def __init__(self, db_path: Path, workspace_root: Path, port: int) -> None:
+    def __init__(
+        self,
+        db_path: Path,
+        workspace_root: Path,
+        port: int,
+        *,
+        seed: Callable[[Any], Awaitable[None]] | None = None,
+    ) -> None:
         super().__init__(daemon=True)
         self._db_path = db_path
         self._workspace_root = workspace_root
         self.port = port
+        self._seed = seed
         self._started = threading.Event()
         self._server: _ReadyServer | None = None
 
@@ -59,6 +70,10 @@ class _BackgroundDaemon(threading.Thread):
 
     async def _main(self) -> None:
         daemon = await build_daemon(self._db_path, workspace_root=self._workspace_root)
+        if self._seed is not None:
+            # PHẢI chạy TRONG cùng loop với daemon (bài học docstring đầu file)
+            # — không thể seed từ loop của test sau khi fixture trả về URL.
+            await self._seed(daemon)
         config = uvicorn.Config(daemon.app, host="127.0.0.1", port=self.port, log_level="warning")
         server = _ReadyServer(config)
         server.install_signal_handlers = lambda: None  # type: ignore[method-assign]
@@ -83,6 +98,27 @@ class _BackgroundDaemon(threading.Thread):
 def api_url(tmp_path: Path) -> Iterator[str]:
     port = _free_port()
     server = _BackgroundDaemon(tmp_path / ".paos" / "state.db", tmp_path / "workspace", port)
+    server.start()
+    server.wait_ready()
+    yield f"http://127.0.0.1:{port}"
+    server.stop()
+
+
+async def _seed_memory(daemon: Daemon) -> None:
+    ms = MemoryStore(daemon.store, daemon.events)
+    await ms.write(tier="L3", content="thích video 60-90 giây", key="pref.duration")
+    target = "tone chuyên nghiệp trong video"
+    await ms.write(
+        tier="L3", content=target, key="pref.tone", embedding=(_embed(target), "stub.embed")
+    )
+
+
+@pytest.fixture
+def api_url_with_memory(tmp_path: Path) -> Iterator[str]:
+    port = _free_port()
+    server = _BackgroundDaemon(
+        tmp_path / ".paos" / "state.db", tmp_path / "workspace", port, seed=_seed_memory
+    )
     server.start()
     server.wait_ready()
     yield f"http://127.0.0.1:{port}"
@@ -275,3 +311,42 @@ def test_events_replay_unknown_subscriber_reports_error(runner: CliRunner, api_u
     )
     assert result.exit_code == 1
     assert "✗" in result.output
+
+
+def test_memory_list_shows_seeded_items(runner: CliRunner, api_url_with_memory: str) -> None:
+    result = runner.invoke(cli, ["--api-url", api_url_with_memory, "memory", "list", "L3"])
+    assert result.exit_code == 0
+    assert "pref.duration" in result.output
+    assert "pref.tone" in result.output
+
+
+def test_memory_list_empty_tier_reports_none(runner: CliRunner, api_url_with_memory: str) -> None:
+    result = runner.invoke(cli, ["--api-url", api_url_with_memory, "memory", "list", "L4"])
+    assert result.exit_code == 0
+    assert "không có ký ức nào" in result.output
+
+
+def test_memory_search_finds_similar_item(runner: CliRunner, api_url_with_memory: str) -> None:
+    result = runner.invoke(
+        cli,
+        [
+            "--api-url",
+            api_url_with_memory,
+            "memory",
+            "search",
+            "tone chuyên nghiệp trong video",
+            "--tier",
+            "L3",
+        ],
+    )
+    assert result.exit_code == 0
+    assert "tone chuyên nghiệp trong video" in result.output
+    assert "vector" in result.output
+
+
+def test_memory_search_no_match_reports_none(runner: CliRunner, api_url: str) -> None:
+    result = runner.invoke(
+        cli, ["--api-url", api_url, "memory", "search", "câu bất kỳ", "--tier", "L3"]
+    )
+    assert result.exit_code == 0
+    assert "không tìm thấy" in result.output

@@ -1,0 +1,11 @@
+id: ollama.bge-m3
+model: "bge-m3"
+implements: [text.embed@1]
+class: local
+privacy: private
+cost: {unit: token, in: 0, out: 0, currency: JPY}
+limits: {ctx: 8192, rpm: null, concurrent: 1}
+resources: []
+health_check: {type: http, url: "http://localhost:11434/api/tags", interval: 60}
+quality_hint: {default: 78}
+adapter: providers.ollama_bge_m3.adapter:OllamaEmbedAdapter

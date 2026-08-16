@@ -16,7 +16,9 @@ import pytest
 
 from kernel.registry.registry import Registry
 from providers.ollama.adapter import OllamaAdapter
+from providers.ollama_bge_m3.adapter import OllamaEmbedAdapter
 from providers.stub.adapter import StubAdapter
+from providers.stub_embed.adapter import StubEmbedAdapter
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _OLLAMA_UNREACHABLE_URL = "http://localhost:59999"  # giống tests/providers/ollama
@@ -47,6 +49,24 @@ def _ollama_unreachable() -> Iterator[OllamaAdapter]:
     yield OllamaAdapter(base_url=_OLLAMA_UNREACHABLE_URL)
 
 
+@contextmanager
+def _stub_embed_fail(code: str) -> Iterator[StubEmbedAdapter]:
+    old = os.environ.get("PAOS_STUB_FAIL")
+    os.environ["PAOS_STUB_FAIL"] = code
+    try:
+        yield StubEmbedAdapter()
+    finally:
+        if old is None:
+            os.environ.pop("PAOS_STUB_FAIL", None)
+        else:
+            os.environ["PAOS_STUB_FAIL"] = old
+
+
+@contextmanager
+def _ollama_embed_unreachable() -> Iterator[OllamaEmbedAdapter]:
+    yield OllamaEmbedAdapter(base_url=_OLLAMA_UNREACHABLE_URL)
+
+
 # provider_id -> {mã lỗi chuẩn -> cách mô phỏng}. Chỉ liệt kê mã THẬT mô phỏng được hôm
 # nay — thiếu 1 mã ở 1 provider nghĩa là test_error_simulation SKIP rõ ràng cho mã đó
 # (không silent-pass), không phải lỗi thiết kế (doc 19 P-M2-2 rủi ro #3: PROVIDER_TIMEOUT
@@ -58,5 +78,12 @@ FAULT_INJECTORS: dict[str, dict[str, Callable[[], Any]]] = {
     },
     "ollama.qwen2.5-14b": {
         "PROVIDER_DOWN": _ollama_unreachable,
+    },
+    "stub.embed": {
+        "PROVIDER_TIMEOUT": lambda: _stub_embed_fail("PROVIDER_TIMEOUT"),
+        "PROVIDER_DOWN": lambda: _stub_embed_fail("PROVIDER_DOWN"),
+    },
+    "ollama.bge-m3": {
+        "PROVIDER_DOWN": _ollama_embed_unreachable,
     },
 }

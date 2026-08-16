@@ -88,3 +88,10 @@ class EventType(StrEnum):
     # apps/paosd/app.py::edit_artifact là caller thật đầu tiên, sau khi
     # apps/paosd/artifact_store.py::record_edit() đo edit_rate xong.
     ARTIFACT_EDITED = "quality.artifact.edited"
+
+    # Memory & Knowledge (doc 05 §3.7, doc 07, P-M5-1) — doc 05 đã liệt tên
+    # này từ đầu dự án. apps/paosd/memory_store.py::MemoryStore.write() là
+    # caller thật đầu tiên. "preference.learned"/"consolidated" (doc 05 §3.7)
+    # CHƯA thêm — thuộc P-M5-2 (preference learning/consolidation job), chưa
+    # có caller thật ở lát cắt này.
+    MEMORY_ITEM_WRITTEN = "memory.item.written"

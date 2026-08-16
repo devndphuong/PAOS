@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://capabilities/text.embed/1/input.schema.json",
+  "title": "text.embed@1 input",
+  "description": "doc 04 §2.1, ADR-0015 — sinh vector embedding cho 1 đoạn text (retrieval lai, doc 07 §3).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["text"],
+  "properties": {
+    "text": { "type": "string", "minLength": 1 },
+    "task_class": {
+      "type": "string",
+      "description": "vd memory_l3_preference — dùng cho routing & thống kê (doc 06)"
+    }
+  }
+}

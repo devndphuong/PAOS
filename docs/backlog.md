@@ -80,6 +80,18 @@
 **Vì sao chấp nhận tạm thời:** event `quality.escalated.to_human` đã mang đủ thông tin audit tối thiểu (best_score, attempts, reason) cho M4 exit criteria; đây là nợ tuân thủ ADR-0014 chưa gây hư hại chức năng nào, không thuộc phạm vi P-M4-3 (eval harness/edit_rate).
 **Điều kiện trả nợ:** lát cắt tiếp theo chạm `_run_self_correction` — thêm 1 hàng `decisions` (`scope='self_correction_escalation'`, `candidates_json` = điểm từng vòng, `chosen`='escalate', `rationale`=lý do) ngay trước khi phát event, cùng khuôn mẫu `router.py::_write_decision`.
 
+### BL-013 · `MemoryRetriever` chưa triển khai bước 2 (Knowledge Graph walk) của truy hồi lai
+**Phát sinh:** P-M5-1 (2026-08-16, doc 19).
+**Hiện trạng:** `apps/paosd/memory_retriever.py::MemoryRetriever.search()` chỉ triển khai 4/5 bước doc 07 §3: (1) exact key lookup, (3) vector search, (4) recency boost, (5) rerank + ngân sách token. Bước (2) — "Knowledge Graph walk (2 hop từ entity trong yêu cầu)" — hoàn toàn chưa có, vì Knowledge Graph (`kg_nodes`/`kg_edges`, doc 03 §3) chưa tồn tại.
+**Vì sao chấp nhận tạm thời:** đúng thứ tự milestone đã lên kế hoạch — Knowledge Graph là P-M5-3, sau P-M5-1 (memory + retrieval) này. Xây bước 2 trước khi có KG là trừu tượng hoá cho dữ liệu chưa tồn tại (P4).
+**Điều kiện trả nợ:** P-M5-3 — sau khi `kg_nodes`/`kg_edges` có dữ liệu thật, thêm bước walk 2-hop vào `search()` giữa bước 1 và bước 3, merge kết quả cùng cách bước 3 đang làm (seen_ids tránh trùng lặp).
+
+### BL-014 · `memory_items` có cột `expires_at` (TTL cho L4) nhưng chưa có job dọn hết hạn
+**Phát sinh:** P-M5-1 (2026-08-16, doc 19).
+**Hiện trạng:** doc 07 §1 định nghĩa L4 (World Cache) "Xóa khi: TTL hết hạn". Migration 007 đã có cột `memory_items.expires_at` (đúng schema doc 03 §3) và `MemoryStore.write()` nhận `expires_at` khi ghi, nhưng KHÔNG có job/cơ chế nào đọc cột đó rồi dọn item đã hết hạn — dữ liệu L4 cứ tích tụ vô hạn.
+**Vì sao chấp nhận tạm thời:** chưa có caller thật nào ghi L4 với `expires_at` (P-M5-1 chỉ dựng hạ tầng lưu trữ/truy hồi, chưa có KnowledgeExtractor/ingestion pipeline thật ghi L4 — đó là P-M5-3). Xây job dọn rác cho dữ liệu chưa từng được ghi là trừu tượng hoá sớm.
+**Điều kiện trả nợ:** khi có caller thật ghi L4 (P-M5-3 KnowledgeExtractor, hoặc M9 Research Plugin) — thêm vào Consolidation Job hàng đêm (P-M5-2, doc 07 §5.2) một bước "xoá `memory_items` WHERE `tier='L4' AND expires_at < now`", cùng chỗ đã có `consolidation job chạy mỗi đêm`.
+
 ---
 
 ## Mục chưa phân loại
