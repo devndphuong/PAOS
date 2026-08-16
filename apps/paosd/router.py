@@ -41,6 +41,7 @@ import aiosqlite
 import yaml
 
 from apps.paosd.cache_store import CacheHit, CacheStore
+from apps.paosd.cost_engine import CostEngine
 from apps.paosd.provider_stats import ProviderStats, normalize_task_class
 from kernel import clock, ids
 from kernel.errors import PaosError
@@ -62,6 +63,8 @@ _BREAKER_OPEN_S = 60.0
 # file THẬT trong repo, để 26+ chỗ gọi Router(...) đã có (test + production)
 # không cần sửa khi thêm tham số này (doc 19 P-M6-3).
 _DEFAULT_ROUTING_POLICY_PATH = Path(__file__).resolve().parents[2] / "policies" / "routing.yaml"
+# Cùng lý do — default trỏ policies/budget.yaml thật (doc 19 P-M7-1).
+_DEFAULT_BUDGET_POLICY_PATH = Path(__file__).resolve().parents[2] / "policies" / "budget.yaml"
 _DEFAULT_PROFILE = "default"
 _LOCAL_PRIVACY_FIT = 1.0
 _NON_LOCAL_PRIVACY_FIT = 0.4
@@ -159,7 +162,9 @@ class Router:
         store: StateStore,
         resource_semaphores: dict[str, asyncio.Semaphore],
         workspace_root: Path,
+        *,
         routing_policy_path: Path = _DEFAULT_ROUTING_POLICY_PATH,
+        budget_policy_path: Path = _DEFAULT_BUDGET_POLICY_PATH,
     ) -> None:
         self._registry = registry
         self._events = events
@@ -169,6 +174,7 @@ class Router:
         self._cache = CacheStore(store, workspace_root / "cache")
         self._provider_stats = ProviderStats(store)
         self._routing_policy_path = routing_policy_path
+        self._cost_engine = CostEngine(store, budget_policy_path)
 
     async def call(
         self,
@@ -371,11 +377,20 @@ class Router:
             )
             return _AttemptOutcome(None, error, stop=False)
 
+        budget_outcome = await self._check_budget(
+            candidate, adapter, capability_ref, payload, process_id
+        )
+        if budget_outcome is not None:
+            return budget_outcome
+
         call_ctx = CallContext(
             call_id=ids.new_id("call"),
             process_id=process_id,
             task_id=None,
             deadline=None,
+            # budget_left CHỜ caller thật đọc tới — doc 06 §3.2 mốc 2 kiểm tra ở
+            # tầng Router (CostEngine.check_budget()), chưa cần adapter tự đọc
+            # cột này để tự quyết định gì (P4 — chưa 2 ca dùng thật).
             budget_left=None,
             privacy_class="private",
             cancel_token=asyncio.Event(),
@@ -391,7 +406,66 @@ class Router:
             return _AttemptOutcome(None, exc, stop=not exc.retryable)
 
         await self._record_success(candidate.manifest.provider_id, task_class)
+        usage = result.get("usage", {}) if isinstance(result.get("usage"), dict) else {}
+        await self._cost_engine.record_actual(
+            process_id=process_id,
+            task_id=None,
+            provider_id=candidate.manifest.provider_id,
+            capability=capability_ref,
+            manifest_cost=candidate.manifest.cost,
+            usage=usage,
+        )
         return _AttemptOutcome(result, None)
+
+    async def _check_budget(
+        self,
+        candidate: _Candidate,
+        adapter: Any,
+        capability_ref: str,
+        payload: dict[str, Any],
+        process_id: str,
+    ) -> _AttemptOutcome | None:
+        """doc 06 §3.2 mốc 2 — TRƯỚC invoke(), không phải sau. Trả `None` nếu
+        được phép tiến hành; trả `_AttemptOutcome` (để `_attempt()` return ngay)
+        nếu bị chặn. `action="ask"` DỪNG HẲN (`stop=True`, doc 19 P-M7-1 exit
+        criteria "bị chặn và hỏi" — Phần 2 nối `PermissionGuard` để audit +
+        phát `permission.approval.requested`). `force_local`/`block_cloud` chỉ
+        loại CANDIDATE không phải local, thử tiếp candidate khác — đúng "vượt
+        → BUDGET_EXCEEDED, thử fallback local" (doc 06 §3.2); candidate ĐÃ local
+        thì cho qua luôn — mục đích của 2 hành động này chính là đẩy về local,
+        chặn 1 candidate local vì lý do "ưu tiên local" là vô nghĩa."""
+        try:
+            estimate = await adapter.estimate(capability_ref, payload)
+        except (PaosError, ProviderError):
+            return None  # estimate() lỗi — không phải lỗi ngân sách, để invoke() tự xử lý
+
+        check = await self._cost_engine.check_budget(process_id, estimate.cost)
+        if check.allowed:
+            return None
+        if check.action != "ask" and candidate.manifest.provider_class == "local":
+            return None
+
+        candidate.eligible = False
+        candidate.reason = (
+            f"BUDGET_{(check.tier_name or '').upper()}_{(check.action or '').upper()}"
+        )
+        if check.action == "ask":
+            error = ProviderError(
+                "BUDGET_EXCEEDED",
+                f"Vượt ngân sách {check.tier_name} — cần xác nhận trước khi tiếp tục",
+                retryable=False,
+                hint="Xem policies/budget.yaml::budgets — chờ kỳ ngân sách mới hoặc sửa policy",
+                context={"tier": check.tier_name or ""},
+            )
+            return _AttemptOutcome(None, error, stop=True)
+        error = ProviderError(
+            "BUDGET_EXCEEDED",
+            f"Vượt ngân sách {check.tier_name} — chỉ thử provider local",
+            retryable=True,
+            hint="Provider cloud tạm bị loại tới khi ngân sách reset, thử provider local",
+            context={"tier": check.tier_name or ""},
+        )
+        return _AttemptOutcome(None, error, stop=False)
 
     @staticmethod
     async def _backoff(attempt: int) -> None:

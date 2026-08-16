@@ -1,0 +1,17 @@
+# Ngan sach 3 tang (doc 06 S3.3, doc 19 P-M7-1). DU LIEU, khong phai code (P10)
+# - CostEngine._load_budget_policy() doc lai MOI LAN goi (hot reload, cung tien
+# le policies/intents.yaml va policies/routing.yaml).
+#
+# on_exceed:
+#   ask         - CHAN NGAY, khong thu candidate khac (PermissionGuard CONFIRM,
+#                 mac dinh tu choi - doc 09 S3 "im lang khong bao gio la dong y")
+#   force_local - loai candidate KHONG local khoi chuoi fallback, thu tiep
+#   block_cloud - giong force_local (chua co khai bao rieng cho "cloud that su
+#                 bi chan" khac voi "chi uu tien local" - ca 2 hom nay cung mot
+#                 co che loc theo provider_class)
+version: 1
+budgets:
+  per_job: {max: 20, currency: JPY, on_exceed: ask}
+  per_day: {max: 200, currency: JPY, on_exceed: force_local}
+  per_month: {max: 3000, currency: JPY, on_exceed: block_cloud}
+warn_at_pct: 80

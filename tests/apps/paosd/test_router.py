@@ -32,19 +32,27 @@ class _FakeAdapter:
     """`fail_times` lần gọi invoke() đầu tiên raise lỗi giả, sau đó thành công."""
 
     def __init__(
-        self, *, fail_times: int = 0, error_code: str = "PROVIDER_DOWN", retryable: bool = True
+        self,
+        *,
+        fail_times: int = 0,
+        error_code: str = "PROVIDER_DOWN",
+        retryable: bool = True,
+        estimate_cost: float = 0.0,
+        usage: dict[str, int] | None = None,
     ) -> None:
         self.calls = 0
         self.fail_times = fail_times
         self.error_code = error_code
         self.retryable = retryable
+        self.estimate_cost = estimate_cost
+        self.usage = usage
         self.manifest = SimpleNamespace(resources=[])
 
     async def health(self) -> Health:
         return Health(healthy=True)
 
     async def estimate(self, capability: str, payload: dict[str, Any]) -> Estimate:
-        return Estimate(cost=0.0, latency_ms=1, confidence=1.0)
+        return Estimate(cost=self.estimate_cost, latency_ms=1, confidence=1.0)
 
     async def invoke(
         self, capability: str, payload: dict[str, Any], ctx: CallContext
@@ -54,7 +62,10 @@ class _FakeAdapter:
             raise ProviderError(
                 self.error_code, "lỗi giả lập", retryable=self.retryable, hint="test"
             )
-        return {"text": f"ok-{self.calls}"}
+        result: dict[str, Any] = {"text": f"ok-{self.calls}"}
+        if self.usage is not None:
+            result["usage"] = self.usage
+        return result
 
     async def cancel(self, call_id: str) -> None:
         pass
@@ -100,12 +111,14 @@ def _write_provider(
     enabled: bool = True,
     privacy: str = "private",
     provider_class: str = "local",
+    cost: dict[str, Any] | None = None,
 ) -> None:
     provider_dir = providers_dir / dirname
     provider_dir.mkdir(parents=True)
+    cost_yaml = yaml.safe_dump(cost, default_flow_style=True).strip() if cost else "{}"
     (provider_dir / "provider.yaml").write_text(
         f"id: {provider_id}\nimplements: [text.generate@1]\nclass: {provider_class}\n"
-        f"privacy: {privacy}\ncost: {{}}\nlimits: {{}}\nresources: []\nhealth_check: {{}}\n"
+        f"privacy: {privacy}\ncost: {cost_yaml}\nlimits: {{}}\nresources: []\nhealth_check: {{}}\n"
         f"quality_hint: {{}}\nenabled: {'true' if enabled else 'false'}\n",
         encoding="utf-8",
     )
@@ -335,6 +348,131 @@ async def test_routing_policy_hot_reload_changes_ranking_without_restart(
     )
     _, second_chosen = await router.call("text.generate@1", {"prompt": "x"}, "proc_2")
     assert second_chosen == "provider.local"  # w_p thắng tuyệt đối -> local có P cao hơn
+
+
+def _write_budget_policy(path: Path, budgets: dict[str, dict[str, object]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump({"version": 1, "budgets": budgets}), encoding="utf-8")
+
+
+async def test_budget_ask_blocks_call_entirely(
+    events: EventBus, store: StateStore, tmp_path: Path
+) -> None:
+    """P-M7-1 (doc 06 §3.2 mốc 2) — exit criteria: vượt ngân sách per_job
+    (on_exceed=ask) phải CHẶN NGAY, không thử candidate khác, không âm thầm
+    tiêu tiền (P12)."""
+    caps_dir = tmp_path / "capabilities"
+    providers_dir = tmp_path / "providers"
+    _write_fixture_capability(caps_dir)
+    _write_provider(providers_dir, "provider.pricey", "p_a")
+    reg = Registry(caps_dir, providers_dir)
+    reg.load()
+    reg.preload_adapter("provider.pricey", _FakeAdapter(estimate_cost=999.0))
+
+    budget_path = tmp_path / "policies" / "budget.yaml"
+    _write_budget_policy(
+        budget_path, {"per_job": {"max": 20, "currency": "JPY", "on_exceed": "ask"}}
+    )
+    router = Router(reg, events, store, {}, tmp_path, budget_policy_path=budget_path)
+
+    with pytest.raises(ProviderError) as exc_info:
+        await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
+    assert exc_info.value.code.value == "BUDGET_EXCEEDED"
+    decision = await _latest_decision(store)
+    assert decision["chosen"] is None
+    candidates = json.loads(decision["candidates_json"])
+    assert candidates[0]["reason"] == "BUDGET_PER_JOB_ASK"
+
+
+async def test_budget_force_local_skips_cloud_falls_back_to_local(
+    events: EventBus, store: StateStore, tmp_path: Path
+) -> None:
+    """`force_local`/`block_cloud` loại candidate CLOUD, thử tiếp — KHÔNG chặn
+    hẳn (khác `ask`) — đúng "vượt → BUDGET_EXCEEDED, thử fallback local"."""
+    caps_dir = tmp_path / "capabilities"
+    providers_dir = tmp_path / "providers"
+    _write_fixture_capability(caps_dir)
+    _write_provider(providers_dir, "provider.cloud", "p_cloud", provider_class="cloud")
+    _write_provider(providers_dir, "provider.local", "p_local", provider_class="local")
+    reg = Registry(caps_dir, providers_dir)
+    reg.load()
+    reg.preload_adapter("provider.cloud", _FakeAdapter(estimate_cost=999.0))
+    reg.preload_adapter("provider.local", _FakeAdapter(estimate_cost=0.0))
+
+    budget_path = tmp_path / "policies" / "budget.yaml"
+    _write_budget_policy(
+        budget_path, {"per_job": {"max": 20, "currency": "JPY", "on_exceed": "force_local"}}
+    )
+    router = Router(reg, events, store, {}, tmp_path, budget_policy_path=budget_path)
+
+    result, chosen = await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
+    assert chosen == "provider.local"
+    assert result == {"text": "ok-1"}
+
+
+async def test_budget_local_candidate_not_blocked_by_force_local(
+    events: EventBus, store: StateStore, tmp_path: Path
+) -> None:
+    """Candidate ĐÃ local không bị chặn bởi force_local/block_cloud dù estimate
+    cao — mục đích của 2 hành động này là đẩy về local, chặn candidate local là
+    vô nghĩa."""
+    caps_dir = tmp_path / "capabilities"
+    providers_dir = tmp_path / "providers"
+    _write_fixture_capability(caps_dir)
+    _write_provider(providers_dir, "provider.local", "p_local", provider_class="local")
+    reg = Registry(caps_dir, providers_dir)
+    reg.load()
+    reg.preload_adapter("provider.local", _FakeAdapter(estimate_cost=999.0))
+
+    budget_path = tmp_path / "policies" / "budget.yaml"
+    _write_budget_policy(
+        budget_path, {"per_job": {"max": 20, "currency": "JPY", "on_exceed": "force_local"}}
+    )
+    router = Router(reg, events, store, {}, tmp_path, budget_policy_path=budget_path)
+
+    result, chosen = await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
+    assert chosen == "provider.local"
+    assert result == {"text": "ok-1"}
+
+
+async def test_successful_call_records_actual_cost(
+    events: EventBus, store: StateStore, tmp_path: Path
+) -> None:
+    """doc 06 §3.2 mốc 3 — sau invoke() thành công, ghi cost_entries THẬT từ
+    usage trả về, khớp provider.yaml::cost."""
+    caps_dir = tmp_path / "capabilities"
+    providers_dir = tmp_path / "providers"
+    _write_fixture_capability(caps_dir)
+    _write_provider(
+        providers_dir,
+        "provider.metered",
+        "p_a",
+        cost={"unit": "token", "in": 0.001, "out": 0.002, "currency": "JPY"},
+    )
+    reg = Registry(caps_dir, providers_dir)
+    reg.load()
+    reg.preload_adapter(
+        "provider.metered", _FakeAdapter(usage={"in_tokens": 100, "out_tokens": 50})
+    )
+
+    router = Router(reg, events, store, {}, tmp_path)
+    await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
+
+    async def _select(conn: aiosqlite.Connection) -> tuple[Any, ...] | None:
+        cursor = await conn.execute(
+            "SELECT provider_id, capability, amount, currency, estimated FROM cost_entries "
+            "WHERE process_id = ?",
+            ("proc_1",),
+        )
+        return await cursor.fetchone()
+
+    row = await store.read(_select)
+    assert row is not None
+    assert row[0] == "provider.metered"
+    assert row[1] == "text.generate@1"
+    assert row[2] == pytest.approx(100 * 0.001 + 50 * 0.002)
+    assert row[3] == "JPY"
+    assert row[4] == 0
 
 
 async def test_exclude_provider_routes_to_next_candidate(
