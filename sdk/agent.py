@@ -162,14 +162,21 @@ class Agent(Protocol):
 
 
 PersistArtifact = Callable[[Artifact], Awaitable[None]]
-# (capability_ref, payload, exclude_provider) -> (result, chosen_provider_id).
+# (capability_ref, payload, exclude_provider, contains_private_l3) ->
+# (result, chosen_provider_id).
 # `exclude_provider` thêm ở P-M4-2 (ADR-0008, RSK-10) — Router cưỡng chế LLM
 # judge không được dùng CÙNG provider đã sinh ra artifact đang bị chấm.
 # `chosen_provider_id` cho AgentContext biết ai đã phục vụ lượt gọi vừa rồi
 # (AgentContext.last_provider_id) — cần để Script Agent tự ghi lại provider
 # đã sinh ra mình, cho Review Agent loại trừ đúng ở lượt review kế tiếp.
+# `contains_private_l3` thêm ở P-M5-4 (doc 07 §6, doc 09 §7) — Privacy Filter:
+# Agent tự khai payload đang gửi có mang Memory L3 riêng tư hay không, Router
+# chặn vô điều kiện mọi provider `class: cloud` khi True (xem apps/paosd/
+# router.py::Router._classify()). Callable type không hỗ trợ default cho
+# riêng tham số này — AgentContext.call() (bên dưới) cung cấp default `False`
+# ở TẦNG GỌI, nên 8 Agent thật hôm nay không cần sửa gì.
 CallCapability = Callable[
-    [str, dict[str, Any], "str | None"], Awaitable[tuple[dict[str, Any], "str | None"]]
+    [str, dict[str, Any], "str | None", bool], Awaitable[tuple[dict[str, Any], "str | None"]]
 ]
 EmitEvent = Callable[[str, dict[str, Any]], Awaitable[None]]
 ReportProgress = Callable[[float, str], Awaitable[None]]
@@ -220,15 +227,28 @@ class AgentContext:
         self._last_provider_id: str | None = None
 
     async def call(
-        self, capability_ref: str, payload: dict[str, Any], *, exclude_provider: str | None = None
+        self,
+        capability_ref: str,
+        payload: dict[str, Any],
+        *,
+        exclude_provider: str | None = None,
+        contains_private_l3: bool = False,
     ) -> dict[str, Any]:
+        """`contains_private_l3` (P-M5-4) — đánh dấu payload này mang nội
+        dung Memory L3 riêng tư (đã đọc từ MemoryRetriever/MemoryStore và
+        nhúng vào prompt), để Router chặn vô điều kiện mọi provider `class:
+        cloud` (doc 07 §6). Mặc định `False` — hôm nay chưa Agent nào thật sự
+        đọc lại L3 để dùng (docs/backlog.md BL-015), nên đây là hạ tầng SẴN
+        SÀNG cho caller tương lai, không đổi hành vi Agent hiện có."""
         if capability_ref not in self._manifest.capabilities:
             raise AgentError(
                 ErrorCode.PERMISSION_DENIED,
                 f"Agent {self._manifest.agent_id} không khai báo capability {capability_ref}",
                 hint=f"Thêm '{capability_ref}' vào capabilities trong manifest.yaml của agent",
             )
-        result, provider_id = await self._call_capability(capability_ref, payload, exclude_provider)
+        result, provider_id = await self._call_capability(
+            capability_ref, payload, exclude_provider, contains_private_l3
+        )
         self._last_provider_id = provider_id
         return result
 

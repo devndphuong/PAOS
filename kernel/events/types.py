@@ -95,6 +95,11 @@ class EventType(StrEnum):
     # CHƯA thêm — thuộc P-M5-2 (preference learning/consolidation job), chưa
     # có caller thật ở lát cắt này.
     MEMORY_ITEM_WRITTEN = "memory.item.written"
+    # "memory.item.forgotten" KHÔNG có trong doc 05 gốc — thêm mới ở P-M5-4
+    # (cùng tiền lệ "subtitle.created" ở P-M3-4), đã bổ sung vào bảng doc 05
+    # §3.7. apps/paosd/memory_store.py::MemoryStore.forget() là caller thật
+    # đầu tiên (doc 07 §6, ADR-0029 — xóa cứng thật, không qua Trash).
+    MEMORY_ITEM_FORGOTTEN = "memory.item.forgotten"
 
     # Knowledge Graph (doc 05 §3.7, doc 07 §4, P-M5-3) — doc 05 đã liệt 3 tên
     # này từ đầu dự án. apps/paosd/knowledge_store.py::KnowledgeStore là
@@ -102,3 +107,12 @@ class EventType(StrEnum):
     KNOWLEDGE_NODE_CREATED = "knowledge.node.created"
     KNOWLEDGE_EDGE_CREATED = "knowledge.edge.created"
     KNOWLEDGE_CONFLICT_DETECTED = "knowledge.conflict.detected"
+
+    # Privacy Filter (doc 07 §6, doc 09 §7, P-M5-4) — KHÔNG có trong doc 05
+    # gốc, thêm mới (cùng tiền lệ "quality.artifact.edited" ở P-M4-3), đã bổ
+    # sung vào bảng doc 05 §3.9. apps/paosd/router.py::Router.call() là caller
+    # thật đầu tiên — phát khi 1 candidate provider `class: cloud` bị loại vì
+    # payload mang Memory L3 riêng tư (`contains_private_l3=True`), BẤT KỂ
+    # provider đó tự khai `privacy:` gì trong provider.yaml (chống provider
+    # khai gian, xem docstring Router._classify()).
+    PRIVACY_CLOUD_SEND_BLOCKED = "privacy.cloud_send.blocked"

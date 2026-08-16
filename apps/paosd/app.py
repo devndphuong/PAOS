@@ -157,6 +157,24 @@ class KGExportResponse(BaseModel):
     edge_count: int
 
 
+class MemoryForgetResponse(BaseModel):
+    memory_id: str
+    forgotten: bool
+
+
+class MemoryExportResponse(BaseModel):
+    path: str
+    count: int
+
+
+class MemoryImportRequest(BaseModel):
+    items: list[dict[str, Any]]
+
+
+class MemoryImportResponse(BaseModel):
+    count: int
+
+
 def _to_event_response(e: EventEnvelope) -> EventResponse:
     return EventResponse(
         event_id=e.event_id,
@@ -396,6 +414,44 @@ def create_app(  # noqa: PLR0915 — đăng ký route tăng tuyến tính theo s
             raise HTTPException(status_code=400, detail="Cần ít nhất 'tier' hoặc 'q'")
         items = await memory_store.list_by_tier(tier, limit=limit)
         return [_memory_item_response(i, score=None, matched_via=None) for i in items]
+
+    @app.get("/v1/memory/{memory_id}", response_model=MemoryItemResponse)
+    async def get_memory_item(memory_id: str) -> MemoryItemResponse:
+        """doc 07 §6 — `paosctl memory show <id>`."""
+        item = await memory_store.get(memory_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail=f"Memory '{memory_id}' không tồn tại")
+        return _memory_item_response(item, score=None, matched_via=None)
+
+    @app.delete("/v1/memory/{memory_id}", response_model=MemoryForgetResponse)
+    async def forget_memory(memory_id: str) -> MemoryForgetResponse:
+        """doc 07 §6, ADR-0029 — `paosctl memory forget <id>`. XÓA CỨNG THẬT,
+        không qua Trash (ngoại lệ có chủ đích với ADR-0012, xem ADR-0029)."""
+        forgotten = await memory_store.forget(memory_id)
+        if not forgotten:
+            raise HTTPException(status_code=404, detail=f"Memory '{memory_id}' không tồn tại")
+        return MemoryForgetResponse(memory_id=memory_id, forgotten=True)
+
+    @app.post("/v1/memory/export", response_model=MemoryExportResponse)
+    async def export_memory() -> MemoryExportResponse:
+        """doc 07 §6 — "Xuất toàn bộ memory dạng JSON để bạn tự soi và tự
+        sửa". THỦ CÔNG, cùng tiền lệ `/v1/knowledge/export` (P-M5-3)."""
+        items = await memory_store.export_json()
+        out_path = workspace_root / "memory" / "export.json"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+        return MemoryExportResponse(
+            path=str(out_path.relative_to(workspace_root)), count=len(items)
+        )
+
+    @app.post("/v1/memory/import", response_model=MemoryImportResponse)
+    async def import_memory(body: MemoryImportRequest) -> MemoryImportResponse:
+        """doc 07 §6 — nhập lại JSON đã xuất (và có thể đã tự sửa tay).
+        Client (`paosctl memory import <file>`) đọc file cục bộ rồi gửi mảng
+        item qua đây — server không tự đọc file theo đường dẫn (tránh path
+        traversal, nhất quán `AgentContext.write_artifact` đã có)."""
+        count = await memory_store.import_json(body.items)
+        return MemoryImportResponse(count=count)
 
     @app.get("/v1/knowledge/nodes", response_model=list[KGNodeResponse])
     async def list_kg_nodes(type: str | None = None, limit: int = 100) -> list[KGNodeResponse]:

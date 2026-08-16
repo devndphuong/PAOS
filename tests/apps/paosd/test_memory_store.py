@@ -179,3 +179,133 @@ async def test_update_with_no_fields_is_a_noop(memory_store: MemoryStore) -> Non
     assert unchanged is not None
     assert unchanged.content == "x"
     assert unchanged.confidence == 0.7
+
+
+# --- forget() — doc 07 §6, ADR-0029 (xóa cứng thật, ngoại lệ ADR-0012) -----
+
+
+async def test_forget_hard_deletes_row_not_just_marks_it(memory_store: MemoryStore) -> None:
+    item = await memory_store.write(tier="L3", content="riêng tư", key="pref.x")
+    ok = await memory_store.forget(item.memory_id)
+
+    assert ok is True
+    assert await memory_store.get(item.memory_id) is None
+    remaining = await memory_store.list_by_tier("L3")
+    assert item.memory_id not in [i.memory_id for i in remaining]
+
+
+async def test_forget_also_deletes_vector_row(memory_store: MemoryStore) -> None:
+    item = await memory_store.write(
+        tier="L3", content="x", key="pref.x", embedding=([0.1, 0.2], "stub.embed")
+    )
+    await memory_store.forget(item.memory_id)
+
+    async def _count(conn):  # type: ignore[no-untyped-def]
+        cursor = await conn.execute(
+            "SELECT COUNT(*) FROM memory_vectors WHERE memory_id = ?", (item.memory_id,)
+        )
+        row = await cursor.fetchone()
+        return row[0]
+
+    assert await memory_store._store.read(_count) == 0
+
+
+async def test_forget_unknown_id_returns_false(memory_store: MemoryStore) -> None:
+    assert await memory_store.forget("mem_khong_ton_tai") is False
+
+
+async def test_forget_emits_event_without_content(
+    memory_store: MemoryStore, events: EventBus
+) -> None:
+    received = []
+
+    async def _handler(envelope):  # type: ignore[no-untyped-def]
+        received.append(envelope)
+
+    events.subscribe("watcher", "memory.item.forgotten", _handler)
+    item = await memory_store.write(tier="L3", content="bí mật cá nhân", key="pref.x")
+    await memory_store.forget(item.memory_id)
+
+    assert len(received) == 1
+    assert received[0].payload == {"memory_id": item.memory_id, "tier": "L3", "key": "pref.x"}
+    assert "content" not in received[0].payload
+    assert "bí mật cá nhân" not in str(received[0].payload)
+
+
+async def test_forget_twice_is_idempotent(memory_store: MemoryStore) -> None:
+    item = await memory_store.write(tier="L3", content="x", key="pref.x")
+    assert await memory_store.forget(item.memory_id) is True
+    assert await memory_store.forget(item.memory_id) is False  # đã mất, không lỗi
+
+
+# --- export_json()/import_json() — doc 07 §6 "tự soi và tự sửa" ------------
+
+
+async def test_export_json_includes_all_tiers(memory_store: MemoryStore) -> None:
+    await memory_store.write(tier="L3", content="a", key="k1")
+    await memory_store.write(tier="L4", content="b", key="k2")
+
+    exported = await memory_store.export_json()
+
+    assert len(exported) == 2
+    tiers = {e["tier"] for e in exported}
+    assert tiers == {"L3", "L4"}
+    assert all("content" in e and "confidence" in e for e in exported)
+
+
+async def test_import_json_creates_new_rows(memory_store: MemoryStore) -> None:
+    count = await memory_store.import_json(
+        [
+            {"tier": "L3", "content": "nhập từ file", "key": "pref.y", "confidence": 0.6},
+        ]
+    )
+    assert count == 1
+    found = await memory_store.get_by_key("L3", "pref.y")
+    assert found is not None
+    assert found.content == "nhập từ file"
+    assert found.confidence == pytest.approx(0.6)
+
+
+async def test_import_json_with_existing_memory_id_updates_in_place(
+    memory_store: MemoryStore,
+) -> None:
+    item = await memory_store.write(tier="L3", content="cũ", key="pref.z", confidence=0.3)
+
+    count = await memory_store.import_json(
+        [{"memory_id": item.memory_id, "content": "đã tự sửa tay", "confidence": 0.9}]
+    )
+
+    assert count == 1
+    updated = await memory_store.get(item.memory_id)
+    assert updated is not None
+    assert updated.content == "đã tự sửa tay"
+    assert updated.confidence == pytest.approx(0.9)
+    all_l3 = await memory_store.list_by_tier("L3")
+    assert len(all_l3) == 1  # cập nhật tại chỗ, không tạo hàng mới
+
+
+async def test_import_json_redacts_secret_content(memory_store: MemoryStore) -> None:
+    await memory_store.import_json(
+        [{"tier": "L4", "content": "key=sk-abcdef1234567890", "key": "leak"}]
+    )
+    found = await memory_store.get_by_key("L4", "leak")
+    assert found is not None
+    assert "sk-abcdef1234567890" not in found.content
+    assert "***REDACTED***" in found.content
+
+
+async def test_export_then_import_roundtrip(memory_store: MemoryStore) -> None:
+    await memory_store.write(tier="L3", content="a", key="k1", confidence=0.55)
+    exported = await memory_store.export_json()
+
+    # Xóa hết rồi nhập lại từ bản xuất — mô phỏng "tự soi rồi tự sửa lại".
+    for e in exported:
+        await memory_store.forget(e["memory_id"])
+    assert await memory_store.list_by_tier("L3") == []
+
+    imported_count = await memory_store.import_json(exported)
+    assert imported_count == len(exported)
+    restored = await memory_store.get_by_key("L3", "k1")
+    assert restored is not None
+    assert restored.content == "a"
+    assert restored.confidence == pytest.approx(0.55)

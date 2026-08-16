@@ -35,7 +35,10 @@ async def _noop_persist(artifact: Artifact) -> None:
 
 
 async def _noop_call(
-    capability_ref: str, payload: dict, exclude_provider: str | None = None
+    capability_ref: str,
+    payload: dict,
+    exclude_provider: str | None = None,
+    contains_private_l3: bool = False,
 ) -> tuple[dict, str | None]:
     return {
         "video": {"placeholder_text": "kết quả giả", "duration_sec": 5.0, "image_count": 1}
@@ -134,7 +137,10 @@ async def test_render_full_lifecycle_reports_progress_and_handles_degraded(
     stub = StubRenderAdapter()
 
     async def call_capability(
-        capability_ref: str, payload: dict, exclude_provider: str | None = None
+        capability_ref: str,
+        payload: dict,
+        exclude_provider: str | None = None,
+        contains_private_l3: bool = False,
     ) -> tuple[dict, str | None]:
         cap_id, version = capability_ref.split("@")
         providers = registry.providers_for(cap_id, int(version))

@@ -118,6 +118,7 @@ Ví dụ theo luồng video: `agent.planning.completed` → `plan.created` → S
 | Event | Payload |
 |---|---|
 | `memory.item.written` | memory_id, tier, key |
+| `memory.item.forgotten` | memory_id, tier, key — mới P-M5-4, không có trong bản gốc. `apps/paosd/memory_store.py::MemoryStore.forget()` phát sau khi XÓA CỨNG THẬT (ADR-0029). CỐ Ý không mang `content`. |
 | `memory.preference.learned` | key, value, confidence |
 | `memory.consolidated` | from_tier, to_tier, n |
 | `knowledge.node.created` | node_id, type, label |
@@ -142,6 +143,7 @@ Ví dụ theo luồng video: `agent.planning.completed` → `plan.created` → S
 | `permission.approval.requested` | approval_id, action, target, tier |
 | `permission.approval.granted` / `denied` | approval_id, by |
 | `permission.violation.blocked` | actor, action, target |
+| `privacy.cloud_send.blocked` | capability, provider_id, decision_id — mới P-M5-4, không có trong bản gốc. `apps/paosd/router.py::Router.call()` phát khi Privacy Filter loại 1 candidate provider `class: cloud` vì payload mang Memory L3 riêng tư (`contains_private_l3=True`), BẤT KỂ provider tự khai `privacy:` gì. CỐ Ý không mang nội dung payload. |
 | `plugin.installed` / `removed` / `enabled` / `disabled` | plugin_id, version |
 | `plugin.crashed` | plugin_id, error |
 

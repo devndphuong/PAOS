@@ -41,6 +41,10 @@ def _post(client: httpx.Client, path: str, **kwargs: Any) -> httpx.Response:
     return _request(client, "POST", path, **kwargs)
 
 
+def _delete(client: httpx.Client, path: str, **kwargs: Any) -> httpx.Response:
+    return _request(client, "DELETE", path, **kwargs)
+
+
 @click.group()
 @click.option(
     "--api-url",
@@ -324,6 +328,58 @@ def memory_review(ctx: click.Context, tier: str) -> None:
         for it in rows:
             key = it["key"] or "-"
             click.echo(f"  {key:<20} {it['content']:<24} confidence={it['confidence']:.2f}")
+
+
+@memory.command("show")
+@click.argument("memory_id")
+@click.pass_context
+def memory_show(ctx: click.Context, memory_id: str) -> None:
+    """Xem chi tiết 1 ký ức theo ID (doc 07 §6)."""
+    with _client(ctx) as client:
+        it = _get(client, f"/v1/memory/{memory_id}").json()
+    click.echo(f"{it['memory_id']}  [{it['tier']}]  key={it['key'] or '-'}")
+    click.echo(f"  content: {it['content']}")
+    click.echo(f"  confidence={it['confidence']:.2f}  salience={it['salience']:.2f}")
+    click.echo(f"  created_at={it['created_at']}  last_used_at={it['last_used_at'] or '-'}")
+
+
+@memory.command("forget")
+@click.argument("memory_id")
+@click.option("--yes", "-y", is_flag=True, help="Bỏ qua xác nhận (dùng trong script).")
+@click.pass_context
+def memory_forget(ctx: click.Context, memory_id: str, yes: bool) -> None:
+    """XÓA CỨNG THẬT 1 ký ức (doc 07 §6, ADR-0029) — KHÔNG qua Trash, KHÔNG
+    khôi phục được. Đây là NGOẠI LỆ duy nhất với chính sách xóa mềm chung của
+    PAOS (ADR-0012) — "quên" chỉ có nghĩa nếu dữ liệu THẬT SỰ biến mất ngay."""
+    if not yes:
+        with _client(ctx) as client:
+            it = _get(client, f"/v1/memory/{memory_id}").json()
+        click.echo(f"Sắp XÓA VĨNH VIỄN: {it['memory_id']} [{it['tier']}] {it['content']}")
+        click.confirm("Không thể hoàn tác, không có Trash. Tiếp tục?", abort=True)
+    with _client(ctx) as client:
+        _delete(client, f"/v1/memory/{memory_id}")
+    click.echo(f"✓ Đã quên {memory_id} — không thể khôi phục")
+
+
+@memory.command("export")
+@click.pass_context
+def memory_export(ctx: click.Context) -> None:
+    """Xuất toàn bộ memory ra JSON để tự soi/tự sửa (doc 07 §6) — THỦ CÔNG."""
+    with _client(ctx) as client:
+        body = _post(client, "/v1/memory/export").json()
+    click.echo(f"✓ Đã xuất {body['count']} ký ức -> {body['path']}")
+
+
+@memory.command("import")
+@click.argument("json_file", type=click.Path(exists=True, dir_okay=False))
+@click.pass_context
+def memory_import(ctx: click.Context, json_file: str) -> None:
+    """Nhập lại memory đã xuất (và có thể đã tự tay sửa) — doc 07 §6."""
+    with open(json_file, encoding="utf-8") as f:
+        items = json.load(f)
+    with _client(ctx) as client:
+        body = _post(client, "/v1/memory/import", json={"items": items}).json()
+    click.echo(f"✓ Đã nhập {body['count']} ký ức từ {json_file}")
 
 
 @cli.group()

@@ -39,7 +39,10 @@ async def _noop_emit(event_type: str, payload: dict) -> None:
 
 def _judge_call(score: float):
     async def call_capability(
-        capability_ref: str, payload: dict, exclude_provider: str | None = None
+        capability_ref: str,
+        payload: dict,
+        exclude_provider: str | None = None,
+        contains_private_l3: bool = False,
     ) -> tuple[dict, str | None]:
         verdict = {"score": score, "issue": None, "suggestion": None, "keep_note": None}
         return {"text": json.dumps(verdict)}, "fake.judge.provider"
@@ -184,7 +187,10 @@ async def test_resume_raises_not_supported() -> None:
 
 async def test_execute_raises_on_malformed_judge_json(tmp_path: Path) -> None:
     async def _bad_call(
-        capability_ref: str, payload: dict, exclude_provider: str | None = None
+        capability_ref: str,
+        payload: dict,
+        exclude_provider: str | None = None,
+        contains_private_l3: bool = False,
     ) -> tuple[dict, str | None]:
         return {"text": "not json at all"}, None
 

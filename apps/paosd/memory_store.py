@@ -209,6 +209,108 @@ class MemoryStore:
 
         await self._store.write(_update)
 
+    async def forget(self, memory_id: str) -> bool:
+        """doc 07 §6 — "quyền xóa tuyệt đối thuộc về người dùng". XÓA CỨNG
+        THẬT (DELETE, không qua `trash/`) — ngoại lệ CÓ CHỦ Ý với ADR-0012
+        (xóa mềm là mặc định toàn hệ thống), xem ADR-0029 (docs/15-adr-log.md)
+        để biết đầy đủ lý do: "quên" chỉ có ý nghĩa nếu dữ liệu THẬT SỰ biến
+        mất ngay, không nằm 30 ngày đọc được trong Trash. CHỈ xóa
+        `memory_items`/`memory_vectors` — KHÔNG đụng Knowledge Graph (doc 07
+        §4.4: KG không bao giờ xóa, dùng `invalidated_at`, chính sách ngược
+        lại có chủ đích). Trả `False` nếu `memory_id` không tồn tại (idempotent
+        — gọi `forget()` 2 lần trên cùng ID không phải lỗi)."""
+        existing = await self.get(memory_id)
+        if existing is None:
+            return False
+
+        async def _delete(conn: aiosqlite.Connection) -> None:
+            await conn.execute("DELETE FROM memory_vectors WHERE memory_id = ?", (memory_id,))
+            await conn.execute("DELETE FROM memory_items WHERE memory_id = ?", (memory_id,))
+
+        await self._store.write(_delete)
+        await self._events.publish(
+            EventType.MEMORY_ITEM_FORGOTTEN.value,
+            source="paosd.memory",
+            # CỐ Ý KHÔNG mang `content` — ghi lại "đã quên" không được làm lộ
+            # lại chính thứ vừa bị quên vào Event Log (bất biến, ADR-0003).
+            payload={"memory_id": memory_id, "tier": existing.tier, "key": existing.key},
+        )
+        return True
+
+    async def export_json(self) -> list[dict[str, Any]]:
+        """doc 07 §6 — "Xuất/nhập toàn bộ memory dạng JSON để bạn tự soi và
+        tự sửa". KHÔNG xuất `embedding` (BLOB nhị phân, không hợp JSON, và
+        không cần thiết để tự soi/tự sửa NỘI DUNG — `import_json()` không
+        phục hồi vector, caller cần re-embed riêng nếu muốn truy hồi vector
+        lại đúng, ngoài phạm vi round-trip "tự soi/tự sửa" mà doc 07 §6 mô tả)."""
+
+        async def _select(conn: aiosqlite.Connection) -> Any:
+            cursor = await conn.execute(_SELECT_ITEM + "ORDER BY created_at")
+            return await cursor.fetchall()
+
+        rows = await self._store.read(_select)
+        items = [row_to_item(r) for r in rows]
+        return [
+            {
+                "memory_id": i.memory_id,
+                "tier": i.tier,
+                "scope_id": i.scope_id,
+                "kind": i.kind,
+                "key": i.key,
+                "content": i.content,
+                "meta": i.meta,
+                "salience": i.salience,
+                "confidence": i.confidence,
+                "source": i.source,
+                "expires_at": i.expires_at,
+                "created_at": i.created_at,
+                "last_used_at": i.last_used_at,
+                "use_count": i.use_count,
+            }
+            for i in items
+        ]
+
+    async def import_json(self, items: list[dict[str, Any]]) -> int:
+        """Nhập lại JSON đã `export_json()` (và có thể đã tự tay sửa) — doc 07
+        §6 "tự soi và tự sửa". UPSERT theo `memory_id` NẾU có VÀ hàng đó còn
+        tồn tại (giữ nguyên ID, sửa TẠI CHỖ — đúng mô hình `update()` đã có,
+        không phải Artifact bất biến); ngược lại tạo hàng MỚI (bỏ qua
+        `memory_id` client gửi lên, `write()` tự sinh ID mới — không cho
+        client tự chọn ID cho hàng mới, tránh đụng độ PRIMARY KEY). `redact()`
+        vẫn áp dụng qua `write()`/`update()` — import KHÔNG phải đường tắt bỏ
+        qua SEC-01. Trả về số item đã xử lý (tạo mới + cập nhật)."""
+        count = 0
+        for raw in items:
+            content = str(raw.get("content", ""))
+            memory_id = raw.get("memory_id")
+            existing = await self.get(memory_id) if memory_id else None
+            if existing is not None:
+                await self.update(
+                    memory_id,
+                    content=content,
+                    confidence=raw.get("confidence"),
+                    scope_id=raw.get("scope_id"),
+                )
+                count += 1
+                continue
+
+            salience = raw.get("salience")
+            confidence = raw.get("confidence")
+            await self.write(
+                tier=raw.get("tier", "L3"),
+                content=content,
+                scope_id=raw.get("scope_id"),
+                kind=raw.get("kind"),
+                key=raw.get("key"),
+                meta=raw.get("meta"),
+                salience=salience if salience is not None else 0.5,
+                confidence=confidence if confidence is not None else 0.7,
+                source=raw.get("source"),
+                expires_at=raw.get("expires_at"),
+            )
+            count += 1
+        return count
+
     async def update(
         self,
         memory_id: str,

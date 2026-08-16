@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://schemas/events/privacy.cloud_send.blocked.v1.schema.json",
+  "title": "privacy.cloud_send.blocked payload",
+  "description": "doc 07 §6, doc 09 §7, P-M5-4 — apps/paosd/router.py::Router.call() phát khi Privacy Filter loại 1 candidate provider `class: cloud` khỏi ứng viên vì payload mang Memory L3 riêng tư (`contains_private_l3=True`), BẤT KỂ provider đó tự khai `privacy:` gì. Payload CỐ Ý chỉ mang provider_id/capability/decision_id — KHÔNG mang nội dung payload thật (chống rò rỉ chính thứ đang được bảo vệ vào Trace/log).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["capability", "provider_id", "decision_id"],
+  "properties": {
+    "capability": { "type": "string" },
+    "provider_id": { "type": "string" },
+    "decision_id": { "type": "string" }
+  }
+}

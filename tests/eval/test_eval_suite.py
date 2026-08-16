@@ -70,7 +70,10 @@ async def _noop_emit(event_type: str, payload: dict[str, Any]) -> None:
 
 def _make_generate_call_capability(text: str) -> Any:
     async def call_capability(
-        capability_ref: str, payload: dict[str, Any], exclude_provider: str | None = None
+        capability_ref: str,
+        payload: dict[str, Any],
+        exclude_provider: str | None = None,
+        contains_private_l3: bool = False,
     ) -> tuple[dict[str, Any], str | None]:
         return {"text": text, "usage": {}}, "stub.deterministic"
 

@@ -158,7 +158,11 @@ Consolidation Job (03:00)
 
 ## 6. Quyền riêng tư & kiểm soát
 
-- `paosctl memory list|show|forget <id>` — quyền xóa tuyệt đối thuộc về người dùng.
-- Memory L3 **không bao giờ** được gửi tới provider `class: cloud` trừ khi Job có `privacy: shared` và người dùng đã đồng ý.
-- Trước mỗi capability call ra cloud, Privacy Filter kiểm tra payload chứa memory L3 nào → ghi vào Trace.
-- Xuất/nhập toàn bộ memory dạng JSON để bạn tự soi và tự sửa.
+**Đã triển khai (P-M5-4).**
+
+- `paosctl memory list|show|forget <id>` — quyền xóa tuyệt đối thuộc về người dùng. `forget` là **xóa cứng thật** (không qua `trash/`, không khôi phục được) — ngoại lệ có chủ đích với chính sách xóa mềm chung (ADR-0012), xem ADR-0029 để biết lý do đầy đủ. Yêu cầu xác nhận tay ở CLI (`--yes` để bỏ qua trong script).
+- Memory L3 **không bao giờ** được gửi tới provider `class: cloud`: `apps/paosd/router.py::Router.call(..., contains_private_l3=True)` chặn VÔ ĐIỀU KIỆN mọi candidate `provider_class == "cloud"`, bất kể provider đó tự khai `privacy:` gì trong `provider.yaml` (chống provider khai gian/cấu hình sai — xem test đối kháng `tests/apps/paosd/test_privacy_filter.py`). Nhánh "trừ khi Job có `privacy: shared` và người dùng đã đồng ý" CHƯA triển khai — Job.privacy_class thật và luồng đồng ý (M7/M8) chưa tồn tại; quy tắc rút gọn AN TOÀN hôm nay là chặn tuyệt đối, không có ngoại lệ.
+- Trước mỗi capability call ra cloud có `contains_private_l3=True`, Privacy Filter ghi Decision Record (Trace) VÀ phát event riêng `privacy.cloud_send.blocked` — cả hai đều CỐ Ý không mang nội dung payload thật, chỉ mang provider_id/capability/decision_id.
+- `contains_private_l3` là cờ do CALLER tự khai (Agent qua `AgentContext.call(..., contains_private_l3=True)`), không phải Router tự quét nội dung — đủ cho quy mô hôm nay vì **chưa Agent nào thật sự đọc lại Memory L3 để dùng** (docs/backlog.md BL-015/BL-019); cơ chế chặn đã CHẠY THẬT và kiểm bằng test đối kháng, sẵn sàng cho caller thật đầu tiên.
+- Xuất/nhập toàn bộ memory dạng JSON để bạn tự soi và tự sửa: `paosctl memory export` / `paosctl memory import <file>` (không xuất vector embedding — BLOB nhị phân, ngoài phạm vi "tự soi/tự sửa nội dung").
+- Knowledge Graph đi theo hướng NGƯỢC LẠI có chủ đích: không có `knowledge forget` — §4.4 "không xóa, dùng `invalidated_at`" áp dụng nguyên vẹn, xem ADR-0029.

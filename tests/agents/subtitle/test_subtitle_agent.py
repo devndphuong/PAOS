@@ -36,7 +36,10 @@ async def _noop_persist(artifact: Artifact) -> None:
 
 
 async def _noop_call(
-    capability_ref: str, payload: dict, exclude_provider: str | None = None
+    capability_ref: str,
+    payload: dict,
+    exclude_provider: str | None = None,
+    contains_private_l3: bool = False,
 ) -> tuple[dict, str | None]:
     return {"text": "1\n00:00:00,000 --> 00:00:01,000\nkết quả giả\n"}, None
 
@@ -117,7 +120,10 @@ async def test_subtitle_full_lifecycle_all_6_steps(store: StateStore, tmp_path: 
     local = LocalSubtitleAdapter()
 
     async def call_capability(
-        capability_ref: str, payload: dict, exclude_provider: str | None = None
+        capability_ref: str,
+        payload: dict,
+        exclude_provider: str | None = None,
+        contains_private_l3: bool = False,
     ) -> tuple[dict, str | None]:
         cap_id, version = capability_ref.split("@")
         providers = registry.providers_for(cap_id, int(version))

@@ -626,10 +626,17 @@ class WorkflowRunner:
 
     def _make_call_capability(self, process_id: str) -> CallCapability:
         async def call_capability(
-            capability_ref: str, payload: dict[str, Any], exclude_provider: str | None
+            capability_ref: str,
+            payload: dict[str, Any],
+            exclude_provider: str | None,
+            contains_private_l3: bool,
         ) -> tuple[dict[str, Any], str | None]:
             return await self._router.call(
-                capability_ref, payload, process_id, exclude_provider=exclude_provider
+                capability_ref,
+                payload,
+                process_id,
+                exclude_provider=exclude_provider,
+                contains_private_l3=contains_private_l3,
             )
 
         return call_capability

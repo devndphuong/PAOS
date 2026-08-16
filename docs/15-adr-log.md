@@ -309,6 +309,29 @@ Không có `&&`/`||` để gộp nhiều điều kiện — muốn logic phức 
 
 ---
 
+## ADR-0029 — `paosctl memory forget`: xóa cứng thật, ngoại lệ có chủ đích với ADR-0012
+
+**Trạng thái:** Accepted · 2026-08 · Quyết định P-M5-4 ([doc 19](19-prompt-library.md))
+
+**Bối cảnh:** doc 07 §6 nói "`paosctl memory list|show|forget <id>` — quyền xóa tuyệt đối thuộc về người dùng." ADR-0012 (đã Accepted trước đó) chốt chính sách xóa mềm CHUNG cho TOÀN hệ thống: "không có thao tác xóa cứng nào trong hệ thống. Xóa = chuyển vào `trash/YYYY-MM-DD/`, dọn tự động sau 30 ngày, có `restore`." Hai quyết định này va nhau trực tiếp ở đúng 1 điểm: nếu `memory forget` tuân ADR-0012 nguyên vẹn, dữ liệu "đã quên" vẫn tồn tại nguyên vẹn, đọc được, khôi phục được trong 30 ngày — mâu thuẫn với chữ "tuyệt đối" mà doc 07 §6 dùng, và đặc biệt nhạy cảm vì đối tượng bị xóa là Memory L3 (sở thích/thông tin CÁ NHÂN, khác Project/Artifact — những thứ ADR-0012 nhắm tới ban đầu không mang tính riêng tư theo cách này).
+
+**Quyết định:** `apps/paosd/memory_store.py::MemoryStore.forget()` thực hiện `DELETE FROM memory_items` + `DELETE FROM memory_vectors` THẬT SỰ, ngay lập tức, không qua `trash/`. Đây là NGOẠI LỆ DUY NHẤT, CÓ CHỦ Ý, với ADR-0012 — giới hạn phạm vi CHÍNH XÁC ở 2 bảng `memory_items`/`memory_vectors` qua đúng 1 API `forget()`/`DELETE /v1/memory/{id}`/`paosctl memory forget`. Mọi thao tác xóa khác trong toàn hệ thống (Project, file, Artifact) vẫn tuân ADR-0012 nguyên vẹn, không đổi.
+
+**Lý do:**
+1. **"Quên" chỉ có nghĩa nếu dữ liệu THẬT SỰ biến mất ngay.** Giữ 30 ngày trong Trash (đọc được, restore được) không thỏa mãn kỳ vọng của người dùng khi họ gõ lệnh `forget` cho một mẩu thông tin cá nhân — khác hẳn "xóa Project" (ADR-0012 nhắm đúng ca này: dữ liệu LỚN, mất công tạo lại, và người dùng có thể XÓA NHẦM cần đường lùi) — ở đây người dùng đã tự tay chọn ĐÚNG 1 `memory_id` (qua `paosctl memory list`/`show` trước đó) và gõ lệnh xóa CÓ CHỦ ĐÍCH, không phải thao tác dễ bấm nhầm hàng loạt.
+2. **Rủi ro gốc mà ADR-0012 phòng ("hệ thống tự động chạy không giám sát + thao tác không hoàn tác = mất dữ liệu") không áp dụng ở đây.** Không có Agent/Job tự động nào gọi `forget()` — CHỈ người dùng gõ `paosctl memory forget <id>` trực tiếp (đúng mô hình đe dọa doc 09 §1: Permission Guard/Trash tồn tại để chặn HỆ THỐNG hành động sai, không phải để chặn người dùng tự quyết trên chính dữ liệu của họ).
+3. **Memory item chưa bao giờ bất biến.** Khác Artifact (ADR-0013, sửa = tạo bản mới có `supersedes`), `MemoryStore.update()` (P-M5-1) đã UPDATE TẠI CHỖ một hàng `memory_items` từ trước (confidence/content trôi dần theo thời gian, không phải chuỗi phiên bản). Xóa hẳn 1 hàng không phá vỡ bất kỳ bất biến nào đã tồn tại — memory chưa từng cam kết lịch sử đầy đủ như Event Log (ADR-0003) hay Artifact.
+4. **Mô phỏng Trash cho 1 hàng DB tốn kém hơn lợi ích thu được.** Không có khái niệm "trash/YYYY-MM-DD/" tự nhiên cho 1 row SQLite — làm đúng sẽ cần thêm cột `deleted_at` + sửa MỌI câu query đọc `memory_items` (list_by_tier, get_by_key, vector search SQL trong `memory_retriever.py`...) để lọc bỏ hàng "đã xóa mềm", cho một API ít dùng (forget là hành động hiếm, có chủ đích). Rủi ro quên lọc ở 1 chỗ (để lộ lại dữ liệu "đã quên") cao hơn hẳn lợi ích giữ được khả năng restore 30 ngày mà bản thân tính năng này không cần.
+
+**Hệ quả:** `forget()` KHÔNG có `restore` (khác Trash). CLI (`paosctl memory forget`) yêu cầu xác nhận tay (`click.confirm`, bỏ qua được bằng `--yes` cho script) làm lớp phòng thủ DUY NHẤT trước khi xóa — KHÔNG đi qua `PermissionGuard`/tier CONFIRM chính thức (doc 09 §2 không liệt "xóa Memory" trong bảng CONFIRM; Permission Guard tồn tại để chặn hành động của AGENT/hệ thống tự động, không phải hành động trực tiếp của người dùng qua CLI — cùng lý do #2 ở trên). Event `memory.item.forgotten` phát ra CỐ Ý không mang `content` (chỉ `memory_id`/`tier`/`key`) — Event Log là bất biến (ADR-0003), ghi lại "đã quên" không được vô tình làm lộ lại chính thứ vừa bị quên vào một nơi KHÔNG THỂ xóa. Quyết định này CHỈ áp dụng cho `memory_items`/`memory_vectors` — Knowledge Graph (`kg_nodes`/`kg_edges`) đi NGƯỢC hướng, cố ý không xóa gì (doc 07 §4.4: "Không xóa: dùng `invalidated_at` để giữ lịch sử nhận thức") — `paosctl knowledge forget` KHÔNG được xây ở lát cắt này, xem docs/backlog.md.
+
+**Đã loại:**
+1. **Tuân ADR-0012 nguyên vẹn (Trash 30 ngày cho memory forget)** — nhất quán tuyệt đối với toàn hệ thống, không cần ADR ngoại lệ. Loại vì phá vỡ đúng ý nghĩa từ "tuyệt đối" mà doc 07 §6 dùng cho quyền xóa memory — một người dùng lo lắng về quyền riêng tư (đây CHÍNH LÀ lát cắt Privacy Filter) sẽ không chấp nhận "đã xóa nhưng vẫn nằm đọc được 30 ngày" là "quên".
+2. **Soft-delete bằng cột `deleted_at` + job dọn định kỳ (thay vì thư mục Trash vật lý)** — nhẹ hơn Trash file thật, vẫn giữ tinh thần "có thể hối lại trong 1 khoảng thời gian". Loại vì (a) vẫn không giải quyết được mâu thuẫn ngữ nghĩa ở lý do #1 (dữ liệu chưa THẬT SỰ mất), và (b) vẫn cần sửa MỌI câu query đọc `memory_items` để lọc `deleted_at IS NULL` — chi phí triển khai gần bằng phương án Trash đầy đủ mà không có ưu điểm "xóa thật ngay" của phương án đã chọn.
+3. **Cho người dùng CHỌN giữa 2 chế độ (`--soft`/`--hard`) mỗi lần gọi `forget`** — linh hoạt nhất, không phải quyết định 1 chiều. Loại vì thêm bề mặt quyết định cho một hành động vốn đã hiếm khi dùng (over-engineering, P4) — và một cờ mặc định sai (`--soft` mặc định) sẽ lặp lại đúng vấn đề đang cố giải quyết, trong khi mặc định `--hard` duy nhất thì cờ `--soft` trở thành thừa (đã có `paosctl memory update`/sửa confidence tay nếu chỉ muốn "hạ thấp" chứ không xóa hẳn).
+
+---
+
 ## Backlog ADR (chưa quyết định, cần trước milestone tương ứng)
 
 | Dự kiến | Chủ đề | Cần trước |

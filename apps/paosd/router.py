@@ -123,11 +123,21 @@ class Router:
         process_id: str,
         *,
         exclude_provider: str | None = None,
+        contains_private_l3: bool = False,
     ) -> tuple[dict[str, Any], str | None]:
         """Trả về `(result, chosen_provider_id)` — provider_id cần lộ ra ngoài
         từ P-M4-2 (ADR-0008): caller (`AgentContext.call()`) ghi lại provider
         đã phục vụ, để tự loại trừ đúng provider đó khi review (`exclude_provider`
-        — "review PHẢI dùng provider khác generator", RSK-10)."""
+        — "review PHẢI dùng provider khác generator", RSK-10).
+
+        `contains_private_l3` (P-M5-4, doc 07 §6, doc 09 §7) — Privacy Filter:
+        caller tự khai payload này có mang nội dung Memory L3 riêng tư hay
+        không (KHÔNG phải Router tự quét nội dung — đủ cho quy mô hôm nay,
+        chưa Agent nào đọc lại L3 để dùng thật, xem docs/backlog.md BL-015).
+        `True` loại VÔ ĐIỀU KIỆN mọi candidate `provider_class == "cloud"`
+        khỏi ứng viên, BẤT KỂ provider đó tự khai `privacy:` gì trong
+        provider.yaml — xem `_classify()`. Mặc định `False`, không đổi hành
+        vi của bất kỳ caller nào đã có hôm nay (8 Agent thật đều không truyền)."""
         capability_id, version_str = capability_ref.split("@")
         version = int(version_str)
         manifests = self._registry.providers_for(capability_id, version)
@@ -140,7 +150,8 @@ class Router:
 
         spec = self._registry.get_capability(capability_id, version)
         decision_id = ids.new_id("dec")
-        candidates = self._classify(manifests, exclude_provider)
+        candidates = self._classify(manifests, exclude_provider, contains_private_l3)
+        await self._publish_privacy_blocked(decision_id, process_id, capability_ref, candidates)
         eligible = [c for c in candidates if c.eligible]
 
         if spec.cacheable and spec.cache_key_fields and eligible:
@@ -290,7 +301,10 @@ class Router:
         )
 
     def _classify(
-        self, manifests: list[ProviderManifest], exclude_provider: str | None = None
+        self,
+        manifests: list[ProviderManifest],
+        exclude_provider: str | None = None,
+        contains_private_l3: bool = False,
     ) -> list[_Candidate]:
         candidates: list[_Candidate] = []
         for i, manifest in enumerate(manifests, start=1):
@@ -303,6 +317,20 @@ class Router:
                 reason = "DISABLED"
             elif self._breaker_open(manifest.provider_id):
                 reason = "BREAKER_OPEN"
+            elif contains_private_l3 and manifest.provider_class == "cloud":
+                # Privacy Filter (P-M5-4, doc 07 §6: "Memory L3 không bao giờ
+                # được gửi tới provider class: cloud trừ khi Job có privacy:
+                # shared và người dùng đã đồng ý" — Job.privacy_class thật CHƯA
+                # tồn tại hôm nay, doc09 §7/M7/M8, nên quy tắc rút gọn AN TOÀN
+                # cho hiện tại là: không bao giờ, không có nhánh "shared").
+                # Dựa vào CLASS CẤU TRÚC (`provider.yaml::class`), KHÔNG dựa
+                # vào tự khai `privacy:` của chính provider (nhánh elif dưới) —
+                # một provider class:cloud tự khai `privacy: private` (đúng
+                # hoặc GIAN DỐI) vẫn bị chặn tuyệt đối. Đây là phòng thủ theo
+                # CHIỀU SÂU: PRIVACY_MISMATCH bên dưới chặn phần lớn qua tự
+                # khai, nhưng không chống được provider khai sai — xem test
+                # đối kháng tests/apps/paosd/test_privacy_filter.py.
+                reason = "PRIVACY_L3_BLOCKED"
             elif manifest.privacy != "private":
                 # Hôm nay CallContext.privacy_class luôn "private" (chưa có Job
                 # policy thật — đó là M2-5/M7); provider khác "private" bị loại
@@ -312,6 +340,33 @@ class Router:
                 _Candidate(manifest=manifest, priority=i, eligible=reason is None, reason=reason)
             )
         return candidates
+
+    async def _publish_privacy_blocked(
+        self,
+        decision_id: str,
+        process_id: str,
+        capability_ref: str,
+        candidates: list[_Candidate],
+    ) -> None:
+        """1 event riêng cho MỖI candidate bị Privacy Filter chặn (P-M5-4) —
+        Decision Record (`_write_decision`, ghi ngay sau khi biết `chosen`)
+        đã bao trọn thông tin này trong `candidates_json`, nhưng doc 07 §6 đòi
+        hỏi Trace lộ RÕ tín hiệu này (không bắt người đọc `paosctl explain`
+        phải tự parse JSON để tìm), cùng tinh thần `_publish_fallback()` —
+        payload CHỈ mang metadata (provider_id/capability/decision_id), KHÔNG
+        bao giờ mang payload thật (chống rò rỉ chính thứ đang được chặn)."""
+        for candidate in candidates:
+            if candidate.reason == "PRIVACY_L3_BLOCKED":
+                await self._events.publish(
+                    EventType.PRIVACY_CLOUD_SEND_BLOCKED.value,
+                    source="paosd.router",
+                    process_id=process_id,
+                    payload={
+                        "capability": capability_ref,
+                        "provider_id": candidate.manifest.provider_id,
+                        "decision_id": decision_id,
+                    },
+                )
 
     def _breaker_open(self, provider_id: str) -> bool:
         state = self._breakers.get(provider_id)

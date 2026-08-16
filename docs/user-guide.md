@@ -1,6 +1,6 @@
 # Hướng dẫn sử dụng & Luồng dự án
 
-> Tài liệu SỐNG — cập nhật mỗi khi có chức năng mới (P-CLOSE của mỗi lát cắt), không phải ảnh chụp một lần. Khác với `docs/00-20` (đặc tả thiết kế, ổn định), file này mô tả **thực trạng chạy được hôm nay**, cùng nhóm với `docs/backlog.md`/`docs/environment-baseline.md`. Cập nhật gần nhất: lát cắt **P-M5-3** (2026-08-16) — Knowledge Graph cá nhân: `KnowledgeExtractor` tự trích entity từ artifact thật vào `kg_nodes`/`kg_edges`, mọi edge có provenance, truy hồi lai (doc 07 §3) giờ đủ 5/5 bước (KG walk 2-hop mới thêm).
+> Tài liệu SỐNG — cập nhật mỗi khi có chức năng mới (P-CLOSE của mỗi lát cắt), không phải ảnh chụp một lần. Khác với `docs/00-20` (đặc tả thiết kế, ổn định), file này mô tả **thực trạng chạy được hôm nay**, cùng nhóm với `docs/backlog.md`/`docs/environment-baseline.md`. Cập nhật gần nhất: lát cắt **P-M5-4** (2026-08-16) — Privacy Filter: `Router.call(..., contains_private_l3=True)` chặn vô điều kiện mọi provider `class: cloud` (kiểm bằng test đối kháng), `paosctl memory forget` (xóa cứng thật, ADR-0029) + `export`/`import` JSON. **Đóng phạm vi lát cắt Milestone 5** (P-M5-0 → P-M5-4).
 
 ---
 
@@ -70,6 +70,14 @@ paosctl knowledge show <node_id>             # 1 node kèm mọi cạnh — prov
 paosctl knowledge export                     # xuất knowledge/graph.jsonld (thủ công, doc 07 §4.4)
 ```
 
+**Quyền riêng tư: memory L3 không rời máy, và nút quên (mới — M5)** — mọi lượt gọi capability có đánh dấu "mang Memory L3 riêng tư" bị chặn tuyệt đối nếu provider đích là `class: cloud`, bất kể provider tự khai `privacy:` gì (chống provider khai gian/cấu hình sai). "Quên" 1 ký ức là xóa cứng thật, không qua Trash, không khôi phục được (ADR-0029 — ngoại lệ có chủ đích với chính sách xóa mềm chung).
+```bash
+paosctl memory show <memory_id>       # xem chi tiết 1 ký ức trước khi quyết định
+paosctl memory forget <memory_id>     # XÓA VĨNH VIỄN — hỏi xác nhận, --yes để bỏ qua
+paosctl memory export                 # xuất toàn bộ memory ra JSON để tự soi
+paosctl memory import ban-da-sua.json # nhập lại (đã tự sửa tay) — upsert theo memory_id
+```
+
 **Theo dõi & giải thích mọi việc đang/đã làm** — không có "log" mù mờ, mọi quyết định dựng lại được đầy đủ từ Event Log.
 ```bash
 paosctl ps                 # liệt kê mọi job
@@ -86,12 +94,13 @@ paosctl cancel <pid>       # hủy 1 job đang chạy, không ảnh hưởng job
 - **Eval harness (M4) mới có bộ mẫu nhỏ (6 mẫu)**, chưa phải quy mô 30-50 mẫu đầy đủ (BL-011); `scripts/run_eval.py` cũng chưa cưỡng chế "judge khác provider generator" như luồng production (BL-010).
 - **Học được nhưng chưa AI nào dùng lại** — `MemoryWriter` tự học sở thích thật (P-M5-2), nhưng chưa Agent nào (`PlanningAgent`, `ScriptAgent`...) đọc lại để áp dụng — "học" xong, chưa "dùng" (BL-015). Sửa tay hạ confidence ở MỨC CẢ JOB, chưa phân biệt được trường nào sai (BL-016).
 - **Knowledge Graph chỉ nhận diện thuật ngữ có trong danh sách đã biết** (~40 mục, `sdk/kg_extract.py::KNOWN_TERMS`) — không phải NLU/LLM thật (quyết định có chủ đích, ADR-0028, để giữ tính TẤT ĐỊNH cần cho "rebuild từ replay"); bỏ sót thuật ngữ chưa có trong danh sách (BL-017). Quan hệ suy ra được CHỈ có `learned_from` (entity → artifact nguồn) — chưa suy luận `is_a`/`alternative_to` giữa các entity. Cơ chế phát hiện mâu thuẫn đã xây và kiểm thật nhưng chưa có đường trích `prefers`/`avoids` thật để kích hoạt (BL-018). Số node tích luỹ từ sử dụng thật còn ít — cần dùng PAOS qua thời gian, không phải thứ 1 lát cắt code tạo ra được.
-- `paosctl memory` chưa có lệnh `forget` (nút quên, chờ P-M5-4 — Privacy Filter).
+- **Privacy Filter chưa có caller thật nào bật cờ** — `contains_private_l3=True` CHẶN THẬT (kiểm bằng test đối kháng), nhưng chưa Agent nào đọc lại Memory L3 để cần dùng cờ này (BL-015/BL-019) — hạ tầng sẵn sàng, chờ caller thật. Cũng chưa có provider `class: cloud` THẬT nào trong `providers/` để thử nghiệm ngoài môi trường test.
+- `paosctl knowledge` không có lệnh `forget` (quyết định có chủ đích — doc 07 §4.4 nói KG không bao giờ xóa, dùng `invalidated_at`; xem ADR-0029, BL-020).
 - **Chưa tự chọn cách làm tốt nhất** (Decision Engine, M6) — workflow phải chỉ định tay qua `workflow_ref`.
 
 ### 1.4 Sắp tới
 
-P-M5-3 vừa xong: `kg_nodes`/`kg_edges` (migration 008) + `sdk/kg_extract.py` (trích entity tất định, ADR-0028) + `KnowledgeStore`/`KnowledgeExtractor` (`apps/paosd/`) + `GET/POST /v1/knowledge/*` + `paosctl knowledge list/show/export` + KG walk 2-hop nối vào `MemoryRetriever` (trả nợ BL-013, đủ 5/5 bước truy hồi lai doc 07 §3). Việc **ngay tiếp theo**: **P-M5-4 — Privacy Filter + `paosctl memory/knowledge` mở rộng + nút quên**. Lộ trình đầy đủ ở [§3](#3-lộ-trình-sắp-tới) bên dưới.
+P-M5-4 vừa xong — **đóng phạm vi lát cắt Milestone 5** (P-M5-0 → P-M5-4): Privacy Filter (`Router.call(..., contains_private_l3=True)`, chặn cloud dựa vào CLASS cấu trúc chứ không tin self-declaration của provider), `paosctl memory show/forget/export/import` (ADR-0029: forget là xóa cứng thật, ngoại lệ có chủ đích với chính sách xóa mềm chung). Việc **ngay tiếp theo**: **P-M6-1 — Feature extraction + candidate generation + scoring** (mở đầu Decision Engine, M6). Lộ trình đầy đủ ở [§3](#3-lộ-trình-sắp-tới) bên dưới.
 
 ---
 
@@ -210,7 +219,7 @@ Theo kế hoạch 10 milestone (~31 tuần lập trình thuần, 11–15 tháng 
 | M2 | Capability & Provider | Đổi provider không sửa code | ✅ Xong |
 | M3 | Agent & Workflow | Video plugin chạy hoàn chỉnh | ✅ Xong |
 | M4 | Quality & Self-Correction | Tự sửa, tự chấm điểm, ghi `edit_rate` | ✅ Xong |
-| M5 | Memory & Knowledge | Nhớ sở thích, xây Knowledge Graph | 🟡 Đang làm · 4/5 |
+| M5 | Memory & Knowledge | Nhớ sở thích, xây Knowledge Graph | ✅ Phạm vi xong · 2/5 tiêu chí trọn vẹn |
 | M6 | Decision Engine | Tự chọn workflow phù hợp | ⚪ Chưa tới |
 | M7 | Cost / Energy / Time | Chạy đêm, tiết kiệm, đúng ngân sách | ⚪ Chưa tới |
 | M8 | Plugin System & UI | Cài plugin, có giao diện Web thật | ⚪ Chưa tới |

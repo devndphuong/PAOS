@@ -115,6 +115,20 @@
 **Vì sao chấp nhận tạm thời:** doc 07 §4.4 yêu cầu cơ chế phát hiện mâu thuẫn tồn tại và đáng tin — xây nó SẴN, kiểm thật, đúng nguyên tắc "provenance/conflict detection là trọng tâm lát cắt này" — nhưng KHÔNG bịa một đường trích prefers/avoids giả chỉ để có caller (P8, THẬT THÀ hơn giả vờ đủ).
 **Điều kiện trả nợ:** khi có nguồn tín hiệu prefers/avoids thật gắn được vào KG — ứng viên gần nhất: M9 (Research Plugin) khi Agent tổng hợp kết quả nghiên cứu có thể phát hiện "người dùng chọn A thay vì B nhiều lần" như 1 quan sát hành vi, hoặc mở rộng `MemoryWriter` (đã học preference ở mức `memory_items`) để đồng thời ghi cạnh `prefers`/`avoids` vào KG khi 1 sở thích đạt `AUTO_APPLY` (doc 07 §2.1).
 
+### BL-019 · Privacy Filter (`contains_private_l3`) chưa có caller thật nào truyền `True`
+
+**Phát sinh:** P-M5-4 (2026-08-16, doc 19).
+**Hiện trạng:** `apps/paosd/router.py::Router.call(..., contains_private_l3=True)` chặn THẬT mọi provider `class: cloud` khi cờ này bật (kiểm bằng test đối kháng `tests/apps/paosd/test_privacy_filter.py`) — cơ chế CHẠY THẬT, không phải khung rỗng. Nhưng KHÔNG Agent nào trong 8 Agent thật hôm nay (`summarize`, `planning`, `script`, `image`, `voice`, `subtitle`, `render`, `review`) truyền `contains_private_l3=True` khi gọi `AgentContext.call()` — vì chưa Agent nào đọc lại Memory L3 để nhúng vào payload gửi capability (BL-015: "Chưa Agent nào đọc lại sở thích đã học từ MemoryWriter"). Kết quả: Privacy Filter hôm nay là hạ tầng phòng thủ SẴN SÀNG, đã kiểm bằng test đối kháng dựng thủ công (provider giả `class: cloud`), nhưng chưa có đường dữ liệu THẬT nào trong production code kích hoạt nó.
+**Vì sao chấp nhận tạm thời:** đúng tinh thần tiền lệ `PermissionGuard` (P-M2-5, doc 09) — hạ tầng chung được xây SẴN, kiểm THẬT, chờ caller thật đầu tiên xuất hiện đúng lúc nhu cầu có thật (P4). Không có cloud provider thật nào tồn tại trong `providers/` hôm nay (toàn bộ `class: local`) — không có gì để thực sự rò rỉ ra ngoài dù thiếu cờ này.
+**Điều kiện trả nợ:** khi BL-015 được trả (một Agent — nhiều khả năng nhất là `PlanningAgent`/`ScriptAgent` sau khi có UI thật ở M8 — bắt đầu gọi `MemoryRetriever.search(..., tier="L3")` rồi nhúng kết quả vào payload gửi `ctx.call()`) — Agent đó PHẢI truyền `contains_private_l3=True` cho đúng lượt gọi đó. Cân nhắc thêm: khi provider `class: cloud` thật đầu tiên được thêm vào `providers/` (ví dụ OpenAI/Anthropic text.generate), viết lại test đối kháng bằng provider THẬT thay vì provider giả để xác nhận hành vi không đổi.
+
+### BL-020 · `paosctl knowledge forget` không được xây — quyết định có chủ đích, không phải thiếu sót
+
+**Phát sinh:** P-M5-4 (2026-08-16, doc 19) — cân nhắc khi thiết kế "nút quên", quyết định ghi ở ADR-0029.
+**Hiện trạng:** doc 07 §6 chỉ nhắc `paosctl memory forget`, không nhắc `knowledge forget`. Doc 07 §4.4 quy định KG đi theo hướng NGƯỢC LẠI hoàn toàn: "Không xóa: dùng `invalidated_at` để giữ lịch sử nhận thức" — một node/edge trích từ artifact riêng tư của người dùng vẫn tồn tại vĩnh viễn trong `kg_nodes`/`kg_edges`, chỉ có thể đánh dấu `invalidated_at` (cột đã có trong schema từ P-M5-3, nhưng CHƯA có caller nào tự động/thủ công set nó — xem BL-018).
+**Vì sao chấp nhận tạm thời:** xây `knowledge forget` (xóa cứng node/edge) sẽ MÂU THUẪN TRỰC TIẾP với chính sách đã tài liệu hóa ở doc 07 §4.4 — không phải nợ kỹ thuật, mà là phạm vi CỐ Ý không làm để không phá vỡ một quyết định thiết kế đã chốt trước đó (P-M5-3).
+**Điều kiện trả nợ:** không phải "trả nợ" theo nghĩa thông thường — nếu nhu cầu thật xuất hiện (người dùng muốn 1 node/edge riêng tư ngừng ảnh hưởng truy hồi mà không phá vỡ lịch sử nhận thức), giải pháp đúng là `paosctl knowledge invalidate <edge_id>` (set `invalidated_at`, giữ nguyên hàng — khớp thiết kế đã có), KHÔNG PHẢI xóa cứng. Đây cũng chính là cách trả BL-018 (chưa có caller nào set `invalidated_at`).
+
 ---
 
 ## Mục chưa phân loại

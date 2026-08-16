@@ -101,6 +101,12 @@ PAST_TENSE_OK = {
     # lệ "written" ở trên). "created" (knowledge.node.created/knowledge.edge.created)
     # đã có sẵn trong danh sách từ trước, không cần thêm.
     "detected",
+    # P-M5-4 — "forgotten" (memory.item.forgotten), thì quá khứ hợp lệ chuẩn,
+    # KHÔNG có trong doc 05 gốc (event mới, đã bổ sung vào bảng doc 05 §3.7,
+    # cùng tiền lệ "edited"/"detected" ở trên). "blocked"
+    # (privacy.cloud_send.blocked) ĐÃ có sẵn trong danh sách từ trước
+    # (permission.violation.blocked), không cần thêm ở đây.
+    "forgotten",
 }
 
 errors: list[str] = []

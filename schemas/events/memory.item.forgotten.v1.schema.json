@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://schemas/events/memory.item.forgotten.v1.schema.json",
+  "title": "memory.item.forgotten payload",
+  "description": "doc 07 §6, ADR-0029, P-M5-4 — apps/paosd/memory_store.py::MemoryStore.forget() phát sau khi XÓA CỨNG THẬT 1 hàng memory_items/memory_vectors (không qua Trash, ngoại lệ có chủ đích với ADR-0012). Payload CỐ Ý không mang 'content' — ghi lại sự kiện 'đã quên' không được làm lộ lại chính thứ vừa bị quên.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["memory_id", "tier"],
+  "properties": {
+    "memory_id": { "type": "string" },
+    "tier": { "type": "string", "enum": ["L0", "L1", "L2", "L3", "L4"] },
+    "key": { "type": ["string", "null"] }
+  }
+}

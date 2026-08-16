@@ -116,6 +116,8 @@ Ba lớp `privacy_class` gán cho Job/Project/Memory:
 
 **Privacy Filter** chạy trước mỗi capability call ra ngoài: quét payload, phát hiện memory L3/PII, so với `privacy_class`. Vi phạm → chặn hoặc chuyển sang CONFIRM. Mọi lần gửi dữ liệu ra ngoài đều ghi vào Trace: gửi gì, tới đâu, vì sao được phép.
 
+**Đã triển khai (P-M5-4):** `apps/paosd/router.py::Router.call(..., contains_private_l3=True)` — caller (Agent, qua `AgentContext.call()`) tự khai payload có mang Memory L3 riêng tư hay không; Router chặn VÔ ĐIỀU KIỆN mọi candidate `provider_class == "cloud"` khi cờ này bật, dựa vào CLASS CẤU TRÚC của provider (`provider.yaml::class`), KHÔNG dựa vào tự khai `privacy:` của chính provider đó — chống provider `class: cloud` khai gian/cấu hình sai `privacy: private` (xem test đối kháng `tests/apps/paosd/test_privacy_filter.py`, ADR liên quan: không cần ADR riêng, đây là mở rộng trực tiếp cơ chế `_classify()` đã có từ P-M2-3). Mỗi lần chặn ghi cả Decision Record LẪN event riêng `privacy.cloud_send.blocked` — không mang nội dung payload thật (chống rò rỉ chính thứ đang được bảo vệ vào Trace/log, SEC-05). Nhánh "chuyển sang CONFIRM khi Job có `privacy: shared` + người dùng đồng ý" CHƯA triển khai (cần Job.privacy_class thật + luồng đồng ý, M7/M8) — quy tắc hôm nay là chặn tuyệt đối, không có ngoại lệ, an toàn hơn là thiếu.
+
 ## 8. An toàn dữ liệu (chống mất mát)
 
 1. **Trash, không xóa cứng.** `trash/YYYY-MM-DD/`, dọn tự động sau 30 ngày, có `paosctl restore`.

@@ -22,7 +22,10 @@ _TEST_MANIFEST = AgentManifest(
 
 
 async def _noop_call(
-    capability_ref: str, payload: dict, exclude_provider: str | None = None
+    capability_ref: str,
+    payload: dict,
+    exclude_provider: str | None = None,
+    contains_private_l3: bool = False,
 ) -> tuple[dict, str | None]:
     return {}, None
 

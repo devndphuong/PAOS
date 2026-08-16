@@ -37,7 +37,10 @@ async def _noop_persist(artifact: Artifact) -> None:
 
 
 async def _noop_call(
-    capability_ref: str, payload: dict, exclude_provider: str | None = None
+    capability_ref: str,
+    payload: dict,
+    exclude_provider: str | None = None,
+    contains_private_l3: bool = False,
 ) -> tuple[dict, str | None]:
     return {"images": [{"placeholder_text": "kết quả giả"}]}, None
 
@@ -118,7 +121,10 @@ async def test_image_full_lifecycle_all_6_steps(store: StateStore, tmp_path: Pat
     stub = StubImageAdapter()
 
     async def call_capability(
-        capability_ref: str, payload: dict, exclude_provider: str | None = None
+        capability_ref: str,
+        payload: dict,
+        exclude_provider: str | None = None,
+        contains_private_l3: bool = False,
     ) -> tuple[dict, str | None]:
         cap_id, version = capability_ref.split("@")
         providers = registry.providers_for(cap_id, int(version))
