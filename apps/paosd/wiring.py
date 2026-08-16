@@ -71,13 +71,23 @@ async def build_daemon(
     max_parallel: int = 3,
     resource_capacity: dict[str, int] | None = None,
     adapter_overrides: dict[str, Any] | None = None,
+    energy_policy_path: Path | None = None,
+    time_policy_path: Path | None = None,
 ) -> Daemon:
     """`workspace_root` mặc định `<repo>/workspace` cho daemon thật — test truyền
     `tmp_path` riêng để không ghi artifact vào cây thư mục repo thật.
     `max_parallel`/`resource_capacity` xem `apps/paosd/runner.py::Runner` (M1-3a).
     `adapter_overrides` ({provider_id: instance}) chỉ dùng cho test — thay
     adapter thật bằng adapter giả điều khiển được (`Registry.preload_adapter()`,
-    M2-1), production code không truyền tham số này."""
+    M2-1), production code không truyền tham số này.
+
+    `energy_policy_path`/`time_policy_path` — forward thẳng xuống `Runner.__init__()`
+    (đã tự xử lý None -> không ghi đè Router). `None` (mặc định) nghĩa là
+    "dùng policy THẬT" (`policies/energy.yaml`/`policies/time.yaml`) — production
+    (`apps/paosd/__main__.py`) không truyền 2 tham số này nên hành vi KHÔNG đổi.
+    Test đi qua `build_daemon()` truyền 2 đường dẫn không tồn tại để tránh flaky
+    theo tải CPU máy thật (energy) hoặc NGÀY/GIỜ chạy CI thật (time) — trả nợ
+    BL-023, xem `docs/backlog.md`, doc 19 P-M7-3."""
     started_at = time.monotonic()
     store = StateStore(db_path)
     await store.start()
@@ -103,6 +113,8 @@ async def build_daemon(
         resolved_workspace_root,
         max_parallel=max_parallel,
         resource_capacity=resource_capacity,
+        energy_policy_path=energy_policy_path,
+        time_policy_path=time_policy_path,
     )
     events.subscribe("runner", "kernel.process.created", runner.on_process_created)
 

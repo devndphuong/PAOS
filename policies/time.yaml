@@ -1,0 +1,30 @@
+# Cua so thoi gian (doc 06 S5, doc 19 P-M7-3). DU LIEU, khong phai code (P10)
+# - TimeEngine._load_time_policy() doc lai MOI LAN goi (hot reload, cung tien
+# le policies/{intents,routing,budget,energy}.yaml).
+#
+# windows: danh sach cua so co ten, khop theo days (bo trong = moi ngay) +
+# from/to (gio:phut, 24h). from > to nghia la vat qua nua dem (vd night
+# 21:00->07:00). Cua so DAU TIEN khop duoc dung, khong hop nhat nhieu cua so.
+# default: dung khi khong cua so nao khop.
+#
+# policy.allow_heavy=false: chan MOI capability tru nhung cai liet trong
+# policy.allow (cung quy uoc policies/energy.yaml::battery.on_battery.allow -
+# khong co tin hieu "nang/nhe" rieng tren tung capability, allowlist la cach
+# duy nhat khong bia dat tin hieu chua co that).
+# policy.max_parallel: KHAI BAO nhung CHUA duoc TimeEngine/Router enforce o
+# lat nay (Runner dung 1 asyncio.Semaphore toan cuc, chua doi theo cua so dang
+# hoat dong - xem docs/backlog.md). policy.notify: chi anh huong payload event
+# time.window.blocked, khong co kenh thong bao rieng (P11 - khong AI SDK/push
+# service moi cho 1 cai flag).
+version: 1
+windows:
+  - name: work_hours
+    days: [mon, tue, wed, thu, fri]
+    from: "08:00"
+    to: "18:00"
+    policy: {allow_heavy: false, allow: [], max_parallel: 1, notify: silent}
+  - name: night
+    from: "21:00"
+    to: "07:00"
+    policy: {allow_heavy: true, max_parallel: 4, notify: silent}
+default: {allow_heavy: true, max_parallel: 2, notify: silent}

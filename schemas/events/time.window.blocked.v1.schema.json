@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://schemas/events/time.window.blocked.v1.schema.json",
+  "title": "time.window.blocked payload",
+  "description": "doc 06 §5, P-M7-3 — TimeEngine từ chối 1 lượt gọi (đang trong cửa sổ allow_heavy=false, capability không nằm trong allowlist), Router thử lại qua fallback/backoff.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["capability", "window_name", "reason"],
+  "properties": {
+    "capability": { "type": "string" },
+    "window_name": { "type": "string" },
+    "reason": { "type": "string" },
+    "next_window_at": { "type": ["string", "null"] }
+  }
+}

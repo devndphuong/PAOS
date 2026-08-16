@@ -22,6 +22,12 @@ from kernel.events.bus import EventBus
 from kernel.process.manager import ProcessManager, ProcessState
 from sdk.provider import CallContext, Estimate, Health, ProviderManifest
 
+# File KHÔNG BAO GIỜ tồn tại — EnergyEngine/TimeEngine trả None -> check() luôn
+# allowed=True (BL-023, doc 19 P-M7-3). Test mô phỏng crash/resume này không
+# kiểm Energy/Time Engine — tránh flaky theo tải CPU/NGÀY GIỜ máy thật lúc chạy.
+_MISSING_ENERGY_POLICY = Path("Z:/paos-test-energy-policy-khong-ton-tai.yaml")
+_MISSING_TIME_POLICY = Path("Z:/paos-test-time-policy-khong-ton-tai.yaml")
+
 _TERMINAL_STATES = {"SUCCEEDED", "FAILED", "CANCELLED"}
 
 
@@ -131,6 +137,8 @@ async def test_resume_after_crash_while_running(tmp_path: Path) -> None:
         db_path,
         workspace_root=workspace_root,
         adapter_overrides={"stub.deterministic": adapter1},
+        energy_policy_path=_MISSING_ENERGY_POLICY,
+        time_policy_path=_MISSING_TIME_POLICY,
     )
     transport1 = httpx.ASGITransport(app=daemon1.app)
     async with httpx.AsyncClient(transport=transport1, base_url="http://test") as client:
@@ -154,6 +162,8 @@ async def test_resume_after_crash_while_running(tmp_path: Path) -> None:
         db_path,
         workspace_root=workspace_root,
         adapter_overrides={"stub.deterministic": adapter2},
+        energy_policy_path=_MISSING_ENERGY_POLICY,
+        time_policy_path=_MISSING_TIME_POLICY,
     )
     try:
         transport2 = httpx.ASGITransport(app=daemon2.app)
@@ -196,6 +206,8 @@ async def test_on_process_created_idempotent_after_crash_between_planning_and_qu
         tmp_path / ".paos" / "state.db",
         workspace_root=tmp_path / "workspace",
         adapter_overrides={"stub.deterministic": adapter},
+        energy_policy_path=_MISSING_ENERGY_POLICY,
+        time_policy_path=_MISSING_TIME_POLICY,
     )
     try:
         # EventBus RIÊNG, KHÔNG subscribe "runner" — để tạo process mà không tự
@@ -243,6 +255,8 @@ async def test_duplicate_enqueue_does_not_run_agent_twice(tmp_path: Path) -> Non
         tmp_path / ".paos" / "state.db",
         workspace_root=tmp_path / "workspace",
         adapter_overrides={"stub.deterministic": adapter},
+        energy_policy_path=_MISSING_ENERGY_POLICY,
+        time_policy_path=_MISSING_TIME_POLICY,
     )
     try:
         process = await daemon.manager.create(

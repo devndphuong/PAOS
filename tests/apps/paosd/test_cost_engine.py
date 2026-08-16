@@ -1,14 +1,17 @@
 """Kiểm CostEngine — record_actual() từ usage thật, check_budget() 3 tầng, hot
-reload policies/budget.yaml (doc 06 §3, doc 19 P-M7-1)."""
+reload policies/budget.yaml (doc 06 §3, doc 19 P-M7-1); record_savings() +
+monthly_report() (doc 06 §3.4, doc 19 P-M7-3, ADR-0031)."""
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 import yaml
 
 from apps.paosd.cost_engine import CostEngine, compute_actual_amount
+from kernel import clock
 from kernel.state.db import StateStore
 
 
@@ -154,3 +157,80 @@ async def test_check_budget_day_used_pct_computed(store: StateStore, tmp_path: P
     )
     check = await engine.check_budget("proc_1", 0.0)
     assert check.day_used_pct == pytest.approx(40.0)
+
+
+class _FixedClock:
+    def __init__(self, now: datetime) -> None:
+        self._now = now
+
+    def now(self) -> datetime:
+        return self._now
+
+
+async def test_monthly_report_sums_spent_and_savings_by_kind(store: StateStore) -> None:
+    engine = CostEngine(store)
+    old = clock.get_clock()
+    clock.set_clock(_FixedClock(datetime(2026, 8, 15, tzinfo=UTC)))
+    try:
+        await engine.record_actual(
+            process_id="proc_1",
+            task_id=None,
+            provider_id="provider.x",
+            capability="text.generate@1",
+            manifest_cost={"unit": "token", "in": 1.0, "out": 0.0, "currency": "JPY"},
+            usage={"in_tokens": 100, "out_tokens": 0},
+        )
+        await engine.record_savings(
+            process_id="proc_1",
+            task_id=None,
+            capability="text.generate@1",
+            kind="cache",
+            avoided_provider_id="provider.x",
+            amount=30.0,
+            currency="JPY",
+        )
+        await engine.record_savings(
+            process_id="proc_1",
+            task_id=None,
+            capability="text.generate@1",
+            kind="local",
+            avoided_provider_id="provider.cloud",
+            amount=50.0,
+            currency="JPY",
+        )
+    finally:
+        clock.set_clock(old)
+
+    report = await engine.monthly_report("2026-08")
+    assert report.total_spent == pytest.approx(100.0)
+    assert report.saved_cache == pytest.approx(30.0)
+    assert report.saved_local == pytest.approx(50.0)
+
+
+async def test_monthly_report_excludes_entries_outside_month(store: StateStore) -> None:
+    engine = CostEngine(store)
+    old = clock.get_clock()
+    clock.set_clock(_FixedClock(datetime(2026, 7, 31, 23, 0, tzinfo=UTC)))
+    try:
+        await engine.record_actual(
+            process_id="proc_1",
+            task_id=None,
+            provider_id="provider.x",
+            capability="text.generate@1",
+            manifest_cost={"unit": "token", "in": 1.0, "out": 0.0, "currency": "JPY"},
+            usage={"in_tokens": 100, "out_tokens": 0},
+        )
+    finally:
+        clock.set_clock(old)
+
+    report = await engine.monthly_report("2026-08")
+    assert report.total_spent == pytest.approx(0.0)  # tháng 7, không tính vào báo cáo tháng 8
+
+
+async def test_monthly_report_zero_when_no_entries(store: StateStore) -> None:
+    engine = CostEngine(store)
+    report = await engine.monthly_report("2026-01")
+    assert report.total_spent == 0.0
+    assert report.saved_cache == 0.0
+    assert report.saved_local == 0.0
+    assert report.currency == "JPY"

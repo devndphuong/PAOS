@@ -131,3 +131,19 @@ class EventType(StrEnum):
     # thứ tự — BL-022, docs/backlog.md) — candidate bị loại, thử lại qua
     # backoff/fallback đã có, đúng tinh thần "không chạy đè".
     RESOURCE_WAIT_STARTED = "resource.wait.started"
+
+    # Time Engine (doc 06 §5, doc 19 P-M7-3, ADR-0031) — doc 05 §3.8 đã nêu tên
+    # này từ đầu (payload "pid, next_window_at"). apps/paosd/router.py::
+    # Router.call() là caller thật đầu tiên — phát khi `TimeEngine.check()`
+    # chặn 1 lượt gọi vì đang trong cửa sổ `allow_heavy: false` và capability
+    # không nằm trong allowlist của cửa sổ đó. CHƯA chuyển Process sang WAITING
+    # thật (cùng lý do RESOURCE_WAIT_STARTED — BL-022, docs/backlog.md).
+    TIME_WINDOW_BLOCKED = "time.window.blocked"
+
+    # Savings Report (doc 06 §3.4, doc 19 P-M7-3, ADR-0031) — doc 05 §3.5 đã
+    # nêu tên này từ đầu (payload "cache_key, saved_cost"). apps/paosd/
+    # router.py::Router.call() là caller thật đầu tiên — phát khi 1 cache hit
+    # tránh được 1 lượt gọi thật, `saved_cost` = adapter.estimate() của chính
+    # provider đã tạo ra kết quả đang cache (số THẬT, không suy diễn từ giá
+    # trung bình — cùng tinh thần ADR-0030 "không giả vờ có số").
+    CAPABILITY_CACHE_HIT = "capability.cache.hit"

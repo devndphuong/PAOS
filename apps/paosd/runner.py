@@ -126,6 +126,8 @@ class Runner:
         *,
         max_parallel: int = _DEFAULT_MAX_PARALLEL,
         resource_capacity: dict[str, int] | None = None,
+        energy_policy_path: Path | None = None,
+        time_policy_path: Path | None = None,
     ) -> None:
         self._manager = manager
         self._events = events
@@ -139,7 +141,18 @@ class Runner:
             name: asyncio.Semaphore(cap) for name, cap in (resource_capacity or {}).items()
         }
         self._running_tasks: dict[str, asyncio.Task[None]] = {}
-        self._router = Router(registry, events, store, self._resource_semaphores, workspace_root)
+        # `energy_policy_path`/`time_policy_path` — None -> để Router tự dùng
+        # default trỏ policies/{energy,time}.yaml THẬT (production). Test truyền
+        # đường dẫn không tồn tại để tránh flaky theo tải CPU/NGÀY GIỜ MÁY THẬT
+        # (cùng lý do apps/paosd/router.py::Router — energy P-M7-2, time P-M7-3).
+        router_kwargs: dict[str, Path] = {}
+        if energy_policy_path is not None:
+            router_kwargs["energy_policy_path"] = energy_policy_path
+        if time_policy_path is not None:
+            router_kwargs["time_policy_path"] = time_policy_path
+        self._router = Router(
+            registry, events, store, self._resource_semaphores, workspace_root, **router_kwargs
+        )
         self._workflow_runner = WorkflowRunner(
             manager, events, registry, store, self._router, workspace_root
         )

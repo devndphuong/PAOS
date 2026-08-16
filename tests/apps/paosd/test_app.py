@@ -8,6 +8,7 @@ vĩnh viễn (2 vòng lặp không chia sẻ được các primitive này). Asyn
 trong CÙNG vòng lặp với test nên không có vấn đề này.
 """
 
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -15,9 +16,11 @@ import httpx
 import pytest
 
 from apps.paosd.app import create_app
+from apps.paosd.cost_engine import CostEngine
 from apps.paosd.decision_engine import DecisionEngine
 from apps.paosd.memory_store import MemoryStore
 from apps.paosd.runner import Runner
+from kernel import clock
 from kernel.events.bus import EventBus, EventEnvelope
 from kernel.process.manager import ProcessManager
 from kernel.registry.registry import Registry
@@ -25,6 +28,12 @@ from kernel.state.db import StateStore
 from providers.stub_embed.adapter import _embed
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
+
+# File KHÔNG BAO GIỜ tồn tại — EnergyEngine/TimeEngine trả None -> check() luôn
+# allowed=True (BL-023, doc 19 P-M7-3). Test lớp HTTP chung này không kiểm
+# Energy/Time Engine — tránh flaky theo tải CPU/NGÀY GIỜ máy thật lúc chạy.
+_MISSING_ENERGY_POLICY = Path("Z:/paos-test-energy-policy-khong-ton-tai.yaml")
+_MISSING_TIME_POLICY = Path("Z:/paos-test-time-policy-khong-ton-tai.yaml")
 
 
 @pytest.fixture
@@ -58,7 +67,15 @@ def runner(
 ) -> Runner:
     """KHÔNG subscribe vào events ở đây — file này kiểm lớp HTTP chung, không
     cần Agent chạy thật (đó là tests/apps/paosd/test_runner.py)."""
-    return Runner(manager, events, registry, store, tmp_path / "workspace")
+    return Runner(
+        manager,
+        events,
+        registry,
+        store,
+        tmp_path / "workspace",
+        energy_policy_path=_MISSING_ENERGY_POLICY,
+        time_policy_path=_MISSING_TIME_POLICY,
+    )
 
 
 @pytest.fixture
@@ -361,3 +378,64 @@ async def test_query_memory_search_finds_exact_key_even_with_low_similarity_quer
     assert resp.status_code == 200
     body = resp.json()
     assert any(item["matched_via"] == "exact_key" for item in body)
+
+
+class _FixedClock:
+    def __init__(self, now: datetime) -> None:
+        self._now = now
+
+    def now(self) -> datetime:
+        return self._now
+
+
+async def test_monthly_report_returns_spent_and_savings(
+    client: httpx.AsyncClient, store: StateStore
+) -> None:
+    """doc 13 M7 exit criteria "Báo cáo tháng: đã tiêu bao nhiêu, tiết kiệm
+    bao nhiêu nhờ local + cache" (doc 06 §3.4, P-M7-3)."""
+    engine = CostEngine(store)
+    old = clock.get_clock()
+    clock.set_clock(_FixedClock(datetime(2026, 8, 10, tzinfo=UTC)))
+    try:
+        await engine.record_actual(
+            process_id="proc_1",
+            task_id=None,
+            provider_id="provider.x",
+            capability="text.generate@1",
+            manifest_cost={"unit": "token", "in": 1.0, "out": 0.0, "currency": "JPY"},
+            usage={"in_tokens": 20, "out_tokens": 0},
+        )
+        await engine.record_savings(
+            process_id="proc_1",
+            task_id=None,
+            capability="text.generate@1",
+            kind="cache",
+            avoided_provider_id="provider.x",
+            amount=7.0,
+            currency="JPY",
+        )
+    finally:
+        clock.set_clock(old)
+
+    resp = await client.get("/v1/reports/monthly", params={"month": "2026-08"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["year_month"] == "2026-08"
+    assert body["currency"] == "JPY"
+    assert body["total_spent"] == pytest.approx(20.0)
+    assert body["saved_cache"] == pytest.approx(7.0)
+    assert body["saved_local"] == pytest.approx(0.0)
+    assert body["total_saved"] == pytest.approx(7.0)
+
+
+async def test_monthly_report_defaults_to_zero_when_no_entries(client: httpx.AsyncClient) -> None:
+    resp = await client.get("/v1/reports/monthly", params={"month": "2020-01"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total_spent"] == 0.0
+    assert body["total_saved"] == 0.0
+
+
+async def test_monthly_report_rejects_malformed_month(client: httpx.AsyncClient) -> None:
+    resp = await client.get("/v1/reports/monthly", params={"month": "not-a-month"})
+    assert resp.status_code == 400

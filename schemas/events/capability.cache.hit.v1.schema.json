@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://schemas/events/capability.cache.hit.v1.schema.json",
+  "title": "capability.cache.hit payload",
+  "description": "doc 06 §3.4, P-M7-3 — 1 cache hit tránh được 1 lượt gọi thật. saved_cost = adapter.estimate() của provider đã tạo ra kết quả đang cache (số THẬT, ADR-0031).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["cache_key", "provider_id", "saved_cost", "currency"],
+  "properties": {
+    "cache_key": { "type": "string" },
+    "provider_id": { "type": "string" },
+    "saved_cost": { "type": "number" },
+    "currency": { "type": "string" }
+  }
+}

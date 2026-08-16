@@ -23,6 +23,7 @@ import yaml
 from apps.paosd.cost_engine import CostEngine
 from apps.paosd.energy_engine import EnergyEngine, MachineSnapshot
 from apps.paosd.router import Router
+from apps.paosd.time_engine import TimeEngine
 from kernel import clock as clock_module
 from kernel.events.bus import EventBus, EventEnvelope
 from kernel.registry.registry import Registry
@@ -131,12 +132,19 @@ def _write_provider(
 # không kiểm Energy Engine — tránh flaky theo tải CPU MÁY THẬT lúc chạy (nếu
 # dùng thẳng `Router(...)`, default trỏ policies/energy.yaml THẬT trong repo).
 _MISSING_ENERGY_POLICY = Path("Z:/paos-test-energy-policy-khong-ton-tai.yaml")
+# Cùng lý do — TimeEngine._load_time_policy() trả None -> check() luôn
+# allowed=True (P-M7-3). Thiếu default này, test chạy đúng lúc GIỜ THẬT rơi
+# vào work_hours (policies/time.yaml thật) sẽ flaky theo NGÀY/GIỜ chạy CI,
+# không phải theo mã đang kiểm.
+_MISSING_TIME_POLICY = Path("Z:/paos-test-time-policy-khong-ton-tai.yaml")
 
 
 def _make_router(*args: Any, **kwargs: Any) -> Router:
-    """Router(...) với `energy_policy_path` an toàn mặc định — test kiểm Energy
-    Engine tự truyền `energy_engine=` riêng (ưu tiên hơn, ghi đè giá trị này)."""
+    """Router(...) với `energy_policy_path`/`time_policy_path` an toàn mặc định
+    — test kiểm Energy/Time Engine tự truyền `energy_engine=`/`time_engine=`
+    riêng (ưu tiên hơn, ghi đè giá trị này)."""
     kwargs.setdefault("energy_policy_path", _MISSING_ENERGY_POLICY)
+    kwargs.setdefault("time_policy_path", _MISSING_TIME_POLICY)
     return Router(*args, **kwargs)
 
 
@@ -695,6 +703,199 @@ async def test_energy_allows_when_not_overloaded(
     result, chosen = await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
     assert result == {"text": "ok-1"}
     assert chosen == "provider.solo"
+
+
+def _time_engine_with_windows(
+    tmp_path: Path, windows: list[dict[str, Any]], default: dict[str, Any]
+) -> TimeEngine:
+    path = tmp_path / "policies" / "time.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        yaml.safe_dump({"version": 1, "windows": windows, "default": default}), encoding="utf-8"
+    )
+    return TimeEngine(path)
+
+
+async def test_time_window_blocks_raises_resource_exhausted_and_publishes_event(
+    events: EventBus, store: StateStore, tmp_path: Path, fake_clock: _FakeClock
+) -> None:
+    """P-M7-3 (doc 06 §5) — cửa sổ thời gian là trạng thái TOÀN CỤC (không
+    riêng 1 provider), cùng hình dạng test Energy Engine ở trên."""
+    caps_dir = tmp_path / "capabilities"
+    providers_dir = tmp_path / "providers"
+    _write_fixture_capability(caps_dir)
+    _write_provider(providers_dir, "provider.solo", "p_a")
+    reg = Registry(caps_dir, providers_dir)
+    reg.load()
+    reg.preload_adapter("provider.solo", _FakeAdapter())
+
+    # fake_clock bắt đầu 2026-01-01T00:00 UTC (thứ 5) — advance 10h -> 10:00,
+    # rơi vào work_hours mon-fri 08:00-18:00.
+    fake_clock.advance(10 * 3600)
+    time_engine = _time_engine_with_windows(
+        tmp_path,
+        [
+            {
+                "name": "work_hours",
+                "days": ["mon", "tue", "wed", "thu", "fri"],
+                "from": "08:00",
+                "to": "18:00",
+                "policy": {"allow_heavy": False, "allow": []},
+            }
+        ],
+        {"allow_heavy": True},
+    )
+    router = _make_router(reg, events, store, {}, tmp_path, time_engine=time_engine)
+
+    received: list[EventEnvelope] = []
+
+    async def _capture(envelope: EventEnvelope) -> None:
+        received.append(envelope)
+
+    events.subscribe("test", "time.window.blocked", _capture)
+
+    with pytest.raises(ProviderError) as exc_info:
+        await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
+    assert exc_info.value.code.value == "RESOURCE_EXHAUSTED"
+
+    decision = await _latest_decision(store)
+    candidates = json.loads(decision["candidates_json"])
+    assert candidates[0]["reason"].startswith("TIME_WINDOW_BLOCKED:work_hours")
+
+    assert len(received) == 1
+    assert received[0].payload["window_name"] == "work_hours"
+    assert received[0].payload["next_window_at"] is not None
+
+
+async def test_time_window_allows_allowlisted_capability(
+    events: EventBus, store: StateStore, tmp_path: Path, fake_clock: _FakeClock
+) -> None:
+    caps_dir = tmp_path / "capabilities"
+    providers_dir = tmp_path / "providers"
+    _write_fixture_capability(caps_dir)
+    _write_provider(providers_dir, "provider.solo", "p_a")
+    reg = Registry(caps_dir, providers_dir)
+    reg.load()
+    reg.preload_adapter("provider.solo", _FakeAdapter())
+
+    fake_clock.advance(10 * 3600)  # 2026-01-01 10:00 UTC, thứ 5
+    time_engine = _time_engine_with_windows(
+        tmp_path,
+        [
+            {
+                "name": "work_hours",
+                "days": ["mon", "tue", "wed", "thu", "fri"],
+                "from": "08:00",
+                "to": "18:00",
+                "policy": {"allow_heavy": False, "allow": ["text.generate@1"]},
+            }
+        ],
+        {"allow_heavy": True},
+    )
+    router = _make_router(reg, events, store, {}, tmp_path, time_engine=time_engine)
+
+    result, chosen = await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
+    assert result == {"text": "ok-1"}
+    assert chosen == "provider.solo"
+
+
+async def _savings_rows(store: StateStore) -> list[dict[str, Any]]:
+    async def _select(conn: aiosqlite.Connection) -> list[dict[str, Any]]:
+        cursor = await conn.execute("SELECT * FROM savings_entries ORDER BY id")
+        rows = await cursor.fetchall()
+        cols = [d[0] for d in cursor.description]
+        return [dict(zip(cols, row, strict=True)) for row in rows]
+
+    return await store.read(_select)
+
+
+async def test_cache_hit_records_savings_and_publishes_event(
+    events: EventBus, store: StateStore, tmp_path: Path
+) -> None:
+    """doc 06 §3.4, ADR-0031 — cache hit tránh 1 lượt gọi thật, `saved_cost` =
+    `adapter.estimate()` THẬT của ĐÚNG provider đã tạo ra kết quả đang cache."""
+    caps_dir = tmp_path / "capabilities"
+    providers_dir = tmp_path / "providers"
+    _write_fixture_capability(caps_dir, cacheable=True)
+    _write_provider(providers_dir, "provider.solo", "solo_one")
+    reg = Registry(caps_dir, providers_dir)
+    reg.load()
+
+    adapter = _FakeAdapter(estimate_cost=5.0)
+    reg.preload_adapter("provider.solo", adapter)
+    router = _make_router(reg, events, store, {}, tmp_path)
+
+    received: list[EventEnvelope] = []
+
+    async def _capture(envelope: EventEnvelope) -> None:
+        received.append(envelope)
+
+    events.subscribe("test", "capability.cache.hit", _capture)
+
+    await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
+    await router.call("text.generate@1", {"prompt": "x"}, "proc_1")  # trúng cache
+
+    rows = await _savings_rows(store)
+    assert len(rows) == 1
+    assert rows[0]["kind"] == "cache"
+    assert rows[0]["avoided_provider_id"] == "provider.solo"
+    assert rows[0]["amount"] == pytest.approx(5.0)
+    assert rows[0]["currency"] == "JPY"
+
+    assert len(received) == 1
+    assert received[0].payload["saved_cost"] == pytest.approx(5.0)
+    assert received[0].payload["provider_id"] == "provider.solo"
+
+
+async def test_local_choice_records_savings_against_eligible_cloud_candidate(
+    events: EventBus, store: StateStore, tmp_path: Path
+) -> None:
+    """doc 06 §3.4, ADR-0031 — candidate local được chọn trong khi có candidate
+    cloud đủ điều kiện cho cùng lượt gọi -> ghi `savings_entries` kind="local".
+    Cloud LUÔN fail invoke() (bất kể thứ tự quét thư mục providers/) để chosen
+    luôn là local một cách tất định, không phụ thuộc `Path.iterdir()`."""
+    caps_dir = tmp_path / "capabilities"
+    providers_dir = tmp_path / "providers"
+    _write_fixture_capability(caps_dir)
+    _write_provider(providers_dir, "provider.local", "p_local", provider_class="local")
+    _write_provider(providers_dir, "provider.cloud", "p_cloud", provider_class="cloud")
+    reg = Registry(caps_dir, providers_dir)
+    reg.load()
+
+    reg.preload_adapter("provider.local", _FakeAdapter(estimate_cost=0.0))
+    reg.preload_adapter(
+        "provider.cloud", _FakeAdapter(estimate_cost=8.0, fail_times=999, retryable=True)
+    )
+    router = _make_router(reg, events, store, {}, tmp_path)
+
+    result, chosen = await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
+    assert result == {"text": "ok-1"}
+    assert chosen == "provider.local"
+
+    rows = await _savings_rows(store)
+    assert len(rows) == 1
+    assert rows[0]["kind"] == "local"
+    assert rows[0]["avoided_provider_id"] == "provider.cloud"
+    assert rows[0]["amount"] == pytest.approx(8.0)
+
+
+async def test_local_choice_records_no_savings_when_only_local_registered(
+    events: EventBus, store: StateStore, tmp_path: Path
+) -> None:
+    """Repo hôm nay CHƯA đăng ký provider cloud/hybrid nào — savings "local"
+    phải KHÔNG ghi gì cả, đúng thực tế (không phải thiếu sót, ADR-0031)."""
+    caps_dir = tmp_path / "capabilities"
+    providers_dir = tmp_path / "providers"
+    _write_fixture_capability(caps_dir)
+    _write_provider(providers_dir, "provider.solo", "p_a", provider_class="local")
+    reg = Registry(caps_dir, providers_dir)
+    reg.load()
+    reg.preload_adapter("provider.solo", _FakeAdapter())
+
+    router = _make_router(reg, events, store, {}, tmp_path)
+    await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
+
+    assert await _savings_rows(store) == []
 
 
 async def test_exclude_provider_routes_to_next_candidate(

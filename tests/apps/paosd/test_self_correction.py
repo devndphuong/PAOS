@@ -19,6 +19,13 @@ import pytest
 from apps.paosd.wiring import build_daemon
 from sdk.provider import Estimate, Health
 
+# File KHÔNG BAO GIỜ tồn tại — EnergyEngine/TimeEngine trả None -> check() luôn
+# allowed=True (BL-023, doc 19 P-M7-3). Test self-correction (script/review
+# loop) này không kiểm Energy/Time Engine — tránh flaky theo tải CPU/NGÀY GIỜ
+# máy thật lúc chạy.
+_MISSING_ENERGY_POLICY = Path("Z:/paos-test-energy-policy-khong-ton-tai.yaml")
+_MISSING_TIME_POLICY = Path("Z:/paos-test-time-policy-khong-ton-tai.yaml")
+
 _TERMINAL_STATES = {"SUCCEEDED", "FAILED", "CANCELLED"}
 
 # Điểm cho từng "vòng" — khớp bằng cách tìm marker trong prompt judge (marker
@@ -127,6 +134,8 @@ async def _run_workflow(tmp_path: Path, adapter: _ScriptedTextGenerateAdapter) -
             "stub.deterministic": adapter,
             "ollama.qwen2.5-14b": adapter,
         },
+        energy_policy_path=_MISSING_ENERGY_POLICY,
+        time_policy_path=_MISSING_TIME_POLICY,
     )
     try:
         transport = httpx.ASGITransport(app=daemon.app)
@@ -280,6 +289,8 @@ async def test_self_correction_updates_provider_stats_quality_per_round(tmp_path
         tmp_path / ".paos" / "state.db",
         workspace_root=tmp_path / "workspace",
         adapter_overrides={"stub.deterministic": adapter, "ollama.qwen2.5-14b": adapter},
+        energy_policy_path=_MISSING_ENERGY_POLICY,
+        time_policy_path=_MISSING_TIME_POLICY,
     )
     try:
         transport = httpx.ASGITransport(app=daemon.app)
@@ -340,6 +351,8 @@ async def test_judge_excludes_generator_provider(tmp_path: Path) -> None:
         tmp_path / ".paos" / "state.db",
         workspace_root=tmp_path / "workspace",
         adapter_overrides={"stub.deterministic": adapter, "ollama.qwen2.5-14b": adapter},
+        energy_policy_path=_MISSING_ENERGY_POLICY,
+        time_policy_path=_MISSING_TIME_POLICY,
     )
     try:
         transport = httpx.ASGITransport(app=daemon.app)

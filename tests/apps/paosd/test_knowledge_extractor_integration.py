@@ -16,6 +16,12 @@ import httpx
 
 from apps.paosd.wiring import build_daemon
 
+# File KHÔNG BAO GIỜ tồn tại — EnergyEngine/TimeEngine trả None -> check() luôn
+# allowed=True (BL-023, doc 19 P-M7-3). Test KnowledgeExtractor này không kiểm
+# Energy/Time Engine — tránh flaky theo tải CPU/NGÀY GIỜ máy thật lúc chạy.
+_MISSING_ENERGY_POLICY = Path("Z:/paos-test-energy-policy-khong-ton-tai.yaml")
+_MISSING_TIME_POLICY = Path("Z:/paos-test-time-policy-khong-ton-tai.yaml")
+
 _TERMINAL_STATES = {"SUCCEEDED", "FAILED", "CANCELLED"}
 
 
@@ -35,7 +41,10 @@ async def _wait_for_terminal(
 
 async def test_real_summarize_job_extracts_known_entities_into_kg(tmp_path: Path) -> None:
     daemon = await build_daemon(
-        tmp_path / ".paos" / "state.db", workspace_root=tmp_path / "workspace"
+        tmp_path / ".paos" / "state.db",
+        workspace_root=tmp_path / "workspace",
+        energy_policy_path=_MISSING_ENERGY_POLICY,
+        time_policy_path=_MISSING_TIME_POLICY,
     )
     try:
         transport = httpx.ASGITransport(app=daemon.app)
@@ -75,7 +84,10 @@ async def test_real_summarize_job_extracts_known_entities_into_kg(tmp_path: Path
 
 async def test_knowledge_export_writes_graph_jsonld(tmp_path: Path) -> None:
     daemon = await build_daemon(
-        tmp_path / ".paos" / "state.db", workspace_root=tmp_path / "workspace"
+        tmp_path / ".paos" / "state.db",
+        workspace_root=tmp_path / "workspace",
+        energy_policy_path=_MISSING_ENERGY_POLICY,
+        time_policy_path=_MISSING_TIME_POLICY,
     )
     try:
         transport = httpx.ASGITransport(app=daemon.app)
@@ -111,7 +123,10 @@ async def test_memory_search_uses_kg_walk_for_related_entity_in_query(tmp_path: 
     KHÔNG qua vector search (không có `memory_items` nào chứa nội dung này,
     `/v1/memory` không truyền `tier`, không truyền `key`)."""
     daemon = await build_daemon(
-        tmp_path / ".paos" / "state.db", workspace_root=tmp_path / "workspace"
+        tmp_path / ".paos" / "state.db",
+        workspace_root=tmp_path / "workspace",
+        energy_policy_path=_MISSING_ENERGY_POLICY,
+        time_policy_path=_MISSING_TIME_POLICY,
     )
     try:
         transport = httpx.ASGITransport(app=daemon.app)

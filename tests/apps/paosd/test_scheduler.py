@@ -16,6 +16,12 @@ import httpx
 from apps.paosd.wiring import build_daemon
 from sdk.provider import CallContext, Estimate, Health, ProviderManifest
 
+# File KHÔNG BAO GIỜ tồn tại — EnergyEngine/TimeEngine trả None -> check() luôn
+# allowed=True (BL-023, doc 19 P-M7-3). Test scheduler/priority queue này
+# không kiểm Energy/Time Engine — tránh flaky theo tải CPU/NGÀY GIỜ máy thật.
+_MISSING_ENERGY_POLICY = Path("Z:/paos-test-energy-policy-khong-ton-tai.yaml")
+_MISSING_TIME_POLICY = Path("Z:/paos-test-time-policy-khong-ton-tai.yaml")
+
 _TERMINAL_STATES = {"SUCCEEDED", "FAILED", "CANCELLED"}
 
 
@@ -141,6 +147,8 @@ async def test_three_processes_run_truly_concurrently(tmp_path: Path) -> None:
         workspace_root=tmp_path / "workspace",
         max_parallel=3,
         adapter_overrides={"stub.deterministic": adapter},
+        energy_policy_path=_MISSING_ENERGY_POLICY,
+        time_policy_path=_MISSING_TIME_POLICY,
     )
     try:
         transport = httpx.ASGITransport(app=daemon.app)
@@ -173,6 +181,8 @@ async def test_priority_queue_higher_number_runs_first(tmp_path: Path) -> None:
         workspace_root=tmp_path / "workspace",
         max_parallel=1,
         adapter_overrides={"stub.deterministic": adapter},
+        energy_policy_path=_MISSING_ENERGY_POLICY,
+        time_policy_path=_MISSING_TIME_POLICY,
     )
     try:
         transport = httpx.ASGITransport(app=daemon.app)
@@ -216,6 +226,8 @@ async def test_resource_token_limits_calls_even_with_free_process_slots(
         max_parallel=3,
         resource_capacity={"gpu": 1},
         adapter_overrides={"stub.deterministic": adapter},
+        energy_policy_path=_MISSING_ENERGY_POLICY,
+        time_policy_path=_MISSING_TIME_POLICY,
     )
     try:
         transport = httpx.ASGITransport(app=daemon.app)
@@ -247,6 +259,8 @@ async def test_cancel_one_of_three_does_not_affect_others(
         workspace_root=tmp_path / "workspace",
         max_parallel=3,
         adapter_overrides={"stub.deterministic": adapter},
+        energy_policy_path=_MISSING_ENERGY_POLICY,
+        time_policy_path=_MISSING_TIME_POLICY,
     )
     try:
         transport = httpx.ASGITransport(app=daemon.app)
@@ -282,6 +296,8 @@ async def test_cancel_queued_process_before_it_starts(tmp_path: Path) -> None:
         workspace_root=tmp_path / "workspace",
         max_parallel=1,
         adapter_overrides={"stub.deterministic": adapter},
+        energy_policy_path=_MISSING_ENERGY_POLICY,
+        time_policy_path=_MISSING_TIME_POLICY,
     )
     try:
         transport = httpx.ASGITransport(app=daemon.app)
@@ -308,7 +324,10 @@ async def test_cancel_queued_process_before_it_starts(tmp_path: Path) -> None:
 
 async def test_cancel_unknown_pid_returns_404(tmp_path: Path) -> None:
     daemon = await build_daemon(
-        tmp_path / ".paos" / "state.db", workspace_root=tmp_path / "workspace"
+        tmp_path / ".paos" / "state.db",
+        workspace_root=tmp_path / "workspace",
+        energy_policy_path=_MISSING_ENERGY_POLICY,
+        time_policy_path=_MISSING_TIME_POLICY,
     )
     try:
         transport = httpx.ASGITransport(app=daemon.app)

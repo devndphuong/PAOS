@@ -21,9 +21,11 @@ cũng cần Cost Engine) — xem docstring `_rank_candidates()`.
 doc 06 §2.1 liệt kê 9 ràng buộc cứng — chỉ 3 làm được với dữ liệu ĐÃ CÓ hôm
 nay (enabled, breaker OPEN, privacy_class). P-M7-1/P-M7-2 lấp thêm "budget" và
 "thiếu resource" (CPU/pin/nhiệt thật, ADR-0030 — xem `_check_energy()`). Còn
-lại: health FAIL, offline_only, context/size — cần Time Engine, health poller,
-hoặc tokenizer, chưa tồn tại. HOÃN có ghi chú, không giả vờ làm bằng giá trị
-hardcode luôn True/luôn qua.
+lại: health FAIL, offline_only, context/size — cần health poller hoặc
+tokenizer, chưa tồn tại. HOÃN có ghi chú, không giả vờ làm bằng giá trị
+hardcode luôn True/luôn qua. (P-M7-3 đã thêm Time Engine — nhưng đó là ràng
+buộc doc 06 §5/§6 "cửa sổ thời gian", một tầng KHÁC 9 ràng buộc §2.1 này, xem
+`_check_time()` — không giải quyết 3 mục còn lại ở trên.)
 """
 
 from __future__ import annotations
@@ -45,6 +47,7 @@ from apps.paosd.cache_store import CacheHit, CacheStore
 from apps.paosd.cost_engine import CostEngine
 from apps.paosd.energy_engine import EnergyEngine
 from apps.paosd.provider_stats import ProviderStats, normalize_task_class
+from apps.paosd.time_engine import TimeEngine
 from kernel import clock, ids
 from kernel.errors import PaosError
 from kernel.events.bus import EventBus
@@ -70,6 +73,8 @@ _DEFAULT_ROUTING_POLICY_PATH = Path(__file__).resolve().parents[2] / "policies" 
 _DEFAULT_BUDGET_POLICY_PATH = Path(__file__).resolve().parents[2] / "policies" / "budget.yaml"
 # Cùng lý do — default trỏ policies/energy.yaml thật (doc 19 P-M7-2).
 _DEFAULT_ENERGY_POLICY_PATH = Path(__file__).resolve().parents[2] / "policies" / "energy.yaml"
+# Cùng lý do — default trỏ policies/time.yaml thật (doc 19 P-M7-3).
+_DEFAULT_TIME_POLICY_PATH = Path(__file__).resolve().parents[2] / "policies" / "time.yaml"
 _DEFAULT_PROFILE = "default"
 _LOCAL_PRIVACY_FIT = 1.0
 _NON_LOCAL_PRIVACY_FIT = 0.4
@@ -171,7 +176,9 @@ class Router:
         routing_policy_path: Path = _DEFAULT_ROUTING_POLICY_PATH,
         budget_policy_path: Path = _DEFAULT_BUDGET_POLICY_PATH,
         energy_policy_path: Path = _DEFAULT_ENERGY_POLICY_PATH,
+        time_policy_path: Path = _DEFAULT_TIME_POLICY_PATH,
         energy_engine: EnergyEngine | None = None,
+        time_engine: TimeEngine | None = None,
     ) -> None:
         self._registry = registry
         self._events = events
@@ -188,6 +195,10 @@ class Router:
         # apps/paosd/energy_engine.py::EnergyEngine.__init__). Production
         # luôn dùng nhánh else — đọc máy thật.
         self._energy_engine = energy_engine or EnergyEngine(energy_policy_path)
+        # `time_engine` override — cùng lý do `energy_engine` (test truyền
+        # TimeEngine trỏ policies/time.yaml tạm, tránh phụ thuộc GIỜ THẬT lúc
+        # chạy CI, doc 19 P-M7-3).
+        self._time_engine = time_engine or TimeEngine(time_policy_path)
 
     async def call(
         self,
@@ -245,6 +256,9 @@ class Router:
                 await self._write_cache_hit_decision(
                     decision_id, process_id, capability_ref, hit, cache_key
                 )
+                await self._record_cache_savings(
+                    hit, cache_key, capability_ref, payload, process_id
+                )
                 return hit.result, hit.provider_id
 
         fb = await self._run_fallback(
@@ -279,6 +293,10 @@ class Router:
         if cache_key is not None and fb.chosen and fb.chosen_class:
             await self._cache.store(
                 cache_key, capability_id, version, fb.chosen_class, fb.chosen, fb.result
+            )
+        if fb.chosen_class == "local":
+            await self._record_local_savings(
+                eligible, fb.chosen, capability_ref, payload, process_id
             )
         return fb.result, fb.chosen
 
@@ -405,6 +423,10 @@ class Router:
             )
             return _AttemptOutcome(None, error, stop=False)
 
+        time_outcome = await self._check_time(candidate, capability_ref, process_id)
+        if time_outcome is not None:
+            return time_outcome
+
         energy_outcome = await self._check_energy(candidate, capability_ref, process_id)
         if energy_outcome is not None:
             return energy_outcome
@@ -448,6 +470,46 @@ class Router:
             usage=usage,
         )
         return _AttemptOutcome(result, None)
+
+    async def _check_time(
+        self, candidate: _Candidate, capability_ref: str, process_id: str
+    ) -> _AttemptOutcome | None:
+        """doc 06 §5/§6, ADR-0031 — cửa sổ thời gian là trạng thái TOÀN CỤC
+        (không riêng 1 provider), CÙNG hình dạng `_check_energy()` ngay dưới:
+        mọi candidate của capability này bị loại giống nhau, "chờ đến cửa sổ
+        kế" nghĩa là qua backoff/retry Task ĐÃ CÓ (doc 06 §5 "PAOS không
+        render, xếp Job vào hàng đợi... tự động chạy"), KHÔNG phải đổi sang
+        candidate khác trong CÙNG 1 lượt gọi. Kiểm TRƯỚC `_check_energy()` —
+        đúng thứ tự doc 06 §6 (Time Engine trước Energy Engine trước Cost
+        Engine). Phát `time.window.blocked`. CHƯA chuyển Process sang WAITING
+        thật (BL-022, docs/backlog.md, cùng Energy Engine)."""
+        check = self._time_engine.check(capability_ref, clock.now())
+        if check.allowed:
+            return None
+
+        candidate.eligible = False
+        candidate.reason = check.reason or "TIME_WINDOW_BLOCKED"
+        await self._events.publish(
+            EventType.TIME_WINDOW_BLOCKED.value,
+            source="paosd.router",
+            process_id=process_id,
+            payload={
+                "capability": capability_ref,
+                "window_name": check.window_name,
+                "reason": check.reason or "",
+                "next_window_at": (
+                    check.next_window_at.isoformat() if check.next_window_at else None
+                ),
+            },
+        )
+        error = ProviderError(
+            "RESOURCE_EXHAUSTED",
+            f"Ngoài cửa sổ thời gian cho phép ({check.window_name}) — thử lại sau",
+            retryable=True,
+            hint="Xem policies/time.yaml — điều chỉnh cửa sổ nếu quá thận trọng",
+            context={"reason": check.reason or "", "window_name": check.window_name},
+        )
+        return _AttemptOutcome(None, error, stop=False)
 
     async def _check_energy(
         self, candidate: _Candidate, capability_ref: str, process_id: str
@@ -781,6 +843,106 @@ class Router:
             )
 
         await self._store.write(_insert)
+
+    async def _record_cache_savings(
+        self,
+        hit: CacheHit,
+        cache_key: str,
+        capability_ref: str,
+        payload: dict[str, Any],
+        process_id: str,
+    ) -> None:
+        """doc 06 §3.4, ADR-0031 — "chạy lại Job giống hệt = 0₫": số tiền tránh
+        được LUÔN là `adapter.estimate()` THẬT của ĐÚNG provider đã tạo ra kết
+        quả đang cache (provider sẽ bị gọi lại nếu KHÔNG trúng cache) — không
+        suy diễn từ giá trung bình/hardcode. Provider đã gỡ/disable từ lúc ghi
+        cache -> `load_adapter()`/`estimate()` lỗi -> bỏ qua record (thiếu tín
+        hiệu thật, không giả vờ có số, cùng ADR-0030). Đọc `currency` từ
+        `Registry.providers_for()` (manifest THẬT) — KHÔNG từ `adapter.manifest`
+        (một số adapter test/fake không set field này, khác `_Candidate.manifest`
+        vốn luôn là manifest gốc từ `provider.yaml`)."""
+        capability_id, _, version_str = capability_ref.partition("@")
+        manifest = next(
+            (
+                m
+                for m in self._registry.providers_for(capability_id, int(version_str))
+                if m.provider_id == hit.provider_id
+            ),
+            None,
+        )
+        if manifest is None:
+            return  # provider đã gỡ đăng ký từ lúc ghi cache — không tính được nữa
+
+        try:
+            adapter = self._registry.load_adapter(hit.provider_id)
+            estimate = await adapter.estimate(capability_ref, payload)
+        except (PaosError, ProviderError):
+            return
+
+        currency = manifest.cost.get("currency", "JPY")
+        await self._cost_engine.record_savings(
+            process_id=process_id,
+            task_id=None,
+            capability=capability_ref,
+            kind="cache",
+            avoided_provider_id=hit.provider_id,
+            amount=estimate.cost,
+            currency=currency,
+        )
+        await self._events.publish(
+            EventType.CAPABILITY_CACHE_HIT.value,
+            source="paosd.router",
+            process_id=process_id,
+            payload={
+                "cache_key": cache_key,
+                "provider_id": hit.provider_id,
+                "saved_cost": estimate.cost,
+                "currency": currency,
+            },
+        )
+
+    async def _record_local_savings(
+        self,
+        eligible: list[_Candidate],
+        chosen_provider_id: str | None,
+        capability_ref: str,
+        payload: dict[str, Any],
+        process_id: str,
+    ) -> None:
+        """doc 06 §3.4, ADR-0031 — "tiết kiệm nhờ local": candidate local được
+        CHỌN trong khi có ≥1 candidate cloud/hybrid ĐỦ ĐIỀU KIỆN (đã qua
+        `_classify()`/`_rank_candidates()`, không phải MỌI provider đăng ký
+        trong hệ thống) cho cùng lượt gọi. Số tiền tránh được = `estimate()`
+        THẬT của candidate xếp hạng cao nhất trong số đó — không so với 1 mốc
+        "giá cloud trung bình" bịa ra. Repo hôm nay CHƯA đăng ký provider
+        cloud/hybrid nào -> hàm này không ghi gì cả, đúng thực tế (không phải
+        thiếu sót, ADR-0031)."""
+        alt = next(
+            (
+                c
+                for c in eligible
+                if c.manifest.provider_class != "local"
+                and c.manifest.provider_id != chosen_provider_id
+            ),
+            None,
+        )
+        if alt is None:
+            return
+        try:
+            adapter = self._registry.load_adapter(alt.manifest.provider_id)
+            estimate = await adapter.estimate(capability_ref, payload)
+        except (PaosError, ProviderError):
+            return
+
+        await self._cost_engine.record_savings(
+            process_id=process_id,
+            task_id=None,
+            capability=capability_ref,
+            kind="local",
+            avoided_provider_id=alt.manifest.provider_id,
+            amount=estimate.cost,
+            currency=alt.manifest.cost.get("currency", "JPY"),
+        )
 
     @asynccontextmanager
     async def _hold_resources(self, resource_names: list[str]) -> AsyncIterator[None]:

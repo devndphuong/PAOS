@@ -1,5 +1,6 @@
 """CostEngine — estimate() trước khi gọi, ghi cost_entries thật sau khi gọi,
-ngân sách 3 tầng (doc 06 §3, doc 19 P-M7-1).
+ngân sách 3 tầng (doc 06 §3, doc 19 P-M7-1); ghi nhận `savings_entries` +
+báo cáo tháng (doc 06 §3.4, doc 19 P-M7-3, ADR-0031).
 
 Cùng khuôn `apps/paosd/cache_store.py`/`provider_stats.py`: DAO thuần, không tự
 phát Event (Router — caller — tự publish/raise theo kết quả `check_budget()`,
@@ -17,6 +18,7 @@ riêng)", đây là quyết định phạm vi CÓ CHỦ ĐÍCH của chính doc,
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +30,7 @@ from kernel.state.db import StateStore
 
 _DEFAULT_BUDGET_POLICY_PATH = Path(__file__).resolve().parents[2] / "policies" / "budget.yaml"
 _TIER_ORDER = ("per_job", "per_day", "per_month")
+_DECEMBER = 12
 
 
 @dataclass(frozen=True)
@@ -57,6 +60,30 @@ class BudgetCheck:
     tier_name: str | None
     day_used_pct: float
     warn_at_pct: float
+
+
+@dataclass(frozen=True)
+class MonthlyReport:
+    """doc 06 §3.4/doc 13 M7 exit criteria "đã tiêu bao nhiêu, tiết kiệm bao
+    nhiêu nhờ local + cache". Giả định 1 currency cho cả báo cáo (JPY, khớp
+    mọi `provider.yaml::cost.currency` đã khai trong repo hôm nay — chưa 2 ca
+    dùng thật cho đa currency, ADR-0031) thay vì gộp nhầm nhiều đơn vị tiền."""
+
+    year_month: str  # "YYYY-MM"
+    currency: str
+    total_spent: float
+    saved_cache: float
+    saved_local: float
+
+
+def _month_bounds(year_month: str) -> tuple[str, str]:
+    year, month = (int(part) for part in year_month.split("-"))
+    start = datetime(year, month, 1, tzinfo=UTC)
+    if month == _DECEMBER:
+        next_month = datetime(year + 1, 1, 1, tzinfo=UTC)
+    else:
+        next_month = datetime(year, month + 1, 1, tzinfo=UTC)
+    return start.isoformat(), next_month.isoformat()
 
 
 def _load_budget_policy(path: Path) -> BudgetPolicy | None:
@@ -128,6 +155,72 @@ class CostEngine:
             )
 
         await self._store.write(_insert)
+
+    async def record_savings(
+        self,
+        *,
+        process_id: str | None,
+        task_id: str | None,
+        capability: str,
+        kind: str,
+        avoided_provider_id: str | None,
+        amount: float,
+        currency: str,
+    ) -> None:
+        """`kind`: "cache" (cache hit tránh 1 lượt gọi thật) | "local" (candidate
+        local được chọn thay vì candidate cloud/hybrid đủ điều kiện). `amount`
+        LUÔN là kết quả `adapter.estimate()` THẬT của `avoided_provider_id` —
+        caller (`Router`) chịu trách nhiệm tính, hàm này chỉ ghi (ADR-0031)."""
+
+        async def _insert(conn: aiosqlite.Connection) -> None:
+            await conn.execute(
+                "INSERT INTO savings_entries(process_id, task_id, capability, kind, "
+                "avoided_provider_id, amount, currency, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    process_id,
+                    task_id,
+                    capability,
+                    kind,
+                    avoided_provider_id,
+                    amount,
+                    currency,
+                    clock.now().isoformat(),
+                ),
+            )
+
+        await self._store.write(_insert)
+
+    async def monthly_report(self, year_month: str, currency: str = "JPY") -> MonthlyReport:
+        """doc 13 M7 exit criteria "Báo cáo tháng: đã tiêu bao nhiêu, tiết kiệm
+        bao nhiêu nhờ local + cache". `year_month`="YYYY-MM"."""
+        start_iso, end_iso = _month_bounds(year_month)
+
+        async def _select(conn: aiosqlite.Connection) -> tuple[float, float, float]:
+            spent_cursor = await conn.execute(
+                "SELECT COALESCE(SUM(amount), 0) FROM cost_entries "
+                "WHERE estimated = 0 AND currency = ? AND at >= ? AND at < ?",
+                (currency, start_iso, end_iso),
+            )
+            spent_row = await spent_cursor.fetchone()
+            spent = float(spent_row[0]) if spent_row else 0.0
+
+            savings_cursor = await conn.execute(
+                "SELECT kind, COALESCE(SUM(amount), 0) FROM savings_entries "
+                "WHERE currency = ? AND at >= ? AND at < ? GROUP BY kind",
+                (currency, start_iso, end_iso),
+            )
+            savings_rows = await savings_cursor.fetchall()
+            saved_by_kind = {row[0]: float(row[1]) for row in savings_rows}
+            return spent, saved_by_kind.get("cache", 0.0), saved_by_kind.get("local", 0.0)
+
+        spent, saved_cache, saved_local = await self._store.read(_select)
+        return MonthlyReport(
+            year_month=year_month,
+            currency=currency,
+            total_spent=spent,
+            saved_cache=saved_cache,
+            saved_local=saved_local,
+        )
 
     async def check_budget(self, process_id: str, estimated_cost: float) -> BudgetCheck:
         """doc 06 §3.2 mốc 2 — kiểm TRƯỚC 1 lượt gọi cụ thể, không phải ước

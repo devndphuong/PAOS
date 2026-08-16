@@ -107,6 +107,12 @@ PAST_TENSE_OK = {
     # (privacy.cloud_send.blocked) ĐÃ có sẵn trong danh sách từ trước
     # (permission.violation.blocked), không cần thêm ở đây.
     "forgotten",
+    # P-M7-3 — "hit" (capability.cache.hit), ĐÃ có trong doc 05 gốc §3.5 (đặt
+    # tên sẵn từ đầu dự án, cùng tiền lệ "progress"/"rendered"): mô tả một sự
+    # kiện đã xảy ra ("cache đã bị hit"), danh từ hoạt động như quá khứ trong
+    # tiếng Anh kỹ thuật (cùng nhóm "hit"/"cut"/"put" bất quy tắc) — bịa một
+    # từ khác ("hitted") sẽ sai ngữ pháp, không phải chuẩn hơn.
+    "hit",
 }
 
 errors: list[str] = []

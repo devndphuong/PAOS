@@ -28,6 +28,13 @@ from apps.paosd.memory_store import MemoryStore
 from apps.paosd.wiring import Daemon, build_daemon
 from providers.stub_embed.adapter import _embed
 
+# File KHÔNG BAO GIỜ tồn tại — build_daemon() forward xuống Runner/Router,
+# EnergyEngine/TimeEngine trả None -> check() luôn allowed=True (BL-023,
+# doc 19 P-M7-3). CLI test này gọi qua HTTP THẬT (docstring đầu file) nên
+# không kiểm Energy/Time Engine — tránh flaky theo tải CPU/NGÀY GIỜ máy thật.
+_MISSING_ENERGY_POLICY = Path("Z:/paos-test-energy-policy-khong-ton-tai.yaml")
+_MISSING_TIME_POLICY = Path("Z:/paos-test-time-policy-khong-ton-tai.yaml")
+
 
 def _free_port() -> int:
     with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
@@ -70,7 +77,12 @@ class _BackgroundDaemon(threading.Thread):
         asyncio.run(self._main())
 
     async def _main(self) -> None:
-        daemon = await build_daemon(self._db_path, workspace_root=self._workspace_root)
+        daemon = await build_daemon(
+            self._db_path,
+            workspace_root=self._workspace_root,
+            energy_policy_path=_MISSING_ENERGY_POLICY,
+            time_policy_path=_MISSING_TIME_POLICY,
+        )
         if self._seed is not None:
             # PHẢI chạy TRONG cùng loop với daemon (bài học docstring đầu file)
             # — không thể seed từ loop của test sau khi fixture trả về URL.

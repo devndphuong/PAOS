@@ -16,6 +16,12 @@ from apps.paosd.wiring import build_daemon
 from sdk.eval import edit_rate
 from sdk.provider import Estimate, Health
 
+# File KHÔNG BAO GIỜ tồn tại — EnergyEngine/TimeEngine trả None -> check() luôn
+# allowed=True (BL-023, doc 19 P-M7-3). Test artifact edit này không kiểm
+# Energy/Time Engine — tránh flaky theo tải CPU/NGÀY GIỜ máy thật lúc chạy.
+_MISSING_ENERGY_POLICY = Path("Z:/paos-test-energy-policy-khong-ton-tai.yaml")
+_MISSING_TIME_POLICY = Path("Z:/paos-test-time-policy-khong-ton-tai.yaml")
+
 _TERMINAL_STATES = {"SUCCEEDED", "FAILED", "CANCELLED"}
 _SCRIPT_TEXT = " ".join(f"tu{i}" for i in range(178)) + "\n\n## CTA\nHãy đăng ký kênh."
 
@@ -86,6 +92,8 @@ async def test_get_artifact_returns_content(tmp_path: Path) -> None:
             "stub.deterministic": _PassOnFirstAttemptAdapter(),
             "ollama.qwen2.5-14b": _PassOnFirstAttemptAdapter(),
         },
+        energy_policy_path=_MISSING_ENERGY_POLICY,
+        time_policy_path=_MISSING_TIME_POLICY,
     )
     try:
         transport = httpx.ASGITransport(app=daemon.app)
@@ -104,7 +112,10 @@ async def test_get_artifact_returns_content(tmp_path: Path) -> None:
 
 async def test_get_artifact_not_found(tmp_path: Path) -> None:
     daemon = await build_daemon(
-        tmp_path / ".paos" / "state.db", workspace_root=tmp_path / "workspace"
+        tmp_path / ".paos" / "state.db",
+        workspace_root=tmp_path / "workspace",
+        energy_policy_path=_MISSING_ENERGY_POLICY,
+        time_policy_path=_MISSING_TIME_POLICY,
     )
     try:
         transport = httpx.ASGITransport(app=daemon.app)
@@ -123,6 +134,8 @@ async def test_edit_artifact_records_edit_rate_and_supersedes(tmp_path: Path) ->
             "stub.deterministic": _PassOnFirstAttemptAdapter(),
             "ollama.qwen2.5-14b": _PassOnFirstAttemptAdapter(),
         },
+        energy_policy_path=_MISSING_ENERGY_POLICY,
+        time_policy_path=_MISSING_TIME_POLICY,
     )
     try:
         transport = httpx.ASGITransport(app=daemon.app)
@@ -188,6 +201,8 @@ async def test_edit_artifact_identical_text_has_zero_edit_rate(tmp_path: Path) -
             "stub.deterministic": _PassOnFirstAttemptAdapter(),
             "ollama.qwen2.5-14b": _PassOnFirstAttemptAdapter(),
         },
+        energy_policy_path=_MISSING_ENERGY_POLICY,
+        time_policy_path=_MISSING_TIME_POLICY,
     )
     try:
         transport = httpx.ASGITransport(app=daemon.app)
@@ -204,7 +219,10 @@ async def test_edit_artifact_identical_text_has_zero_edit_rate(tmp_path: Path) -
 
 async def test_edit_artifact_not_found(tmp_path: Path) -> None:
     daemon = await build_daemon(
-        tmp_path / ".paos" / "state.db", workspace_root=tmp_path / "workspace"
+        tmp_path / ".paos" / "state.db",
+        workspace_root=tmp_path / "workspace",
+        energy_policy_path=_MISSING_ENERGY_POLICY,
+        time_policy_path=_MISSING_TIME_POLICY,
     )
     try:
         transport = httpx.ASGITransport(app=daemon.app)

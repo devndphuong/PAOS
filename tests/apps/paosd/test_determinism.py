@@ -20,6 +20,12 @@ import pytest
 
 from apps.paosd.wiring import build_daemon
 
+# File KHÔNG BAO GIỜ tồn tại — EnergyEngine/TimeEngine trả None -> check() luôn
+# allowed=True (BL-023, doc 19 P-M7-3). 20 lần chạy liên tiếp trong test này
+# không được kiểm Energy/Time Engine — tránh flaky theo tải CPU/NGÀY GIỜ máy thật.
+_MISSING_ENERGY_POLICY = Path("Z:/paos-test-energy-policy-khong-ton-tai.yaml")
+_MISSING_TIME_POLICY = Path("Z:/paos-test-time-policy-khong-ton-tai.yaml")
+
 _TERMINAL_STATES = {"SUCCEEDED", "FAILED", "CANCELLED"}
 
 _RUNS = 20
@@ -40,6 +46,8 @@ async def _run_once(tmp_path: Path, i: int) -> tuple[str, tuple[str, ...], str]:
     daemon = await build_daemon(
         tmp_path / f"run-{i}" / ".paos" / "state.db",
         workspace_root=tmp_path / f"run-{i}" / "workspace",
+        energy_policy_path=_MISSING_ENERGY_POLICY,
+        time_policy_path=_MISSING_TIME_POLICY,
     )
     try:
         process = await daemon.manager.create(

@@ -355,6 +355,40 @@ Không có `&&`/`||` để gộp nhiều điều kiện — muốn logic phức 
 
 ---
 
+## ADR-0031 — Time Engine dùng giờ UTC hệ thống trực tiếp; Savings Report tính từ `estimate()` thật, không suy diễn giá cloud trung bình
+
+**Trạng thái:** Accepted · 2026-08 · Quyết định P-M7-3 ([doc 19](19-prompt-library.md))
+
+**Bối cảnh:** doc 06 §5 cần Time Engine trả lời "giờ này chạy capability nặng được không" theo `policies/time.yaml::windows` (tên, ngày trong tuần, khung giờ, `allow_heavy`/`allow`/`max_parallel`). doc 13 M7 exit criteria + doc 06 §3.4 cần thêm báo cáo tháng "đã tiêu bao nhiêu, tiết kiệm bao nhiêu nhờ local + cache". Cả 2 phần đều có những chỗ doc không quyết định sẵn, phải chốt ở lát này:
+1. `kernel/clock.py::now()` trả UTC, không có cấu hình timezone local ở bất kỳ đâu trong hệ thống — trong khi `policies/time.yaml` viết giờ kiểu "08:00-18:00" như giờ địa phương.
+2. `allow_heavy: false` cần biết capability nào là "nặng" — không có field nào trên `capability.yaml`/`provider.yaml` khai báo việc này.
+3. `deadline` miễn trừ (doc 06 §5) cần `Router.call()` biết deadline của Job — nhưng `JobFeatures.deadline` (đã trích từ P-M6-1) chưa từng được truyền xuống Router.
+4. "Tiết kiệm nhờ local/cache" cần một con số THẬT — nhưng repo hôm nay KHÔNG có provider cloud nào đăng ký (chỉ local/stub), nên không có "giá cloud" nào đo được để so sánh; `cache_entries` (migration 004) cũng chưa từng lưu `saved_cost`.
+
+**Quyết định:**
+- **Timezone:** `TimeEngine.check()` nhận `now: datetime` từ `clock.now()` (UTC) và so khớp TRỰC TIẾP với `policies/time.yaml`, không quy đổi — cùng cách `CostEngine.check_budget()` đã tính `start_of_day`/`start_of_month`. Vận hành viên tự viết giờ trong `time.yaml` theo đúng giờ hệ thống chạy (UTC), không có tầng dịch timezone.
+- **"Nặng":** cùng khuôn `policies/energy.yaml::battery.on_battery.allow` — `policy.allow_heavy: false` chặn MỌI capability trừ những cái liệt kê trong `policy.allow` (allowlist tường minh cho từng cửa sổ), không suy đoán "nặng" từ tên/loại capability.
+- **`max_parallel`:** đọc/parse nhưng KHÔNG enforce — `Runner` vẫn giữ đúng 1 `asyncio.Semaphore` toàn cục.
+- **`deadline`:** KHÔNG làm ở lát này — `Router.call()` chưa nhận tham số `deadline`.
+- **Savings — cơ chế chung cho cả "cache" và "local":** số tiền tránh được LUÔN là kết quả `adapter.estimate()` THẬT gọi trên MỘT provider CỤ THỂ đã đăng ký thật trong Registry (provider đã tạo ra kết quả đang cache, hoặc candidate cloud/hybrid xếp hạng cao nhất còn ĐỦ ĐIỀU KIỆN cho cùng lượt gọi) — tái dùng chính cơ chế `_check_budget()` đã dùng từ P-M7-1. Ghi vào bảng mới `savings_entries` (migration 011, `kind`="cache"|"local") qua `CostEngine.record_savings()`, tổng hợp bằng `CostEngine.monthly_report()`. Phát thêm 2 Event doc 05 đã đặt tên sẵn từ đầu: `time.window.blocked` (§3.8) và `capability.cache.hit` (§3.5, payload thêm `provider_id` so với doc gốc để trace được).
+- **Currency:** `MonthlyReport` giả định 1 currency duy nhất cho cả báo cáo (mặc định "JPY", khớp mọi `provider.yaml::cost.currency` khai trong repo hôm nay).
+
+**Lý do:**
+1. **Không giả vờ có số** (cùng nguyên tắc ADR-0030) — nếu không có provider cloud/hybrid nào ĐĂNG KÝ THẬT cho 1 capability, "tiết kiệm nhờ local" cho lượt gọi đó đúng là KHÔNG đo được, không phải bằng 0 giả hay một hằng số "giá cloud trung bình" bịa ra. Repo hôm nay chỉ có local/stub provider → `saved_local` sẽ luôn là 0 trong thực tế — đây là phản ánh đúng trạng thái hệ thống, không phải lỗi thiếu sót của Savings Report.
+2. **Tái dùng `estimate()` đã được tin cậy** thay vì viết một công thức tính giá song song — `_check_budget()` (P-M7-1) đã coi `adapter.estimate()` là nguồn sự thật duy nhất cho "cuộc gọi này giá bao nhiêu"; Savings Report chỉ gọi lại đúng hàm đó trên provider bị tránh, không phát minh thêm 1 cách tính giá khác có thể trôi khỏi cách CostEngine đã tính.
+3. **UTC trực tiếp, không dịch timezone** — thêm tầng cấu hình timezone cho ĐÚNG 1 file `policies/time.yaml` là đầu tư sớm không cần thiết (P4) khi chưa có ca dùng thật nào cần chạy PAOS lệch múi giờ với máy host; cùng tinh thần CostEngine đã chấp nhận UTC cho ranh giới ngày/tháng từ P-M7-1 mà không ai coi là thiếu.
+4. **Allowlist thay vì suy đoán "nặng"** — cùng lý do Energy Engine đã chọn allowlist cho `battery.on_battery.allow` thay vì đoán theo tên capability: một danh sách tường minh trong YAML luôn đúng ý người cấu hình, một quy tắc suy đoán (vd theo capability_id chứa "render"/"video") sẽ có ngoại lệ không lường trước được ngay từ ví dụ tiếp theo.
+
+**Hệ quả:** `saved_local` sẽ hiển thị 0₫ cho tới khi có provider cloud/hybrid THẬT đăng ký — không phải bug, xem docs/backlog.md cho điều kiện trả nợ `deadline`/`max_parallel`/timezone. `paosctl report` gọi `GET /v1/reports/monthly` — CostEngine dựng riêng 1 instance trong `apps/paosd/app.py::create_app()` (không dùng chung instance của Router, cùng tiền lệ CacheStore).
+
+**Đã loại:**
+1. **Suy diễn "giá cloud trung bình" từ lịch sử `cost_entries` khi không có candidate cloud đủ điều kiện** (vd trung bình `amount` mọi lần capability này từng chạy cloud trong quá khứ) — loại vì đây CHÍNH LÀ "giả vờ có số" mà ADR-0030 đã từ chối cho sensor thiếu: nếu không có candidate cloud ĐANG đủ điều kiện ngay lúc quyết định, một con số lịch sử (có thể đã lỗi thời, giá đã đổi, provider đã gỡ) sẽ đánh lừa người đọc báo cáo rằng hệ thống "biết" một mức giá không còn thật.
+2. **Thêm cấu hình timezone local cho `policies/time.yaml`** (vd trường `tz: Asia/Tokyo`) — loại vì chưa 2 ca dùng thật (P4), và thêm 1 field cấu hình mới kéo theo phải sửa `_time_in_range()`/mọi chỗ so khớp giờ, cho một nhu cầu chưa ai gặp phải (máy host của PAOS và giờ người dùng muốn áp dụng chính sách luôn là CÙNG múi giờ trong mọi ca dùng thật tới nay).
+3. **Luồng `deadline` đầy đủ** (`JobSpec.constraints.deadline` → `Process` → `Router.call(deadline=...)` → `TimeEngine` miễn trừ + ghi Decision Record giải thích) — loại khỏi phạm vi lát này vì đụng tới nhiều tầng (`ProcessManager.create()` là hợp đồng dài hạn M1, không sửa tùy tiện) cho một nhánh hành vi chưa có ca dùng thật nào chờ sẵn; `JobFeatures.deadline` đã trích từ P-M6-1 nhưng chưa từng có tiêu dùng thật — thêm 1 tiêu dùng nữa (Time Engine) mà không giải quyết luôn cả đường ống sẽ để lại nửa vời.
+4. **Enforce `max_parallel` theo cửa sổ đang hoạt động** (đổi `Runner._process_slots` động theo `TimeEngine`) — loại vì `Runner` hôm nay dùng đúng 1 `asyncio.Semaphore` cố định từ lúc khởi tạo; đổi capacity một Semaphore đang chạy giữa chừng an toàn (không làm rò token) cần thiết kế riêng, ngoài phạm vi "cửa sổ thời gian chặn/cho phép 1 lượt gọi" của lát này.
+
+---
+
 ## Backlog ADR (chưa quyết định, cần trước milestone tương ứng)
 
 | Dự kiến | Chủ đề | Cần trước |

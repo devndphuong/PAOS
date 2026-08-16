@@ -41,10 +41,14 @@ from sdk.provider import CallContext, Estimate, Health, ProviderError
 # Tránh flaky theo tải CPU MÁY THẬT lúc chạy (default Router trỏ
 # policies/energy.yaml THẬT trong repo).
 _MISSING_ENERGY_POLICY = Path("Z:/paos-test-energy-policy-khong-ton-tai.yaml")
+# Cùng lý do — TimeEngine.check() luôn allowed=True (P-M7-3). Tránh flaky theo
+# NGÀY/GIỜ THẬT lúc chạy CI (default Router trỏ policies/time.yaml THẬT).
+_MISSING_TIME_POLICY = Path("Z:/paos-test-time-policy-khong-ton-tai.yaml")
 
 
 def _make_router(*args: Any, **kwargs: Any) -> Router:
     kwargs.setdefault("energy_policy_path", _MISSING_ENERGY_POLICY)
+    kwargs.setdefault("time_policy_path", _MISSING_TIME_POLICY)
     return Router(*args, **kwargs)
 
 

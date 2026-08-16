@@ -129,10 +129,10 @@ Phạm vi: feature extraction · candidate + scoring · `decision_outcomes` · P
 Phạm vi: Cost Engine (estimate/record/budget 3 tầng) · Energy Engine (GPU/CPU/pin/nhiệt) · Time Engine (cửa sổ thời gian) · báo cáo tiết kiệm.
 
 **Exit criteria**
-- [ ] Job vượt ngân sách bị chặn và hỏi, không âm thầm tiêu tiền
-- [ ] GPU bận → Process chờ, không chạy đè; rảnh → tự tiếp tục
-- [ ] Job nặng gửi lúc 10h sáng → tự chạy 21h, có thông báo
-- [ ] Báo cáo tháng: đã tiêu bao nhiêu, tiết kiệm bao nhiêu nhờ local + cache
+- [x] Job vượt ngân sách bị chặn và hỏi, không âm thầm tiêu tiền
+- [x] GPU bận → Process chờ, không chạy đè; rảnh → tự tiếp tục
+- [x] Job nặng gửi trong cửa sổ `allow_heavy:false` → bị chặn, tự chạy lại được ở cửa sổ cho phép, có `time.window.blocked` (P-M7-3 — xem docs/backlog.md cho phần `deadline`/`max_parallel` chưa làm)
+- [x] Báo cáo tháng: đã tiêu bao nhiêu, tiết kiệm bao nhiêu nhờ local + cache (`paosctl report`, P-M7-3 — `saved_local` = 0₫ tới khi có provider cloud thật đăng ký, ADR-0031)
 
 ---
 

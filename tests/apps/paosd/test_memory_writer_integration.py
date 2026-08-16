@@ -13,10 +13,19 @@ import httpx
 
 from apps.paosd.wiring import build_daemon
 
+# File KHÔNG BAO GIỜ tồn tại — EnergyEngine/TimeEngine trả None -> check() luôn
+# allowed=True (BL-023, doc 19 P-M7-3). Test MemoryWriter này không kiểm
+# Energy/Time Engine — tránh flaky theo tải CPU/NGÀY GIỜ máy thật lúc chạy.
+_MISSING_ENERGY_POLICY = Path("Z:/paos-test-energy-policy-khong-ton-tai.yaml")
+_MISSING_TIME_POLICY = Path("Z:/paos-test-time-policy-khong-ton-tai.yaml")
+
 
 async def test_three_jobs_same_spec_value_reach_suggest_via_real_http(tmp_path: Path) -> None:
     daemon = await build_daemon(
-        tmp_path / ".paos" / "state.db", workspace_root=tmp_path / "workspace"
+        tmp_path / ".paos" / "state.db",
+        workspace_root=tmp_path / "workspace",
+        energy_policy_path=_MISSING_ENERGY_POLICY,
+        time_policy_path=_MISSING_TIME_POLICY,
     )
     try:
         transport = httpx.ASGITransport(app=daemon.app)
@@ -47,7 +56,10 @@ async def test_three_jobs_same_spec_value_reach_suggest_via_real_http(tmp_path: 
 async def test_artifact_edit_demotes_learned_preference_via_real_http(tmp_path: Path) -> None:
     """doc 13 M5 exit criterion: "Người dùng sửa tay -> confidence giảm"."""
     daemon = await build_daemon(
-        tmp_path / ".paos" / "state.db", workspace_root=tmp_path / "workspace"
+        tmp_path / ".paos" / "state.db",
+        workspace_root=tmp_path / "workspace",
+        energy_policy_path=_MISSING_ENERGY_POLICY,
+        time_policy_path=_MISSING_TIME_POLICY,
     )
     try:
         transport = httpx.ASGITransport(app=daemon.app)

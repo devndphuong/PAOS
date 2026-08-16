@@ -100,6 +100,18 @@ paosctl explain <pid> --decisions   # xem lại rationale: vì sao provider này
 paosctl explain <pid> --decisions   # candidate bị loại vì máy bận hiện với lý do "ENERGY_CPU_OVERLOADED:0.9x"
 ```
 
+**Không render khi đang giờ làm việc (mới — M7)** — mỗi lượt gọi capability được kiểm cửa sổ thời gian (`policies/time.yaml`) trước khi chạy. Trong cửa sổ `allow_heavy: false` (mặc định `work_hours` mon-fri 08:00-18:00, giờ UTC — không quy đổi timezone local, ADR-0031), capability không nằm trong allowlist của cửa sổ đó bị loại, phát `time.window.blocked`, thử lại sau qua backoff đã có (không chạy đè). Ngoài cửa sổ đó (hoặc `default`) → chạy bình thường. `max_parallel` khai báo trong policy nhưng CHƯA enforce; `deadline` miễn trừ (doc 06 §5) CHƯA làm (BL-024).
+```bash
+paosctl explain <pid> --decisions   # candidate bị loại vì ngoài giờ hiện với lý do "TIME_WINDOW_BLOCKED:work_hours"
+```
+
+**Báo cáo tháng — đã tiêu bao nhiêu, tiết kiệm bao nhiêu (mới — M7)** — mỗi cache hit (tránh gọi lại provider) và mỗi lần chọn candidate local trong khi có candidate cloud/hybrid đủ điều kiện đều ghi số tiền THẬT tránh được (`adapter.estimate()` trên provider bị tránh, không suy diễn giá trung bình, ADR-0031) vào `savings_entries`.
+```bash
+paosctl report                      # tháng hiện tại: đã tiêu / tiết kiệm cache / tiết kiệm local
+paosctl report --month 2026-08      # chọn tháng khác
+# saved_local hôm nay luôn 0đ — repo chưa đăng ký provider cloud/hybrid nào thật (ADR-0031)
+```
+
 **Theo dõi & giải thích mọi việc đang/đã làm** — không có "log" mù mờ, mọi quyết định dựng lại được đầy đủ từ Event Log.
 ```bash
 paosctl ps                 # liệt kê mọi job
@@ -124,6 +136,8 @@ paosctl cancel <pid>       # hủy 1 job đang chạy, không ảnh hưởng job
 - **Ước lượng ngân sách chỉ per-CALL, chưa per-JOB** (mốc 1 doc 06 §3.2 "ước lượng tổng trước khi chạy" — chưa làm, cần duyệt DAG với input các bước sau CHƯA resolve lúc Job mới tạo, vấn đề riêng).
 - **PermissionGuard CONFIRM chưa có luồng chờ người duyệt thật** — `cost.budget_exceeded` (như 2 action CONFIRM khác từ M2-5) trả "pending" ngay, chưa có `paosctl` hỏi xác nhận / hết hạn 24h — đang HOÃN từ M2-5, chưa milestone nào nhận (BL-021, `docs/backlog.md`).
 - **Energy Engine chưa chuyển Process sang WAITING/resume thật** — chỉ loại candidate + để cơ chế fallback/backoff đã có xử lý (BL-022). GPU util/VRAM chưa đọc (tránh vendor lock-in NVIDIA, ADR-0030), nhiệt độ không đo được trên Windows (giới hạn nền tảng thật của `psutil`, không phải bỏ sót).
+- **Time Engine chưa có `deadline` miễn trừ, `max_parallel` chưa enforce, giờ UTC trực tiếp (không quy đổi timezone local)** — cùng lý do Energy Engine ở trên (chưa chuyển Process sang WAITING thật, chỉ loại candidate + backoff), 3 quyết định phạm vi có chủ đích (ADR-0031, BL-024).
+- **Savings Report "tiết kiệm nhờ local" luôn 0đ** — repo hôm nay chưa đăng ký provider `class: cloud`/`hybrid` nào thật, nên không có gì để so sánh (không phải bug, ADR-0031). "Tiết kiệm nhờ cache" đã đo được thật ngay khi có cache hit.
 
 ### 1.3b Ví dụ minh hoạ — Decision Engine chọn workflow
 
@@ -149,7 +163,7 @@ sequenceDiagram
 
 ### 1.4 Sắp tới
 
-P-M7-2 vừa xong — `apps/paosd/energy_engine.py`: CPU/pin thật qua `psutil` (ADR-0030, đã kiểm chạy trên Windows dev machine), `policies/energy.yaml`, Router loại candidate + phát `resource.wait.started` khi máy bận (không chạy đè). Nhân tiện sửa 1 flaky THẬT phát hiện lúc viết lát này: 3 file test construct `Router(...)` trực tiếp giờ trỏ energy policy an toàn, tránh fail giả theo tải CPU máy lúc chạy CI. Việc **ngay tiếp theo**: **P-M7-3 — Time Engine + báo cáo tiết kiệm hàng tháng** (đóng Milestone 7). Lộ trình đầy đủ ở [§3](#3-lộ-trình-sắp-tới) bên dưới.
+P-M7-3 vừa xong — **đóng Milestone 7**. `apps/paosd/time_engine.py`: cửa sổ thời gian (`policies/time.yaml`), Router loại candidate + phát `time.window.blocked` ngoài cửa sổ `allow_heavy` (không chạy đè, cùng khuôn Energy Engine). `apps/paosd/cost_engine.py` thêm `record_savings()`/`monthly_report()` — mỗi cache hit hoặc lượt chọn local thay cloud đủ điều kiện ghi số tiền THẬT tránh được (`adapter.estimate()`, ADR-0031), xem qua `paosctl report`/`GET /v1/reports/monthly`. Nhân tiện trả nợ BL-023 (đã sửa `build_daemon()`/`Runner` nhận `energy_policy_path`/`time_policy_path` xuyên suốt, mọi test đi qua daemon giờ không còn phụ thuộc tải CPU/NGÀY GIỜ máy thật). Việc **ngay tiếp theo**: **M8 — Plugin System & UI** (P-M8-0: chốt ADR-0017/ADR-0018). Lộ trình đầy đủ ở [§3](#3-lộ-trình-sắp-tới) bên dưới.
 
 ---
 
@@ -270,7 +284,7 @@ Theo kế hoạch 10 milestone (~31 tuần lập trình thuần, 11–15 tháng 
 | M4 | Quality & Self-Correction | Tự sửa, tự chấm điểm, ghi `edit_rate` | ✅ Xong |
 | M5 | Memory & Knowledge | Nhớ sở thích, xây Knowledge Graph | ✅ Phạm vi xong · 2/5 tiêu chí trọn vẹn |
 | M6 | Decision Engine | Tự chọn workflow phù hợp | ✅ Phạm vi xong — chọn workflow + xếp hạng provider (Q̂/P/R) + routing.yaml/profile + explain --decisions. Chờ M7 (Ĉ/L̂) mới đủ 5/5 số hạng |
-| M7 | Cost / Energy / Time | Chạy đêm, tiết kiệm, đúng ngân sách | 🔶 Đang làm — P-M7-1/P-M7-2 xong (Cost Engine + Energy Engine CPU/pin thật) |
+| M7 | Cost / Energy / Time | Chạy đêm, tiết kiệm, đúng ngân sách | ✅ Xong — Cost Engine (ngân sách 3 tầng) + Energy Engine (CPU/pin thật) + Time Engine (cửa sổ thời gian) + Savings Report (`paosctl report`) |
 | M8 | Plugin System & UI | Cài plugin, có giao diện Web thật | ⚪ Chưa tới |
 | M9 | Research Plugin | Nghiên cứu chủ đề, tích luỹ tri thức thật | ⚪ Chưa tới |
 | — | Hardening | Đạt toàn bộ chỉ tiêu chất lượng phi chức năng | ⚪ Liên tục |

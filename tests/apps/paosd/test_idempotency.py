@@ -19,6 +19,12 @@ import httpx
 
 from apps.paosd.wiring import build_daemon
 
+# File KHÔNG BAO GIỜ tồn tại — EnergyEngine/TimeEngine trả None -> check() luôn
+# allowed=True (BL-023, doc 19 P-M7-3). Test idempotency (replay event) này
+# không kiểm Energy/Time Engine — tránh flaky theo tải CPU/NGÀY GIỜ máy thật.
+_MISSING_ENERGY_POLICY = Path("Z:/paos-test-energy-policy-khong-ton-tai.yaml")
+_MISSING_TIME_POLICY = Path("Z:/paos-test-time-policy-khong-ton-tai.yaml")
+
 
 async def _post_job(client: httpx.AsyncClient, text: str) -> dict[str, Any]:
     resp = await client.post(
@@ -52,7 +58,10 @@ async def test_replaying_completed_process_does_not_duplicate_artifact(
     tmp_path: Path,
 ) -> None:
     daemon = await build_daemon(
-        tmp_path / ".paos" / "state.db", workspace_root=tmp_path / "workspace"
+        tmp_path / ".paos" / "state.db",
+        workspace_root=tmp_path / "workspace",
+        energy_policy_path=_MISSING_ENERGY_POLICY,
+        time_policy_path=_MISSING_TIME_POLICY,
     )
     try:
         transport = httpx.ASGITransport(app=daemon.app)

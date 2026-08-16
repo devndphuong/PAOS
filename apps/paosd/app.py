@@ -11,11 +11,13 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from apps.paosd.artifact_store import ArtifactNotEditable, ArtifactNotFound, ArtifactStore
+from apps.paosd.cost_engine import CostEngine
 from apps.paosd.decision_engine import DecisionEngine
 from apps.paosd.knowledge_store import KGEdge, KGNode, KnowledgeStore
 from apps.paosd.memory_retriever import MemoryRetriever, RetrievedMemory
 from apps.paosd.memory_store import MemoryItem, MemoryStore
 from apps.paosd.runner import Runner
+from kernel import clock
 from kernel.errors import PaosError
 from kernel.events.bus import EventBus, EventEnvelope
 from kernel.events.types import EventType
@@ -193,6 +195,15 @@ class MemoryImportResponse(BaseModel):
     count: int
 
 
+class MonthlyReportResponse(BaseModel):
+    year_month: str
+    currency: str
+    total_spent: float
+    saved_cache: float
+    saved_local: float
+    total_saved: float
+
+
 def _to_event_response(e: EventEnvelope) -> EventResponse:
     return EventResponse(
         event_id=e.event_id,
@@ -322,6 +333,11 @@ def create_app(  # noqa: PLR0915 — đăng ký route tăng tuyến tính theo s
     memory_store = MemoryStore(store, events)
     knowledge_store = KnowledgeStore(store, events)
     memory_retriever = MemoryRetriever(store, memory_store, runner.router, knowledge_store)
+    # CostEngine dựng tại chỗ, cùng lý do ArtifactStore/MemoryStore/KnowledgeStore
+    # ở trên — chỉ cần `monthly_report()` (P-M7-3), Router đã tự dựng instance
+    # riêng của nó cho estimate/record_actual/check_budget (không dùng chung,
+    # cùng tinh thần CacheStore).
+    cost_engine = CostEngine(store)
 
     @app.post("/v1/jobs", response_model=CreateJobResponse)
     async def create_job(body: CreateJobRequest) -> CreateJobResponse:
@@ -553,6 +569,28 @@ def create_app(  # noqa: PLR0915 — đăng ký route tăng tuyến tính theo s
             path=str(out_path.relative_to(workspace_root)),
             node_count=len(graph["@graph"]),
             edge_count=len(graph["kg_edges"]),
+        )
+
+    @app.get("/v1/reports/monthly", response_model=MonthlyReportResponse)
+    async def monthly_report(month: str | None = None) -> MonthlyReportResponse:
+        """doc 13 M7 exit criteria "Báo cáo tháng: đã tiêu bao nhiêu, tiết kiệm
+        bao nhiêu nhờ local + cache" (doc 06 §3.4, P-M7-3). `month` mặc định
+        tháng hiện tại (UTC, cùng `clock.now()` — không có cấu hình timezone
+        local, ADR-0031)."""
+        year_month = month or clock.now().strftime("%Y-%m")
+        try:
+            report = await cost_engine.monthly_report(year_month)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail=f"month không hợp lệ: {year_month}"
+            ) from exc
+        return MonthlyReportResponse(
+            year_month=report.year_month,
+            currency=report.currency,
+            total_spent=report.total_spent,
+            saved_cache=report.saved_cache,
+            saved_local=report.saved_local,
+            total_saved=report.saved_cache + report.saved_local,
         )
 
     @app.get("/v1/health")

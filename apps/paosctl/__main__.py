@@ -172,6 +172,22 @@ def explain(ctx: click.Context, pid: int, decisions: bool) -> None:
 
 
 @cli.command()
+@click.option("--month", default=None, help="YYYY-MM, mặc định tháng hiện tại.")
+@click.pass_context
+def report(ctx: click.Context, month: str | None) -> None:
+    """Báo cáo tháng: đã tiêu bao nhiêu, tiết kiệm bao nhiêu nhờ local + cache
+    (doc 06 §3.4, doc 13 M7 exit criteria, P-M7-3)."""
+    with _client(ctx) as client:
+        params = {"month": month} if month else {}
+        body = _get(client, "/v1/reports/monthly", params=params).json()
+    click.echo(f"Báo cáo tháng {body['year_month']} ({body['currency']})")
+    click.echo(f"  Đã tiêu:          {body['total_spent']:.2f}")
+    click.echo(f"  Tiết kiệm (cache): {body['saved_cache']:.2f}")
+    click.echo(f"  Tiết kiệm (local): {body['saved_local']:.2f}")
+    click.echo(f"  Tổng tiết kiệm:    {body['total_saved']:.2f}")
+
+
+@cli.command()
 @click.argument("pid", type=int)
 @click.pass_context
 def cancel(ctx: click.Context, pid: int) -> None:

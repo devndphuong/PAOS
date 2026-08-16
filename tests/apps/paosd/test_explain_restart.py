@@ -17,6 +17,12 @@ from fastapi import FastAPI
 
 from apps.paosd.wiring import build_daemon
 
+# File KHÔNG BAO GIỜ tồn tại — EnergyEngine/TimeEngine trả None -> check() luôn
+# allowed=True (BL-023, doc 19 P-M7-3). Test mô phỏng restart này không kiểm
+# Energy/Time Engine — tránh flaky theo tải CPU/NGÀY GIỜ máy thật lúc chạy.
+_MISSING_ENERGY_POLICY = Path("Z:/paos-test-energy-policy-khong-ton-tai.yaml")
+_MISSING_TIME_POLICY = Path("Z:/paos-test-time-policy-khong-ton-tai.yaml")
+
 _TERMINAL_STATES = {"SUCCEEDED", "FAILED", "CANCELLED"}
 
 
@@ -61,7 +67,12 @@ async def test_explain_survives_restart(tmp_path: Path) -> None:
     db_path = tmp_path / ".paos" / "state.db"
     workspace_root = tmp_path / "workspace"
 
-    daemon1 = await build_daemon(db_path, workspace_root=workspace_root)
+    daemon1 = await build_daemon(
+        db_path,
+        workspace_root=workspace_root,
+        energy_policy_path=_MISSING_ENERGY_POLICY,
+        time_policy_path=_MISSING_TIME_POLICY,
+    )
     pid = await _run_job_to_completion(daemon1.app)
 
     trace_before_restart = await _explain(daemon1.app, pid)
@@ -69,7 +80,12 @@ async def test_explain_survives_restart(tmp_path: Path) -> None:
 
     # "Restart": KHÔNG tái sử dụng bất kỳ đối tượng Python nào của daemon1 — dựng
     # lại hoàn toàn StateStore/EventBus/ProcessManager/Runner mới, chỉ chung file DB.
-    daemon2 = await build_daemon(db_path, workspace_root=workspace_root)
+    daemon2 = await build_daemon(
+        db_path,
+        workspace_root=workspace_root,
+        energy_policy_path=_MISSING_ENERGY_POLICY,
+        time_policy_path=_MISSING_TIME_POLICY,
+    )
     try:
         trace_after_restart = await _explain(daemon2.app, pid)
     finally:
@@ -94,11 +110,21 @@ async def test_explain_after_restart_matches_live_status(tmp_path: Path) -> None
     db_path = tmp_path / ".paos" / "state.db"
     workspace_root = tmp_path / "workspace"
 
-    daemon1 = await build_daemon(db_path, workspace_root=workspace_root)
+    daemon1 = await build_daemon(
+        db_path,
+        workspace_root=workspace_root,
+        energy_policy_path=_MISSING_ENERGY_POLICY,
+        time_policy_path=_MISSING_TIME_POLICY,
+    )
     pid = await _run_job_to_completion(daemon1.app)
     await daemon1.stop()
 
-    daemon2 = await build_daemon(db_path, workspace_root=workspace_root)
+    daemon2 = await build_daemon(
+        db_path,
+        workspace_root=workspace_root,
+        energy_policy_path=_MISSING_ENERGY_POLICY,
+        time_policy_path=_MISSING_TIME_POLICY,
+    )
     try:
         transport = httpx.ASGITransport(app=daemon2.app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:

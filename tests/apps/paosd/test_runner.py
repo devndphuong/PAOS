@@ -30,6 +30,12 @@ from sdk.agent import (
 )
 from sdk.provider import Estimate, Health, ProviderError
 
+# File KHÔNG BAO GIỜ tồn tại — EnergyEngine/TimeEngine trả None -> check() luôn
+# allowed=True (BL-023, doc 19 P-M7-3). Test Runner/wiring đường vàng này
+# không kiểm Energy/Time Engine — tránh flaky theo tải CPU/NGÀY GIỜ máy thật.
+_MISSING_ENERGY_POLICY = Path("Z:/paos-test-energy-policy-khong-ton-tai.yaml")
+_MISSING_TIME_POLICY = Path("Z:/paos-test-time-policy-khong-ton-tai.yaml")
+
 _TERMINAL_STATES = {"SUCCEEDED", "FAILED", "CANCELLED"}
 
 
@@ -79,7 +85,12 @@ class _CheckpointableAgent:
 
 @pytest.fixture
 async def daemon(tmp_path: Path):
-    d = await build_daemon(tmp_path / ".paos" / "state.db", workspace_root=tmp_path / "workspace")
+    d = await build_daemon(
+        tmp_path / ".paos" / "state.db",
+        workspace_root=tmp_path / "workspace",
+        energy_policy_path=_MISSING_ENERGY_POLICY,
+        time_policy_path=_MISSING_TIME_POLICY,
+    )
     yield d
     await d.stop()
 
@@ -370,6 +381,8 @@ async def test_uc1_degraded_mode_when_image_generate_has_no_gpu(tmp_path: Path) 
         tmp_path / ".paos" / "state.db",
         workspace_root=tmp_path / "workspace",
         adapter_overrides={"stub.image": _NoGpuAdapter()},
+        energy_policy_path=_MISSING_ENERGY_POLICY,
+        time_policy_path=_MISSING_TIME_POLICY,
     )
     try:
         transport = httpx.ASGITransport(app=daemon.app)
@@ -508,7 +521,15 @@ async def bare_runner(tmp_path: Path):
     registry = Registry(tmp_path / "capabilities", tmp_path / "providers")
     registry.load()
     manager = ProcessManager(store, events)
-    runner = runner_module.Runner(manager, events, registry, store, tmp_path / "workspace")
+    runner = runner_module.Runner(
+        manager,
+        events,
+        registry,
+        store,
+        tmp_path / "workspace",
+        energy_policy_path=_MISSING_ENERGY_POLICY,
+        time_policy_path=_MISSING_TIME_POLICY,
+    )
     yield manager, runner, registry
     await store.stop()
 
