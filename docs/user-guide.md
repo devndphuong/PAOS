@@ -163,7 +163,7 @@ sequenceDiagram
 
 ### 1.4 Sắp tới
 
-P-M7-3 vừa xong — **đóng Milestone 7**. `apps/paosd/time_engine.py`: cửa sổ thời gian (`policies/time.yaml`), Router loại candidate + phát `time.window.blocked` ngoài cửa sổ `allow_heavy` (không chạy đè, cùng khuôn Energy Engine). `apps/paosd/cost_engine.py` thêm `record_savings()`/`monthly_report()` — mỗi cache hit hoặc lượt chọn local thay cloud đủ điều kiện ghi số tiền THẬT tránh được (`adapter.estimate()`, ADR-0031), xem qua `paosctl report`/`GET /v1/reports/monthly`. Nhân tiện trả nợ BL-023 (đã sửa `build_daemon()`/`Runner` nhận `energy_policy_path`/`time_policy_path` xuyên suốt, mọi test đi qua daemon giờ không còn phụ thuộc tải CPU/NGÀY GIỜ máy thật). Việc **ngay tiếp theo**: **M8 — Plugin System & UI** (P-M8-0: chốt ADR-0017/ADR-0018). Lộ trình đầy đủ ở [§3](#3-lộ-trình-sắp-tới) bên dưới.
+P-M8-0 vừa xong — chốt 2 ADR mở đầu Milestone 8 (chưa viết code, đúng bản chất P-M8-0 "quyết định trước"). **ADR-0017**: UI v1 là Web local tĩnh — HTML/CSS/JS thuần, không framework/build step, phục vụ bởi chính `apps/paosd/app.py` cùng port `127.0.0.1:8787` đã có (không Tauri — mâu thuẫn với doc 02 §8 đã sketch từ Ngày 0, và máy dev chưa có toolchain Rust). **ADR-0018**: plugin phân phối dạng thư mục thuần (đường dẫn local hoặc git URL, không archive), cài vào `workspace/plugins/<id>/` (không phải gốc repo — giữ đúng ranh giới "workspace = dữ liệu người dùng"), Registry quét thêm 1 gốc `plugins_dir` tái dùng nguyên các hàm scan đã có. Việc **ngay tiếp theo**: **P-M8-1 — Plugin loader + sandbox subprocess (JSON-RPC stdio)**, hiện thực hóa ADR-0005/ADR-0018. Lộ trình đầy đủ ở [§3](#3-lộ-trình-sắp-tới) bên dưới.
 
 ---
 
@@ -285,7 +285,7 @@ Theo kế hoạch 10 milestone (~31 tuần lập trình thuần, 11–15 tháng 
 | M5 | Memory & Knowledge | Nhớ sở thích, xây Knowledge Graph | ✅ Phạm vi xong · 2/5 tiêu chí trọn vẹn |
 | M6 | Decision Engine | Tự chọn workflow phù hợp | ✅ Phạm vi xong — chọn workflow + xếp hạng provider (Q̂/P/R) + routing.yaml/profile + explain --decisions. Chờ M7 (Ĉ/L̂) mới đủ 5/5 số hạng |
 | M7 | Cost / Energy / Time | Chạy đêm, tiết kiệm, đúng ngân sách | ✅ Xong — Cost Engine (ngân sách 3 tầng) + Energy Engine (CPU/pin thật) + Time Engine (cửa sổ thời gian) + Savings Report (`paosctl report`) |
-| M8 | Plugin System & UI | Cài plugin, có giao diện Web thật | ⚪ Chưa tới |
+| M8 | Plugin System & UI | Cài plugin, có giao diện Web thật | 🔶 Đang làm — P-M8-0 xong (ADR-0017 UI Web local tĩnh, ADR-0018 phân phối plugin) |
 | M9 | Research Plugin | Nghiên cứu chủ đề, tích luỹ tri thức thật | ⚪ Chưa tới |
 | — | Hardening | Đạt toàn bộ chỉ tiêu chất lượng phi chức năng | ⚪ Liên tục |
 

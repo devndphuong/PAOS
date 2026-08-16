@@ -192,6 +192,64 @@
 
 ---
 
+## ADR-0017 — UI v1: Web local tĩnh phục vụ bởi `paosd`, không framework/build step, không Tauri
+
+**Trạng thái:** Accepted · 2026-08 · Quyết định P-M8-0 ([doc 19](19-prompt-library.md)), chốt trước M8
+
+**Bối cảnh:** [doc 02](02-architecture.md) §8 đã phác sẵn từ Ngày 0 "Web UI — tĩnh, gọi paosd" trong sơ đồ triển khai, nhưng chưa ADR nào chốt CÔNG NGHỆ cụ thể — bảng backlog ADR (đặt chỗ từ P-M5-0) đặt đúng câu hỏi "Web local vs Tauri". [doc 10](10-observability-and-explainability.md) §8 giới hạn phạm vi UI v1 CHÍNH XÁC 4 màn hình (Processes/Explain/Projects/Knowledge), "không hơn" — không cần một app native đầy đủ tính năng. [doc 11](11-nfr-and-slo.md) §7 UX-04 ("CLI có đủ 100% chức năng trước khi UI được xây") đã ĐÚNG từ trước — `paosctl` làm được mọi việc UI sẽ làm — nghĩa là UI chỉ là LỚP HIỂN THỊ THÊM, hạ tầng phía sau không phụ thuộc lựa chọn công nghệ UI theo bất kỳ cách nào. doc 11 §3 LOC-04 ("không cần dịch vụ nền ngoài") + §8 POR-04 ("gỡ cài đặt = xóa 1 thư mục") + doc 02 §8 ("Cài đặt = 1 lệnh, gỡ = xóa 1 thư mục") đặt ràng buộc thật lên lựa chọn. Repo hôm nay KHÔNG có bất kỳ công cụ frontend nào (không `package.json`, không toolchain JS/Rust) — lựa chọn hoàn toàn xanh.
+
+**Quyết định:** **Web local tĩnh** — 1 thư mục HTML/CSS/JS thuần (KHÔNG framework, KHÔNG bundler/build step, KHÔNG npm/`node_modules`), được `apps/paosd/app.py` phục vụ tĩnh (`StaticFiles`) NGAY TRÊN CÙNG process/port đã có (`127.0.0.1:8787`, ADR-0021) — mở `http://127.0.0.1:8787/` trên trình duyệt hệ thống là dùng được UI, gọi thẳng `fetch()` tới `/v1/*` CÙNG origin (không cần CORS). **KHÔNG dùng Tauri.**
+- `<script type="module">` load thẳng bởi trình duyệt, KHÔNG qua bước biên dịch nào.
+- KHÔNG tải bất kỳ thư viện nào từ CDN — mọi CSS/JS nằm sẵn trong repo, để UI chạy được offline (khớp LOC-01 "chạy trọn workflow offline" — 1 CDN chết mạng sẽ làm UI trắng trang, vi phạm chính NFR này).
+- 4 màn hình = 4 module tương ứng doc 10 §8, dùng chung 1 lớp gọi API tới `/v1/processes`, `/v1/processes/{pid}/trace`, `/v1/artifacts`, `/v1/memory`, `/v1/knowledge/graph` — toàn bộ ĐÃ CÓ từ M0–M6 (doc 04 §1), P-M8-4 chỉ cần dựng giao diện, không thêm endpoint mới nào cho phần đọc.
+
+**Lý do:**
+1. doc 02 §8 đã phác "Web UI — tĩnh" từ Ngày 0 — chọn Tauri MÂU THUẪN trực tiếp với kiến trúc đã sketch, cần viết lại §8 chứ không chỉ thêm 1 ADR.
+2. "Cài đặt = 1 lệnh, gỡ = xóa 1 thư mục" đạt TUYỆT ĐỐI với Web local — UI chỉ là vài file tĩnh, phục vụ bởi process `paosd` ĐÃ chạy sẵn; không thêm 1 binary/installer/process nào.
+3. Boring technology (P11) — repo hôm nay 100% Python + vài file YAML/JSON tĩnh. Thêm Tauri = thêm TOÀN BỘ toolchain Rust (compiler, cargo, webview platform-specific) cho một phạm vi đúng 4 màn hình đọc/hiển thị dữ liệu — bất tương xứng.
+4. Máy dev thật (`environment-baseline.md`) chưa có Rust/cargo cài sẵn — chọn Tauri đặt thêm rào cản cài đặt ngay lát đầu tiên của M8, cho lợi ích (icon desktop, tray, auto-update native) mà doc 10 §8 không đòi hỏi.
+5. Cùng process/port với `paosd` tránh CORS hoàn toàn — không cần `Access-Control-Allow-Origin`, không có 1 tầng "API gateway" giả nào chỉ để 2 origin nói chuyện được.
+
+**Hệ quả:** `apps/paosd/app.py` thêm 1 dòng mount static files ở route `/` (dưới `/v1/*` đã có — không đụng tầng Kernel, không vi phạm ADR-0021 "framework web chỉ sống ở `apps/paosd/`"). Build/deploy UI = commit file tĩnh vào repo, không CI riêng cho frontend. Không có UI framework nghĩa là điều hướng giữa 4 màn hình phải tự viết tay (nhẹ — 4 màn hình cố định không cần router phức tạp, P4). Không có desktop notification/tray icon/auto-update native — ngoài phạm vi doc 10 §8, không mất gì đã cam kết.
+
+**Đã loại:**
+1. **Tauri** (đề xuất gốc trong bảng backlog) — desktop app thật, bundle nhẹ hơn Electron, webview hệ thống. Loại vì: (a) mâu thuẫn trực tiếp với doc 02 §8 đã sketch "Web UI — tĩnh"; (b) cần toàn bộ toolchain Rust không có sẵn trên máy dev; (c) build cross-platform (Windows/Mac/Linux) cần hạ tầng CI cross-compile dự án chưa có; (d) lợi ích chính của Tauri (desktop-native feel, tray, single binary) không nằm trong bất kỳ yêu cầu nào ở doc 10 §8/doc 11 — trả giá cho tính năng không ai đòi hỏi.
+2. **Electron** — không nằm trong backlog gốc nhưng là ứng viên tự nhiên cùng nhóm. Loại vì nặng hơn Tauri (bundle Chromium + Node đầy đủ, ~150MB+), thêm TOÀN BỘ hệ sinh thái npm/Node.js làm dependency, mâu thuẫn nghiêm trọng hơn với POR-04/LOC-04 (footprint lớn, thường chạy kèm 1 tiến trình Node nền).
+3. **SPA framework có build step (React/Vue/Svelte + Vite/webpack)** — quen thuộc, dev experience tốt hơn cho UI lớn dần theo thời gian. Loại ở v1 vì: (a) thêm toàn bộ toolchain npm/`node_modules` cho repo hôm nay 100% Python; (b) 4 màn hình cố định (doc 10 §8 "không hơn") không đủ độ phức tạp để cần state management/component framework; (c) build step nghĩa là "sửa UI" không còn là "sửa 1 file, F5" — chậm vòng lặp phát triển cho lợi ích chưa cần. Có thể revisit nếu UI thật sự phình to sau v1 (P4 — chưa 2 ca dùng thật).
+4. **Static file server riêng biệt (khác process với `paosd`, vd `python -m http.server` cổng khác)** — tách rời UI khỏi backend hoàn toàn, "sạch" hơn về phân lớp. Loại vì: (a) cần 2 tiến trình thay vì 1 (mâu thuẫn "cài đặt = 1 lệnh"); (b) 2 origin khác nhau (cổng khác) buộc cấu hình CORS ở `paosd` không vì lý do chính đáng nào, thêm bề mặt tấn công (mở CORS cho origin ngoài) không cần thiết khi cả 2 chạy trên `localhost` của CHÍNH máy người dùng.
+
+---
+
+## ADR-0018 — Plugin phân phối dạng thư mục (local path hoặc git URL), cài vào `workspace/plugins/`, Registry quét thêm 1 gốc
+
+**Trạng thái:** Accepted · 2026-08 · Quyết định P-M8-0 ([doc 19](19-prompt-library.md)), chốt trước M8
+
+**Bối cảnh:** [doc 12](12-plugin-sdk-and-marketplace.md) §1/§6 đã phác plugin là 1 thư mục (`plugins/paos-video/{plugin.yaml, agents/, ...}`) và Phase 1 (v1) "cài từ thư mục local hoặc git URL" — nhưng chưa ADR nào chốt CƠ CHẾ cụ thể: plugin cài xong NẰM Ở ĐÂU trên đĩa, `paosctl plugin install` làm gì từng bước, Registry phát hiện plugin đã cài bằng cách nào lúc khởi động lại. ĐÃ CHỐT SẴN, KHÔNG bàn lại ở ADR này: định dạng manifest (`plugin.yaml`, [doc 04](04-core-contracts.md) §5, hợp đồng dài hạn), cơ chế cách ly lúc CHẠY (subprocess + JSON-RPC qua stdio, ADR-0005), mô hình quyền/sandbox (doc 09 §5, deny-all mặc định). `kernel/registry/registry.py` đã có sẵn tiền lệ nạp động: `Registry.load_adapter()` (importlib, cho Provider) và `Registry.load_agent()` (cho Agent) — cả 2 chạy TRONG CÙNG process; plugin theo ADR-0005 chạy NGOÀI process, nên cần 1 đường nạp mới cho phần thực thi (thuộc P-M8-1), nhưng phần KHAI BÁO (agents/providers/... plugin cung cấp) vẫn là dữ liệu tĩnh Registry quét được y hệt hôm nay.
+
+**Quyết định:**
+- **Định dạng phân phối = thư mục thuần** (không đóng gói `.zip`/`.tar.gz`/`.whl`) — cài từ (a) đường dẫn local (copy thư mục) hoặc (b) git URL (`git clone` qua subprocess, không thêm thư viện Python git). Không có định dạng archive nén nào ở v1.
+- **Vị trí cài đặt = `workspace/plugins/<plugin_id>/`** — trong `workspace/`, KHÔNG ở gốc repo cạnh `providers/`/`agents/` (những thư mục đó là built-in, đi kèm codebase). Plugin người dùng TỰ cài là DỮ LIỆU NGƯỜI DÙNG, phải theo `workspace/` khi di chuyển máy (POR-05 "di chuyển workspace = copy thư mục" — plugin phải đi cùng).
+- **`paosctl plugin install <path-or-git-url>`**: validate `plugin.yaml` đúng schema doc 04 §5 → check `paos_api` range (so khớp version PAOS đang chạy, hàm so semver TỰ VIẾT ~20 dòng, không thêm thư viện `packaging`/`semver`) → in TOÀN BỘ `permissions:` yêu cầu, chờ xác nhận tay (tier CONFIRM, doc 09 §2) → copy/clone vào `workspace/plugins/<id>/` → ghi vào Registry (rescan) → phát `plugin.installed` (schema đã có, doc 05 §3.9) → hot-reload (doc 12 §2, KHÔNG cần khởi động lại `paosd`).
+- **Registry quét thêm 1 gốc**: `Registry` (đã nhận `capabilities_dir`/`providers_dir`/`workflows_dir`/`agents_dir`/`rubrics_dir` làm tham số tường minh) nhận thêm `plugins_dir: Path | None = None` — với MỖI thư mục con của `plugins_dir`, đọc `plugin.yaml::provides` rồi quét ĐÚNG các thư mục con nó khai (`agents/`, `providers/`, ...) bằng CHÍNH các hàm scan đã có (`_scan_providers()`, `_scan_agents()`...), không viết logic quét song song mới.
+- **`paosctl plugin uninstall <id>`**: xóa `workspace/plugins/<id>/` (giữ Project/Artifact plugin đã tạo, đúng doc 12 §2 "disable/uninstall giữ Project data" — Project sống ở `workspace/projects/`, tách biệt hoàn toàn khỏi `workspace/plugins/`).
+
+**Lý do:**
+1. Thư mục thuần (không archive) khớp CHÍNH XÁC ví dụ doc 12 §1 đã có, không cần bịa thêm 1 định dạng đóng gói cho v1 một-người-một-máy (ADR-0011) — archive chỉ có lợi khi cần TRUYỀN QUA MẠNG một marketplace index (Phase 2, doc 12 §6), lúc đó chưa tới.
+2. `workspace/plugins/` (không phải gốc repo) giữ đúng ranh giới "workspace = TOÀN BỘ dữ liệu người dùng" (doc 02 §8) — plugin TỰ CÀI khác về bản chất với `providers/`/`agents/` đi kèm codebase; lẫn 2 thứ vào 1 thư mục sẽ làm `git status`/`git diff` của repo dơ theo plugin người dùng cài, và reclone/cài lại PAOS sẽ vô tình XÓA plugin đã cài nếu chúng nằm trong cây repo.
+3. Tự viết so sánh semver (~20 dòng) thay vì thêm `packaging`: định dạng `paos_api` doc 04 §5 dùng CHỈ major.minor (`">=1.0,<2.0"`), không cần hỗ trợ pre-release/build-metadata/wildcard đầy đủ của spec PEP 440 — `packaging` giải quyết bài toán RỘNG HƠN nhiều so với nhu cầu thật, thêm 1 dependency (đòi 1 ADR riêng theo quy ước `pyproject.toml` dòng 8) cho ít hơn 20 dòng code tự viết đã đủ.
+4. Tái dùng `_scan_providers()`/`_scan_agents()` đã có thay vì viết logic quét mới cho plugin — Registry vốn đã nhận thư mục gốc làm tham số (không hardcode đường dẫn), mở rộng nó quét thêm N thư mục con của `plugins/*/` là thay đổi nhỏ, nhất quán, không tạo 2 con đường "nạp Agent" khác nhau tùy nó đến từ đâu.
+5. `git clone` qua subprocess (không thư viện `GitPython`/`pygit2`) — máy dev ĐÃ có `git` cài sẵn (E7, `environment-baseline.md`), dùng lại y hệt cách `ffmpeg` được gọi (subprocess, không phải Python binding) — không thêm dependency Python nào cho 1 tính năng OPTIONAL (cài từ URL), đúng doc 12 §6 "marketplace không bao giờ được trở thành thành phần bắt buộc — PAOS chạy đầy đủ khi offline": cài từ ĐƯỜNG DẪN LOCAL không cần mạng/git; cài từ git URL cần cả 2 nhưng KHÔNG BAO GIỜ là đường bắt buộc.
+
+**Hệ quả:** `kernel/registry/registry.py::Registry.__init__()` thêm tham số `plugins_dir: Path | None = None` (`None` = không quét gì thêm, hành vi hôm nay KHÔNG đổi cho 26+ nơi đã gọi `Registry(...)` — cùng tiền lệ `energy_policy_path`/`time_policy_path` thêm ở P-M7-2/P-M7-3, ADR-0031). `apps/paosctl/__main__.py` thêm nhóm lệnh `plugin install|uninstall|list`. CHƯA làm ở ADR này (thuộc P-M8-1/P-M8-2, lát cắt implementation): cơ chế subprocess+JSON-RPC thật (ADR-0005 đã QUYẾT ĐỊNH nhưng chưa VIẾT CODE), enforce sandbox/permission lúc chạy (doc 09 §5), tự disable khi vi phạm quyền, hot-reload thật sự (Registry rescan không đủ — cần dừng/khởi động lại subprocess plugin cũ nếu đang chạy).
+
+**Đã loại:**
+1. **Đóng gói archive (`.zip`/`.tar.gz`) làm định dạng phân phối** — chuẩn hơn cho "1 file duy nhất để chia sẻ", dễ checksum/verify. Loại vì thêm bước nén/giải nén không cần thiết khi v1 chỉ có 2 nguồn cài (thư mục local đã LÀ thư mục, git URL đã tự "đóng gói" qua git) — archive chỉ thật sự cần khi có 1 marketplace index tải file qua HTTP (Phase 2, doc 12 §6), lúc đó quyết định lại, không bịa trước khi cần.
+2. **Cài plugin ở gốc repo (`<repo>/plugins/`, cạnh `providers/`/`agents/`)** — đối xứng với cấu trúc đã có, Registry tái dùng nguyên xi các thư mục gốc đã quét mà không cần tham số `plugins_dir` mới. Loại vì lẫn dữ liệu người dùng (plugin tự cài) vào cây mã nguồn — vi phạm ranh giới `workspace/` = dữ liệu người dùng đã có từ doc 02 §8, khiến `git clean`/reclone vô tình xóa plugin người dùng.
+3. **Symlink thay vì copy khi cài từ đường dẫn local** — tiết kiệm đĩa, sửa plugin gốc phản ánh ngay không cần cài lại (tiện khi TỰ VIẾT plugin — đúng RSK-13 "v1 chỉ cài plugin do chính bạn viết"). Loại vì Windows (máy dev thật) tạo symlink cần quyền Admin/Developer Mode theo mặc định — thêm rào cản cài đặt không đáng, và POR-05 "di chuyển workspace = copy thư mục" sẽ ĐỨT symlink trỏ ra ngoài workspace khi copy sang máy khác; copy thật giữ cho `workspace/` luôn TỰ ĐỦ (self-contained).
+4. **Thêm `packaging` (PyPI) để so `paos_api` semver** — đúng chuẩn, không cần tự viết/tự kiểm edge case. Loại vì (cùng lý do #3 ở trên) — bất tương xứng quy mô, và MỌI dependency mới cần 1 ADR riêng theo quy ước `pyproject.toml` — không đáng cho 1 phép so sánh 2 khoảng số nguyên đơn giản.
+
+---
+
 ## ADR-0021 — Framework web chỉ sống ở `apps/paosd/`
 **Trạng thái:** Accepted · 2026-08 · Quyết định Ngày 0 ([doc 18 §3](18-day0-implementation-playbook.md))
 
@@ -393,11 +451,11 @@ Không có `&&`/`||` để gộp nhiều điều kiện — muốn logic phức 
 
 | Dự kiến | Chủ đề | Cần trước |
 |---|---|---|
-| ADR-0017 | Công nghệ UI (Web local vs Tauri) | M8 |
-| ADR-0018 | Định dạng và cơ chế phân phối plugin | M8 |
 | ADR-0019 | Chiến lược đồng bộ nhiều máy | v2 |
 | ADR-0020 | Chữ ký số cho plugin | v2 |
 
 **ADR-0015/0016 đã chốt (P-M5-0, 2026-08-16)** — xem đầy đủ ở trên, đúng lúc cần trước M5.
+
+**ADR-0017/0018 đã chốt (P-M8-0, 2026-08-16)** — xem đầy đủ ở trên, đúng lúc cần trước M8.
 
 **Về thứ tự số:** ADR-0015→0020 được đánh số trước (đặt chỗ khi backlog được nhận diện) nhưng quyết định sau, đúng lúc milestone cần. ADR-0021→0024 lại được **quyết định sớm hơn** — chúng là các quyết định kỹ thuật bắt buộc phải chốt ngay ở Ngày 0 để M0 có nền để đứng ([doc 18 §3](18-day0-implementation-playbook.md)), nên số ADR không đơn điệu theo thời gian chốt. Số ADR chỉ là định danh duy nhất, không phải thứ tự thời gian — đọc **Trạng thái** và ngày để biết cái nào đã Accepted.
