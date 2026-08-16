@@ -207,6 +207,29 @@ def test_explain_shows_full_trace(runner: CliRunner, api_url: str) -> None:
     assert "kernel.process.completed" in result.output
 
 
+def test_explain_without_flag_hides_decisions(runner: CliRunner, api_url: str) -> None:
+    run_result = runner.invoke(cli, ["--api-url", api_url, "run", "văn bản để tóm tắt"])
+    pid = run_result.output.splitlines()[0].split("pid=")[1].split(" ")[0]
+
+    result = runner.invoke(cli, ["--api-url", api_url, "explain", pid])
+    assert result.exit_code == 0
+    assert "quyết định:" not in result.output
+
+
+def test_explain_decisions_flag_shows_decision_record(runner: CliRunner, api_url: str) -> None:
+    """P-M6-3 — `explain --decisions` phải in Decision Record thật (Router đã
+    ghi scope=provider_selection cho lượt gọi text.generate@1 của SummarizeAgent)."""
+    run_result = runner.invoke(cli, ["--api-url", api_url, "run", "văn bản để tóm tắt"])
+    pid = run_result.output.splitlines()[0].split("pid=")[1].split(" ")[0]
+
+    result = runner.invoke(cli, ["--api-url", api_url, "explain", pid, "--decisions"])
+    assert result.exit_code == 0
+    assert "quyết định:" in result.output
+    assert "provider_selection" in result.output
+    assert "chosen:" in result.output
+    assert "rationale:" in result.output
+
+
 def test_events_tail_without_follow_returns_one_batch(runner: CliRunner, api_url: str) -> None:
     runner.invoke(cli, ["--api-url", api_url, "run", "văn bản để tóm tắt"])
     result = runner.invoke(cli, ["--api-url", api_url, "events", "tail"])

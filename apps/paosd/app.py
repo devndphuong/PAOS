@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+import aiosqlite
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
@@ -87,11 +88,23 @@ class DeadLetterResponse(BaseModel):
     process_id: str | None
 
 
+class DecisionResponse(BaseModel):
+    decision_id: str
+    scope: str
+    question: str
+    candidates: list[dict[str, Any]]
+    chosen: str | None
+    rationale: str
+    policy_version: str | None
+    created_at: str
+
+
 class ExplainResponse(BaseModel):
     process_id: str
     pid: int
     state: str
     trace: list[EventResponse]
+    decisions: list[DecisionResponse]
 
 
 class ArtifactResponse(BaseModel):
@@ -194,6 +207,35 @@ def _to_event_response(e: EventEnvelope) -> EventResponse:
         causation_id=e.causation_id,
         payload=e.payload,
     )
+
+
+async def _decisions_for_process(store: StateStore, process_id: str) -> list[DecisionResponse]:
+    """doc 06 §1.1/§2.1 Decision Record — nguồn cho `paosctl explain --decisions`
+    (P-M6-3). `candidates_json` NULL ở scope `cache_hit` (Router không xét ứng
+    viên nào khi trúng cache, xem `Router._write_cache_hit_decision()`)."""
+
+    async def _select(conn: aiosqlite.Connection) -> list[tuple[Any, ...]]:
+        cursor = await conn.execute(
+            "SELECT decision_id, scope, question, candidates_json, chosen, rationale, "
+            "policy_version, created_at FROM decisions WHERE process_id = ? ORDER BY rowid",
+            (process_id,),
+        )
+        return await cursor.fetchall()
+
+    rows = await store.read(_select)
+    return [
+        DecisionResponse(
+            decision_id=row[0],
+            scope=row[1],
+            question=row[2],
+            candidates=json.loads(row[3]) if row[3] else [],
+            chosen=row[4],
+            rationale=row[5],
+            policy_version=row[6],
+            created_at=row[7],
+        )
+        for row in rows
+    ]
 
 
 def _to_response(p: Process) -> ProcessResponse:
@@ -334,11 +376,13 @@ def create_app(  # noqa: PLR0915 — đăng ký route tăng tuyến tính theo s
         if process is None:
             raise HTTPException(status_code=404, detail=f"Process pid={pid} không tồn tại")
         trace = await events.events_for_process(process.process_id)
+        decisions = await _decisions_for_process(store, process.process_id)
         return ExplainResponse(
             process_id=process.process_id,
             pid=process.pid,
             state=process.state.value,
             trace=[_to_event_response(e) for e in trace],
+            decisions=decisions,
         )
 
     @app.post("/v1/processes/{pid}/cancel", response_model=ProcessResponse)

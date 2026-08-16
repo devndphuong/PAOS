@@ -145,8 +145,11 @@ def status(ctx: click.Context, pid: int) -> None:
 
 @cli.command()
 @click.argument("pid", type=int)
+@click.option(
+    "--decisions", is_flag=True, help="In thêm Decision Record (doc 06 §1.1/§2.1, P-M6-3)."
+)
 @click.pass_context
-def explain(ctx: click.Context, pid: int) -> None:
+def explain(ctx: click.Context, pid: int, decisions: bool) -> None:
     """Dựng trace của một process HOÀN TOÀN từ event log (doc 19 P-M0-5, R17)."""
     with _client(ctx) as client:
         body = _get(client, f"/v1/processes/{pid}/explain").json()
@@ -155,6 +158,17 @@ def explain(ctx: click.Context, pid: int) -> None:
     for e in body["trace"]:
         payload = json.dumps(e["payload"], ensure_ascii=False)
         click.echo(f"  [{e['ts']}] seq={e['seq']} {e['type']} {payload}")
+
+    if decisions:
+        click.echo("\nquyết định:")
+        if not body["decisions"]:
+            click.echo("  (chưa có Decision Record nào)")
+        for d in body["decisions"]:
+            click.echo(f"  [{d['created_at']}] {d['scope']} — {d['question']}")
+            click.echo(f"    chosen: {d['chosen']}")
+            click.echo(f"    rationale: {d['rationale']}")
+            if d["candidates"]:
+                click.echo(f"    candidates: {json.dumps(d['candidates'], ensure_ascii=False)}")
 
 
 @cli.command()

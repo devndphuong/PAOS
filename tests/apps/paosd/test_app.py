@@ -9,6 +9,7 @@ trong CÙNG vòng lặp với test nên không có vấn đề này.
 """
 
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -147,6 +148,39 @@ async def test_explain_shows_created_event(client: httpx.AsyncClient) -> None:
     assert len(body["trace"]) == 1
     assert body["trace"][0]["type"] == "kernel.process.created"
     assert body["trace"][0]["process_id"] == created["process_id"]
+    assert body["decisions"] == []
+
+
+async def test_explain_includes_decision_records(
+    client: httpx.AsyncClient, store: StateStore
+) -> None:
+    """P-M6-3 (doc 06 §1.1/§2.1) — ExplainResponse.decisions đọc thẳng bảng
+    `decisions`, nguồn cho `paosctl explain --decisions`."""
+    created = (
+        await client.post("/v1/jobs", json={"intent": "x", "name": "a", "workflow_ref": "wf@1"})
+    ).json()
+
+    async def _insert(conn: Any) -> None:
+        await conn.execute(
+            "INSERT INTO decisions(decision_id, process_id, scope, question, candidates_json, "
+            "chosen, rationale, policy_version, inputs_hash, created_at) VALUES "
+            "('dec_1', ?, 'provider_selection', 'capability=text.generate@1', "
+            '\'[{"id":"provider.x","eligible":true}]\', \'provider.x\', '
+            "'provider.x: ưu tiên #1 theo thứ tự khai báo, khả dụng', "
+            "'declared-priority@1', NULL, '2026-01-01T00:00:00+00:00')",
+            (created["process_id"],),
+        )
+
+    await store.write(_insert)
+
+    resp = await client.get(f"/v1/processes/{created['pid']}/explain")
+    body = resp.json()
+    assert len(body["decisions"]) == 1
+    decision = body["decisions"][0]
+    assert decision["decision_id"] == "dec_1"
+    assert decision["scope"] == "provider_selection"
+    assert decision["chosen"] == "provider.x"
+    assert decision["candidates"] == [{"id": "provider.x", "eligible": True}]
 
 
 async def test_cancel_not_found(client: httpx.AsyncClient) -> None:
