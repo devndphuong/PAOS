@@ -19,10 +19,11 @@ M7 + latency tracking) và CHƯA có rule engine tự đổi profile theo budget
 cũng cần Cost Engine) — xem docstring `_rank_candidates()`.
 
 doc 06 §2.1 liệt kê 9 ràng buộc cứng — chỉ 3 làm được với dữ liệu ĐÃ CÓ hôm
-nay (enabled, breaker OPEN, privacy_class). 6 mục còn lại (health FAIL, budget,
-thiếu resource, offline_only, context/size) cần Cost/Time/Energy Engine (M7),
-health poller, hoặc tokenizer — chưa tồn tại ở M2. HOÃN có ghi chú, không giả
-vờ làm bằng giá trị hardcode luôn True/luôn qua.
+nay (enabled, breaker OPEN, privacy_class). P-M7-1/P-M7-2 lấp thêm "budget" và
+"thiếu resource" (CPU/pin/nhiệt thật, ADR-0030 — xem `_check_energy()`). Còn
+lại: health FAIL, offline_only, context/size — cần Time Engine, health poller,
+hoặc tokenizer, chưa tồn tại. HOÃN có ghi chú, không giả vờ làm bằng giá trị
+hardcode luôn True/luôn qua.
 """
 
 from __future__ import annotations
@@ -42,6 +43,7 @@ import yaml
 
 from apps.paosd.cache_store import CacheHit, CacheStore
 from apps.paosd.cost_engine import CostEngine
+from apps.paosd.energy_engine import EnergyEngine
 from apps.paosd.provider_stats import ProviderStats, normalize_task_class
 from kernel import clock, ids
 from kernel.errors import PaosError
@@ -66,6 +68,8 @@ _BREAKER_OPEN_S = 60.0
 _DEFAULT_ROUTING_POLICY_PATH = Path(__file__).resolve().parents[2] / "policies" / "routing.yaml"
 # Cùng lý do — default trỏ policies/budget.yaml thật (doc 19 P-M7-1).
 _DEFAULT_BUDGET_POLICY_PATH = Path(__file__).resolve().parents[2] / "policies" / "budget.yaml"
+# Cùng lý do — default trỏ policies/energy.yaml thật (doc 19 P-M7-2).
+_DEFAULT_ENERGY_POLICY_PATH = Path(__file__).resolve().parents[2] / "policies" / "energy.yaml"
 _DEFAULT_PROFILE = "default"
 _LOCAL_PRIVACY_FIT = 1.0
 _NON_LOCAL_PRIVACY_FIT = 0.4
@@ -166,6 +170,8 @@ class Router:
         *,
         routing_policy_path: Path = _DEFAULT_ROUTING_POLICY_PATH,
         budget_policy_path: Path = _DEFAULT_BUDGET_POLICY_PATH,
+        energy_policy_path: Path = _DEFAULT_ENERGY_POLICY_PATH,
+        energy_engine: EnergyEngine | None = None,
     ) -> None:
         self._registry = registry
         self._events = events
@@ -177,6 +183,11 @@ class Router:
         self._routing_policy_path = routing_policy_path
         self._cost_engine = CostEngine(store, budget_policy_path)
         self._permission_guard = PermissionGuard(store, events)
+        # `energy_engine` override — test truyền EnergyEngine với snapshot_fn
+        # giả (không phụ thuộc tải máy THẬT lúc chạy CI, xem
+        # apps/paosd/energy_engine.py::EnergyEngine.__init__). Production
+        # luôn dùng nhánh else — đọc máy thật.
+        self._energy_engine = energy_engine or EnergyEngine(energy_policy_path)
 
     async def call(
         self,
@@ -394,6 +405,10 @@ class Router:
             )
             return _AttemptOutcome(None, error, stop=False)
 
+        energy_outcome = await self._check_energy(candidate, capability_ref, process_id)
+        if energy_outcome is not None:
+            return energy_outcome
+
         budget_outcome = await self._check_budget(
             candidate, adapter, capability_ref, payload, process_id
         )
@@ -433,6 +448,42 @@ class Router:
             usage=usage,
         )
         return _AttemptOutcome(result, None)
+
+    async def _check_energy(
+        self, candidate: _Candidate, capability_ref: str, process_id: str
+    ) -> _AttemptOutcome | None:
+        """doc 06 §4, ADR-0030 — CPU/pin/nhiệt THẬT (không phải chỉ đếm token
+        nội bộ paosd, đã có từ M2-3 qua `_hold_resources()`). Trạng thái MÁY
+        (không riêng 1 provider) nên mọi candidate của capability này bị loại
+        GIỐNG NHAU — "không chạy đè" nghĩa là qua backoff/retry Task ĐÃ CÓ
+        (đợi máy rảnh rồi thử lại), KHÔNG phải đổi sang candidate khác trong
+        cùng 1 lượt gọi (khác `force_local` của budget, phân biệt được theo
+        `provider_class` từng candidate). Phát `resource.wait.started`. CHƯA
+        chuyển Process sang `WAITING` thật (BL-022, docs/backlog.md)."""
+        check = self._energy_engine.check(capability_ref)
+        if check.allowed:
+            return None
+
+        candidate.eligible = False
+        candidate.reason = f"ENERGY_{check.reason}"
+        await self._events.publish(
+            EventType.RESOURCE_WAIT_STARTED.value,
+            source="paosd.router",
+            process_id=process_id,
+            payload={
+                "capability": capability_ref,
+                "provider_id": candidate.manifest.provider_id,
+                "reason": check.reason or "",
+            },
+        )
+        error = ProviderError(
+            "RESOURCE_EXHAUSTED",
+            f"Máy đang bận ({check.reason}) — thử lại sau",
+            retryable=True,
+            hint="Xem policies/energy.yaml — điều chỉnh ngưỡng nếu quá thận trọng",
+            context={"reason": check.reason or ""},
+        )
+        return _AttemptOutcome(None, error, stop=False)
 
     async def _check_budget(
         self,

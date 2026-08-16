@@ -120,3 +120,14 @@ class EventType(StrEnum):
     # provider đó tự khai `privacy:` gì trong provider.yaml (chống provider
     # khai gian, xem docstring Router._classify()).
     PRIVACY_CLOUD_SEND_BLOCKED = "privacy.cloud_send.blocked"
+
+    # Energy Engine (doc 06 §4, doc 19 P-M7-2, ADR-0030) — doc 06 §4 đã nêu tên
+    # này từ đầu ("Process chuyển WAITING, phát resource.wait.started, KHÔNG
+    # chạy đè"). apps/paosd/router.py::Router.call() là caller thật đầu tiên —
+    # phát khi `EnergyEngine.check()` từ chối 1 candidate (CPU quá tải, đang
+    # dùng pin mà capability không nằm trong allowlist, hoặc quá nhiệt — CHỈ
+    # tín hiệu THẬT SỰ đo được, ADR-0030). CHƯA chuyển Process sang WAITING
+    # thật (cần Router biết ProcessManager hoặc cơ chế event 2 chiều dễ lệch
+    # thứ tự — BL-022, docs/backlog.md) — candidate bị loại, thử lại qua
+    # backoff/fallback đã có, đúng tinh thần "không chạy đè".
+    RESOURCE_WAIT_STARTED = "resource.wait.started"

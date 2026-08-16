@@ -21,6 +21,7 @@ import pytest
 import yaml
 
 from apps.paosd.cost_engine import CostEngine
+from apps.paosd.energy_engine import EnergyEngine, MachineSnapshot
 from apps.paosd.router import Router
 from kernel import clock as clock_module
 from kernel.events.bus import EventBus, EventEnvelope
@@ -125,6 +126,20 @@ def _write_provider(
     )
 
 
+# File KHÔNG BAO GIỜ tồn tại — EnergyEngine._load_energy_policy() trả None ->
+# check() luôn allowed=True (P-M7-2). Mặc định AN TOÀN cho 28/29 test Router
+# không kiểm Energy Engine — tránh flaky theo tải CPU MÁY THẬT lúc chạy (nếu
+# dùng thẳng `Router(...)`, default trỏ policies/energy.yaml THẬT trong repo).
+_MISSING_ENERGY_POLICY = Path("Z:/paos-test-energy-policy-khong-ton-tai.yaml")
+
+
+def _make_router(*args: Any, **kwargs: Any) -> Router:
+    """Router(...) với `energy_policy_path` an toàn mặc định — test kiểm Energy
+    Engine tự truyền `energy_engine=` riêng (ưu tiên hơn, ghi đè giá trị này)."""
+    kwargs.setdefault("energy_policy_path", _MISSING_ENERGY_POLICY)
+    return Router(*args, **kwargs)
+
+
 async def _latest_decision(store: StateStore) -> dict[str, Any]:
     async def _select(conn: aiosqlite.Connection) -> dict[str, Any]:
         # rowid, không phải created_at — fake_clock đứng yên giữa các lần gọi trong
@@ -181,7 +196,7 @@ async def test_call_succeeds_and_records_decision(
     two_provider_registry.preload_adapter(first_id, adapter)
     # provider còn lại CỐ Ý không preload — không được thử vì cái đầu đã thành công.
 
-    router = Router(two_provider_registry, events, store, {}, tmp_path)
+    router = _make_router(two_provider_registry, events, store, {}, tmp_path)
     result, _ = await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
 
     assert result == {"text": "ok-1"}
@@ -216,7 +231,7 @@ async def test_ranks_by_quality_ewma_when_enough_samples(
     await _seed_provider_quality(store, first_id, "unknown", 0.5, 5)
     await _seed_provider_quality(store, second_id, "unknown", 0.9, 5)
 
-    router = Router(two_provider_registry, events, store, {}, tmp_path)
+    router = _make_router(two_provider_registry, events, store, {}, tmp_path)
     _, chosen = await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
 
     assert chosen == second_id
@@ -236,7 +251,7 @@ async def test_ranking_ignored_when_fewer_than_5_samples(
     two_provider_registry.preload_adapter(second_id, _FakeAdapter())
     await _seed_provider_quality(store, second_id, "unknown", 0.95, 4)  # n=4 < 5
 
-    router = Router(two_provider_registry, events, store, {}, tmp_path)
+    router = _make_router(two_provider_registry, events, store, {}, tmp_path)
     _, chosen = await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
 
     assert chosen == first_id
@@ -275,7 +290,7 @@ async def test_privacy_fit_favors_local_under_private_profile(
             "profiles": {"private": {"w_q": 0.10, "w_c": 0.0, "w_l": 0.0, "w_p": 0.90, "w_r": 0.0}},
         },
     )
-    router = Router(reg, events, store, {}, tmp_path, routing_policy_path=routing_path)
+    router = _make_router(reg, events, store, {}, tmp_path, routing_policy_path=routing_path)
     _, chosen = await router.call("text.generate@1", {"prompt": "x"}, "proc_1", profile="private")
 
     assert chosen == "provider.local"
@@ -311,7 +326,7 @@ async def test_success_rate_breaks_tie_via_r_term(
     await _seed_attempts("provider.reliable", 9, 1)
     await _seed_attempts("provider.flaky", 1, 9)
 
-    router = Router(reg, events, store, {}, tmp_path)
+    router = _make_router(reg, events, store, {}, tmp_path)
     _, chosen = await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
 
     assert chosen == "provider.reliable"
@@ -338,7 +353,7 @@ async def test_routing_policy_hot_reload_changes_ranking_without_restart(
     _write_routing_policy(
         routing_path, {"default": {"w_q": 1.0, "w_c": 0.0, "w_l": 0.0, "w_p": 0.0, "w_r": 0.0}}
     )
-    router = Router(reg, events, store, {}, tmp_path, routing_policy_path=routing_path)
+    router = _make_router(reg, events, store, {}, tmp_path, routing_policy_path=routing_path)
 
     _, first_chosen = await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
     assert first_chosen == "provider.cloud"  # w_q thắng tuyệt đối -> quality_ewma cao hơn
@@ -374,7 +389,7 @@ async def test_budget_ask_blocks_call_entirely(
     _write_budget_policy(
         budget_path, {"per_job": {"max": 20, "currency": "JPY", "on_exceed": "ask"}}
     )
-    router = Router(reg, events, store, {}, tmp_path, budget_policy_path=budget_path)
+    router = _make_router(reg, events, store, {}, tmp_path, budget_policy_path=budget_path)
 
     with pytest.raises(ProviderError) as exc_info:
         await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
@@ -411,7 +426,7 @@ async def test_budget_ask_goes_through_permission_guard_audit_trail(
     _write_budget_policy(
         budget_path, {"per_job": {"max": 20, "currency": "JPY", "on_exceed": "ask"}}
     )
-    router = Router(reg, events, store, {}, tmp_path, budget_policy_path=budget_path)
+    router = _make_router(reg, events, store, {}, tmp_path, budget_policy_path=budget_path)
 
     with pytest.raises(ProviderError):
         await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
@@ -478,7 +493,7 @@ async def test_profile_auto_upgrades_to_economy_when_day_budget_warn_exceeded(
             "profiles": {"economy": {"w_q": 0.05, "w_c": 0.0, "w_l": 0.0, "w_p": 0.95, "w_r": 0.0}},
         },
     )
-    router = Router(
+    router = _make_router(
         reg,
         events,
         store,
@@ -511,7 +526,7 @@ async def test_budget_force_local_skips_cloud_falls_back_to_local(
     _write_budget_policy(
         budget_path, {"per_job": {"max": 20, "currency": "JPY", "on_exceed": "force_local"}}
     )
-    router = Router(reg, events, store, {}, tmp_path, budget_policy_path=budget_path)
+    router = _make_router(reg, events, store, {}, tmp_path, budget_policy_path=budget_path)
 
     result, chosen = await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
     assert chosen == "provider.local"
@@ -536,7 +551,7 @@ async def test_budget_local_candidate_not_blocked_by_force_local(
     _write_budget_policy(
         budget_path, {"per_job": {"max": 20, "currency": "JPY", "on_exceed": "force_local"}}
     )
-    router = Router(reg, events, store, {}, tmp_path, budget_policy_path=budget_path)
+    router = _make_router(reg, events, store, {}, tmp_path, budget_policy_path=budget_path)
 
     result, chosen = await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
     assert chosen == "provider.local"
@@ -563,7 +578,7 @@ async def test_successful_call_records_actual_cost(
         "provider.metered", _FakeAdapter(usage={"in_tokens": 100, "out_tokens": 50})
     )
 
-    router = Router(reg, events, store, {}, tmp_path)
+    router = _make_router(reg, events, store, {}, tmp_path)
     await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
 
     async def _select(conn: aiosqlite.Connection) -> tuple[Any, ...] | None:
@@ -583,6 +598,105 @@ async def test_successful_call_records_actual_cost(
     assert row[4] == 0
 
 
+def _energy_engine_with_snapshot(
+    tmp_path: Path, energy_yaml: dict[str, object], snapshot: MachineSnapshot
+) -> EnergyEngine:
+    path = tmp_path / "policies" / "energy.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump({"version": 1, **energy_yaml}), encoding="utf-8")
+    return EnergyEngine(path, lambda: snapshot)
+
+
+async def test_energy_overload_raises_resource_exhausted_and_publishes_event(
+    events: EventBus, store: StateStore, tmp_path: Path
+) -> None:
+    """P-M7-2 (doc 06 §4) — CPU quá tải là trạng thái MÁY (không phải riêng 1
+    provider) — mọi candidate của capability này đều bị loại giống nhau, "thử
+    lại" nghĩa là qua Task retry_policy/backoff ĐÃ CÓ (đợi máy rảnh), KHÔNG
+    phải đổi sang candidate khác trong CÙNG 1 lượt gọi (khác budget force_local,
+    vốn phân biệt được local/cloud theo TỪNG candidate)."""
+    caps_dir = tmp_path / "capabilities"
+    providers_dir = tmp_path / "providers"
+    _write_fixture_capability(caps_dir)
+    _write_provider(providers_dir, "provider.solo", "p_a")
+    reg = Registry(caps_dir, providers_dir)
+    reg.load()
+    reg.preload_adapter("provider.solo", _FakeAdapter())
+
+    energy = _energy_engine_with_snapshot(
+        tmp_path,
+        {"cpu": {"max_load_to_start": 0.75}},
+        MachineSnapshot(cpu_load=0.99, on_battery=False, temp_c=None),
+    )
+    router = _make_router(reg, events, store, {}, tmp_path, energy_engine=energy)
+
+    received: list[EventEnvelope] = []
+
+    async def _capture(envelope: EventEnvelope) -> None:
+        received.append(envelope)
+
+    events.subscribe("test", "resource.wait.started", _capture)
+
+    with pytest.raises(ProviderError) as exc_info:
+        await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
+    assert exc_info.value.code.value == "RESOURCE_EXHAUSTED"
+
+    decision = await _latest_decision(store)
+    candidates = json.loads(decision["candidates_json"])
+    assert candidates[0]["reason"].startswith("ENERGY_CPU_OVERLOADED")
+
+    assert len(received) == 1
+    assert received[0].payload["reason"].startswith("CPU_OVERLOADED")
+    assert received[0].payload["provider_id"] == "provider.solo"
+
+
+async def test_energy_defers_heavy_capability_on_battery(
+    events: EventBus, store: StateStore, tmp_path: Path
+) -> None:
+    caps_dir = tmp_path / "capabilities"
+    providers_dir = tmp_path / "providers"
+    _write_fixture_capability(caps_dir)
+    _write_provider(providers_dir, "provider.solo", "p_a")
+    reg = Registry(caps_dir, providers_dir)
+    reg.load()
+    reg.preload_adapter("provider.solo", _FakeAdapter())
+
+    energy = _energy_engine_with_snapshot(
+        tmp_path,
+        {"battery": {"on_battery": {"defer_heavy": True, "allow": ["other.capability@1"]}}},
+        MachineSnapshot(cpu_load=0.1, on_battery=True, temp_c=None),
+    )
+    router = _make_router(reg, events, store, {}, tmp_path, energy_engine=energy)
+
+    with pytest.raises(ProviderError) as exc_info:
+        await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
+    assert exc_info.value.code.value == "RESOURCE_EXHAUSTED"
+    assert "ON_BATTERY_DEFER_HEAVY" in exc_info.value.context["reason"]
+
+
+async def test_energy_allows_when_not_overloaded(
+    events: EventBus, store: StateStore, tmp_path: Path
+) -> None:
+    caps_dir = tmp_path / "capabilities"
+    providers_dir = tmp_path / "providers"
+    _write_fixture_capability(caps_dir)
+    _write_provider(providers_dir, "provider.solo", "p_a")
+    reg = Registry(caps_dir, providers_dir)
+    reg.load()
+    reg.preload_adapter("provider.solo", _FakeAdapter())
+
+    energy = _energy_engine_with_snapshot(
+        tmp_path,
+        {"cpu": {"max_load_to_start": 0.75}},
+        MachineSnapshot(cpu_load=0.1, on_battery=False, temp_c=None),
+    )
+    router = _make_router(reg, events, store, {}, tmp_path, energy_engine=energy)
+
+    result, chosen = await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
+    assert result == {"text": "ok-1"}
+    assert chosen == "provider.solo"
+
+
 async def test_exclude_provider_routes_to_next_candidate(
     two_provider_registry: Registry, events: EventBus, store: StateStore, tmp_path: Path
 ) -> None:
@@ -594,7 +708,7 @@ async def test_exclude_provider_routes_to_next_candidate(
     two_provider_registry.preload_adapter(first_id, _FakeAdapter())
     two_provider_registry.preload_adapter(second_id, _FakeAdapter())
 
-    router = Router(two_provider_registry, events, store, {}, tmp_path)
+    router = _make_router(two_provider_registry, events, store, {}, tmp_path)
     _, chosen = await router.call(
         "text.generate@1", {"prompt": "x"}, "proc_1", exclude_provider=first_id
     )
@@ -618,7 +732,7 @@ async def test_exclude_provider_leaving_zero_candidates_raises(
     reg.load()
     reg.preload_adapter("provider.solo", _FakeAdapter())
 
-    router = Router(reg, events, store, {}, tmp_path)
+    router = _make_router(reg, events, store, {}, tmp_path)
     with pytest.raises(ProviderError):
         await router.call(
             "text.generate@1", {"prompt": "x"}, "proc_1", exclude_provider="provider.solo"
@@ -643,7 +757,7 @@ async def test_fallback_to_second_provider_on_retryable_error(
 
     events.subscribe("test", "capability.fallback.triggered", _on_fallback)
 
-    router = Router(two_provider_registry, events, store, {}, tmp_path)
+    router = _make_router(two_provider_registry, events, store, {}, tmp_path)
     result, _ = await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
 
     assert result == {"text": "ok-1"}
@@ -670,7 +784,7 @@ async def test_non_retryable_error_stops_without_trying_next(
     two_provider_registry.preload_adapter(first_id, failing)
     two_provider_registry.preload_adapter(second_id, never_called)
 
-    router = Router(two_provider_registry, events, store, {}, tmp_path)
+    router = _make_router(two_provider_registry, events, store, {}, tmp_path)
     with pytest.raises(ProviderError) as exc_info:
         await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
 
@@ -692,7 +806,7 @@ async def test_load_failure_falls_through_to_next_candidate(
     two_provider_registry.preload_adapter(second_id, succeeding)
     # first_id CỐ Ý không preload -> Registry.load_adapter() raise thật (thiếu adapter:).
 
-    router = Router(two_provider_registry, events, store, {}, tmp_path)
+    router = _make_router(two_provider_registry, events, store, {}, tmp_path)
     result, _ = await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
 
     assert result == {"text": "ok-1"}
@@ -719,7 +833,7 @@ async def test_disabled_provider_is_excluded_as_candidate(
     ok_adapter = _FakeAdapter()
     reg.preload_adapter("provider.ok", ok_adapter)
 
-    router = Router(reg, events, store, {}, tmp_path)
+    router = _make_router(reg, events, store, {}, tmp_path)
     result, _ = await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
 
     assert result == {"text": "ok-1"}
@@ -741,7 +855,7 @@ async def test_privacy_mismatch_provider_is_excluded(
     reg = Registry(caps_dir, providers_dir)
     reg.load()
 
-    router = Router(reg, events, store, {}, tmp_path)
+    router = _make_router(reg, events, store, {}, tmp_path)
     with pytest.raises(ProviderError) as exc_info:
         await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
 
@@ -765,7 +879,7 @@ async def test_writes_decision_record_even_when_all_candidates_fail(
     failing = _FakeAdapter(fail_times=999)
     reg.preload_adapter("provider.solo", failing)
 
-    router = Router(reg, events, store, {}, tmp_path)
+    router = _make_router(reg, events, store, {}, tmp_path)
     with pytest.raises(ProviderError) as exc_info:
         await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
 
@@ -783,7 +897,7 @@ async def test_no_provider_registered_raises_not_found(
     reg = Registry(caps_dir, tmp_path / "providers")
     reg.load()
 
-    router = Router(reg, events, store, {}, tmp_path)
+    router = _make_router(reg, events, store, {}, tmp_path)
     with pytest.raises(ProviderError) as exc_info:
         await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
     assert exc_info.value.code == "NOT_FOUND"
@@ -801,7 +915,7 @@ async def test_breaker_opens_after_3_failures_then_recovers(
 
     adapter = _FakeAdapter(fail_times=999)
     reg.preload_adapter("provider.solo", adapter)
-    router = Router(reg, events, store, {}, tmp_path)
+    router = _make_router(reg, events, store, {}, tmp_path)
 
     for _ in range(3):
         with pytest.raises(ProviderError):
@@ -836,7 +950,7 @@ async def test_cache_hit_skips_provider_and_records_cache_hit_decision(
 
     adapter = _FakeAdapter()
     reg.preload_adapter("provider.solo", adapter)
-    router = Router(reg, events, store, {}, tmp_path)
+    router = _make_router(reg, events, store, {}, tmp_path)
 
     first, _ = await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
     second, _ = await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
@@ -863,7 +977,7 @@ async def test_different_payload_is_not_a_cache_hit(
 
     adapter = _FakeAdapter()
     reg.preload_adapter("provider.solo", adapter)
-    router = Router(reg, events, store, {}, tmp_path)
+    router = _make_router(reg, events, store, {}, tmp_path)
 
     await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
     await router.call("text.generate@1", {"prompt": "y"}, "proc_1")
@@ -878,7 +992,7 @@ async def test_non_cacheable_capability_never_caches(
     first_id = manifests[0].provider_id
     adapter = _FakeAdapter()
     two_provider_registry.preload_adapter(first_id, adapter)
-    router = Router(two_provider_registry, events, store, {}, tmp_path)
+    router = _make_router(two_provider_registry, events, store, {}, tmp_path)
 
     await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
     await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
@@ -903,7 +1017,7 @@ async def test_decision_rationale_and_candidates_json_are_redacted(
 
     adapter = _FakeAdapter()
     reg.preload_adapter("sk-abcdefgh12345678", adapter)
-    router = Router(reg, events, store, {}, tmp_path)
+    router = _make_router(reg, events, store, {}, tmp_path)
 
     await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
 

@@ -95,6 +95,11 @@ paosctl explain <pid> --decisions   # xem lại rationale: vì sao provider này
 # cost_entries qua sqlite3 workspace/.paos/state.db "select * from cost_entries"
 ```
 
+**Không chạy khi máy đang bận thật (mới — M7)** — mỗi lượt gọi capability được kiểm CPU/pin thật (`psutil`, ADR-0030) trước khi chạy, không chỉ đếm số Task nội bộ paosd đang giữ token. CPU >75% (`policies/energy.yaml`) hoặc đang dùng pin mà capability không nằm trong danh sách cho phép → loại, phát `resource.wait.started`, thử lại sau (qua backoff đã có — không chạy đè máy). Nhiệt độ CHƯA đo được trên Windows (giới hạn nền tảng thật, không giả vờ có số); GPU util/VRAM khai báo trong policy nhưng chưa đọc (tránh phụ thuộc thư viện riêng NVIDIA).
+```bash
+paosctl explain <pid> --decisions   # candidate bị loại vì máy bận hiện với lý do "ENERGY_CPU_OVERLOADED:0.9x"
+```
+
 **Theo dõi & giải thích mọi việc đang/đã làm** — không có "log" mù mờ, mọi quyết định dựng lại được đầy đủ từ Event Log.
 ```bash
 paosctl ps                 # liệt kê mọi job
@@ -118,6 +123,7 @@ paosctl cancel <pid>       # hủy 1 job đang chạy, không ảnh hưởng job
 - **Router xếp hạng được 3/5 số hạng (Q̂/P/R) — chưa dùng Ĉ để CHẤM ĐIỂM** (CostEngine đã CHẶN vượt ngân sách, nhưng `_rank_candidates()` chưa đưa chi phí vào công thức xếp hạng — 2 việc khác nhau: "được phép gọi không" vs "gọi ai tốt hơn"). L̂ (latency) vẫn chưa track. `provider_stats`/`cost_entries` hôm nay chỉ có provider local/stub trong test — chưa provider `class: cloud` thật nào (mọi `cost:` hôm nay đều 0đ) để thấy ngân sách/ranking đổi hành vi thật ngoài môi trường test.
 - **Ước lượng ngân sách chỉ per-CALL, chưa per-JOB** (mốc 1 doc 06 §3.2 "ước lượng tổng trước khi chạy" — chưa làm, cần duyệt DAG với input các bước sau CHƯA resolve lúc Job mới tạo, vấn đề riêng).
 - **PermissionGuard CONFIRM chưa có luồng chờ người duyệt thật** — `cost.budget_exceeded` (như 2 action CONFIRM khác từ M2-5) trả "pending" ngay, chưa có `paosctl` hỏi xác nhận / hết hạn 24h — đang HOÃN từ M2-5, chưa milestone nào nhận (BL-021, `docs/backlog.md`).
+- **Energy Engine chưa chuyển Process sang WAITING/resume thật** — chỉ loại candidate + để cơ chế fallback/backoff đã có xử lý (BL-022). GPU util/VRAM chưa đọc (tránh vendor lock-in NVIDIA, ADR-0030), nhiệt độ không đo được trên Windows (giới hạn nền tảng thật của `psutil`, không phải bỏ sót).
 
 ### 1.3b Ví dụ minh hoạ — Decision Engine chọn workflow
 
@@ -143,7 +149,7 @@ sequenceDiagram
 
 ### 1.4 Sắp tới
 
-P-M7-1 vừa xong — **mở đầu Milestone 7 (Cost/Energy/Time)**: `apps/paosd/cost_engine.py` — `estimate()` (đã có từ M2-2) so với ngân sách `policies/budget.yaml` TRƯỚC mỗi lượt gọi, `cost_entries` (bảng có từ M0, 0 writer tới giờ) ghi chi phí THẬT sau khi gọi thành công. `on_exceed: ask` đi qua `PermissionGuard` CONFIRM thật (không tự chế) — chặn ngay, không âm thầm chi tiêu (P12). Chi tiêu vượt `warn_at_pct` → Router tự chuyển hồ sơ `economy` (đóng nốt liên kết doc 06 §6, tham số `profile` từ P-M6-3 giờ có caller thật). Việc **ngay tiếp theo**: **P-M7-2 — Energy Engine: GPU/CPU/pin/nhiệt, hàng đợi thay vì chạy đè**. Lộ trình đầy đủ ở [§3](#3-lộ-trình-sắp-tới) bên dưới.
+P-M7-2 vừa xong — `apps/paosd/energy_engine.py`: CPU/pin thật qua `psutil` (ADR-0030, đã kiểm chạy trên Windows dev machine), `policies/energy.yaml`, Router loại candidate + phát `resource.wait.started` khi máy bận (không chạy đè). Nhân tiện sửa 1 flaky THẬT phát hiện lúc viết lát này: 3 file test construct `Router(...)` trực tiếp giờ trỏ energy policy an toàn, tránh fail giả theo tải CPU máy lúc chạy CI. Việc **ngay tiếp theo**: **P-M7-3 — Time Engine + báo cáo tiết kiệm hàng tháng** (đóng Milestone 7). Lộ trình đầy đủ ở [§3](#3-lộ-trình-sắp-tới) bên dưới.
 
 ---
 
@@ -264,7 +270,7 @@ Theo kế hoạch 10 milestone (~31 tuần lập trình thuần, 11–15 tháng 
 | M4 | Quality & Self-Correction | Tự sửa, tự chấm điểm, ghi `edit_rate` | ✅ Xong |
 | M5 | Memory & Knowledge | Nhớ sở thích, xây Knowledge Graph | ✅ Phạm vi xong · 2/5 tiêu chí trọn vẹn |
 | M6 | Decision Engine | Tự chọn workflow phù hợp | ✅ Phạm vi xong — chọn workflow + xếp hạng provider (Q̂/P/R) + routing.yaml/profile + explain --decisions. Chờ M7 (Ĉ/L̂) mới đủ 5/5 số hạng |
-| M7 | Cost / Energy / Time | Chạy đêm, tiết kiệm, đúng ngân sách | 🔶 Đang làm — P-M7-1 xong (Cost Engine: estimate/record/ngân sách 3 tầng) |
+| M7 | Cost / Energy / Time | Chạy đêm, tiết kiệm, đúng ngân sách | 🔶 Đang làm — P-M7-1/P-M7-2 xong (Cost Engine + Energy Engine CPU/pin thật) |
 | M8 | Plugin System & UI | Cài plugin, có giao diện Web thật | ⚪ Chưa tới |
 | M9 | Research Plugin | Nghiên cứu chủ đề, tích luỹ tri thức thật | ⚪ Chưa tới |
 | — | Hardening | Đạt toàn bộ chỉ tiêu chất lượng phi chức năng | ⚪ Liên tục |

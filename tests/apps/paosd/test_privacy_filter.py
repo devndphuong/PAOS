@@ -37,6 +37,17 @@ from kernel.registry.registry import Registry
 from kernel.state.db import StateStore
 from sdk.provider import CallContext, Estimate, Health, ProviderError
 
+# File KHÔNG BAO GIỜ tồn tại — EnergyEngine.check() luôn allowed=True (P-M7-2).
+# Tránh flaky theo tải CPU MÁY THẬT lúc chạy (default Router trỏ
+# policies/energy.yaml THẬT trong repo).
+_MISSING_ENERGY_POLICY = Path("Z:/paos-test-energy-policy-khong-ton-tai.yaml")
+
+
+def _make_router(*args: Any, **kwargs: Any) -> Router:
+    kwargs.setdefault("energy_policy_path", _MISSING_ENERGY_POLICY)
+    return Router(*args, **kwargs)
+
+
 _SECRET = "so_thich_rieng_tu_khong_ai_duoc_biet_98765"  # noqa: S105 - khong phai secret that, chi la du lieu gia dung de kiem tra ro ri
 
 
@@ -160,7 +171,7 @@ async def test_lying_cloud_provider_declaring_privacy_private_is_still_blocked(
     )
     adapter = _CountingAdapter()
     reg.preload_adapter("provider.evil_cloud", adapter)
-    router = Router(reg, events, store, {}, tmp_path)
+    router = _make_router(reg, events, store, {}, tmp_path)
 
     with pytest.raises(ProviderError):
         await router.call(
@@ -193,7 +204,7 @@ async def test_cloud_fallback_skipped_local_used_instead(
     local_adapter = _CountingAdapter()
     reg.preload_adapter("provider.cloud", cloud_adapter)
     reg.preload_adapter("provider.local", local_adapter)
-    router = Router(reg, events, store, {}, tmp_path)
+    router = _make_router(reg, events, store, {}, tmp_path)
 
     _result, chosen = await router.call(
         "text.generate@1", {"prompt": _SECRET}, "proc_1", contains_private_l3=True
@@ -214,7 +225,7 @@ async def test_privacy_blocked_event_does_not_leak_payload_content(
         tmp_path, extra_providers=[{"id": "provider.evil_cloud", "provider_class": "cloud"}]
     )
     reg.preload_adapter("provider.evil_cloud", _CountingAdapter())
-    router = Router(reg, events, store, {}, tmp_path)
+    router = _make_router(reg, events, store, {}, tmp_path)
 
     received: list[EventEnvelope] = []
 
@@ -246,7 +257,7 @@ async def test_decision_record_does_not_leak_payload_content_when_blocked(
         tmp_path, extra_providers=[{"id": "provider.evil_cloud", "provider_class": "cloud"}]
     )
     reg.preload_adapter("provider.evil_cloud", _CountingAdapter())
-    router = Router(reg, events, store, {}, tmp_path)
+    router = _make_router(reg, events, store, {}, tmp_path)
 
     with pytest.raises(ProviderError):
         await router.call(
@@ -269,7 +280,7 @@ async def test_error_raised_when_all_candidates_blocked_has_no_payload_leak(
         tmp_path, extra_providers=[{"id": "provider.solo_cloud", "provider_class": "cloud"}]
     )
     reg.preload_adapter("provider.solo_cloud", _CountingAdapter())
-    router = Router(reg, events, store, {}, tmp_path)
+    router = _make_router(reg, events, store, {}, tmp_path)
 
     with pytest.raises(ProviderError) as exc_info:
         await router.call(
@@ -300,7 +311,7 @@ async def test_blocked_attempt_does_not_populate_cache(
     )
     adapter = _CountingAdapter()
     reg.preload_adapter("provider.cloud", adapter)
-    router = Router(reg, events, store, {}, tmp_path)
+    router = _make_router(reg, events, store, {}, tmp_path)
 
     with pytest.raises(ProviderError):
         await router.call("text.generate@1", {"prompt": "x"}, "proc_1", contains_private_l3=True)
@@ -328,7 +339,7 @@ async def test_default_contains_private_l3_false_does_not_block_cloud(
     )
     adapter = _CountingAdapter()
     reg.preload_adapter("provider.cloud", adapter)
-    router = Router(reg, events, store, {}, tmp_path)
+    router = _make_router(reg, events, store, {}, tmp_path)
 
     __result, chosen = await router.call("text.generate@1", {"prompt": "x"}, "proc_1")
 

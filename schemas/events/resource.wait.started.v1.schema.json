@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://schemas/events/resource.wait.started.v1.schema.json",
+  "title": "resource.wait.started payload",
+  "description": "doc 06 §4, P-M7-2 — EnergyEngine từ chối 1 candidate (CPU quá tải/đang dùng pin/quá nhiệt), Router loại candidate đó, thử lại qua fallback/backoff.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["capability", "provider_id", "reason"],
+  "properties": {
+    "capability": { "type": "string" },
+    "provider_id": { "type": "string" },
+    "reason": { "type": "string" }
+  }
+}

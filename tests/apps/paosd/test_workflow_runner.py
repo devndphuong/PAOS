@@ -198,7 +198,16 @@ def harness(
     registry.preload_adapter("fake.provider", fake_adapter)
     registry.preload_adapter("fake.review.provider", fake_review_adapter)
     manager = ProcessManager(store, events)
-    router = Router(registry, events, store, {}, tmp_path / "workspace")
+    # energy_policy_path trỏ file không tồn tại -> EnergyEngine.check() luôn
+    # allowed=True, tránh flaky theo tải CPU MÁY THẬT lúc chạy test (P-M7-2).
+    router = Router(
+        registry,
+        events,
+        store,
+        {},
+        tmp_path / "workspace",
+        energy_policy_path=Path("Z:/paos-test-energy-policy-khong-ton-tai.yaml"),
+    )
     return Harness(manager, events, registry, store, router, tmp_path, _EchoAgent())
 
 
