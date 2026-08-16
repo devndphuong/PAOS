@@ -78,6 +78,12 @@ paosctl memory export                 # xuất toàn bộ memory ra JSON để t
 paosctl memory import ban-da-sua.json # nhập lại (đã tự sửa tay) — upsert theo memory_id
 ```
 
+**Decision Engine tự chọn workflow từ ý định (mới — M6)** — bỏ `workflow_ref` đi, chỉ nêu `intent`: đặc trưng hóa JobSpec (thuần tất định, không LLM) → tra ứng viên theo `policies/intents.yaml` → chấm điểm theo tỉ lệ thành công quá khứ (`decision_outcomes`, cold start → thứ tự khai báo). Ghi Decision Record + phát `workflow.selected`, xem lại qua `paosctl explain`.
+```bash
+curl -X POST localhost:8787/v1/jobs -d '{"intent":"video.create","name":"demo","spec":{"inputs":[{"type":"text"}]}}'
+# response trả lại workflow_ref đã CHỌN, không phải bạn tự khai
+```
+
 **Theo dõi & giải thích mọi việc đang/đã làm** — không có "log" mù mờ, mọi quyết định dựng lại được đầy đủ từ Event Log.
 ```bash
 paosctl ps                 # liệt kê mọi job
@@ -96,11 +102,33 @@ paosctl cancel <pid>       # hủy 1 job đang chạy, không ảnh hưởng job
 - **Knowledge Graph chỉ nhận diện thuật ngữ có trong danh sách đã biết** (~40 mục, `sdk/kg_extract.py::KNOWN_TERMS`) — không phải NLU/LLM thật (quyết định có chủ đích, ADR-0028, để giữ tính TẤT ĐỊNH cần cho "rebuild từ replay"); bỏ sót thuật ngữ chưa có trong danh sách (BL-017). Quan hệ suy ra được CHỈ có `learned_from` (entity → artifact nguồn) — chưa suy luận `is_a`/`alternative_to` giữa các entity. Cơ chế phát hiện mâu thuẫn đã xây và kiểm thật nhưng chưa có đường trích `prefers`/`avoids` thật để kích hoạt (BL-018). Số node tích luỹ từ sử dụng thật còn ít — cần dùng PAOS qua thời gian, không phải thứ 1 lát cắt code tạo ra được.
 - **Privacy Filter chưa có caller thật nào bật cờ** — `contains_private_l3=True` CHẶN THẬT (kiểm bằng test đối kháng), nhưng chưa Agent nào đọc lại Memory L3 để cần dùng cờ này (BL-015/BL-019) — hạ tầng sẵn sàng, chờ caller thật. Cũng chưa có provider `class: cloud` THẬT nào trong `providers/` để thử nghiệm ngoài môi trường test.
 - `paosctl knowledge` không có lệnh `forget` (quyết định có chủ đích — doc 07 §4.4 nói KG không bao giờ xóa, dùng `invalidated_at`; xem ADR-0029, BL-020).
-- **Chưa tự chọn cách làm tốt nhất** (Decision Engine, M6) — workflow phải chỉ định tay qua `workflow_ref`.
+- **Decision Engine mới chọn được WORKFLOW, chưa xếp hạng PROVIDER** (P-M6-1; provider ranking + EWMA là P-M6-2) — `Router` vẫn chọn provider theo thứ tự khai báo. `policies/intents.yaml` mới có đúng 1 intent thật (`video.create`) — chưa có 2 workflow cạnh tranh thật để chấm điểm phân biệt ngoài test.
+
+### 1.3b Ví dụ minh hoạ — Decision Engine chọn workflow
+
+```mermaid
+sequenceDiagram
+    participant U as Người dùng
+    participant API as POST /v1/jobs
+    participant DE as DecisionEngine
+    participant PM as ProcessManager
+
+    U->>API: {intent: "video.create", spec: {...}} (KHÔNG có workflow_ref)
+    API->>DE: choose_workflow(intent, spec)
+    DE->>DE: extract_features() -> feature_hash
+    DE->>DE: tra policies/intents.yaml -> ứng viên
+    DE->>DE: tra decision_outcomes theo feature_hash -> chấm điểm
+    DE-->>API: WorkflowSelection(chosen=video.plan_and_script@3)
+    API->>PM: create(workflow_ref="video.plan_and_script@3")
+    PM-->>API: Process(process_id, pid)
+    API->>DE: record_selection(process_id, selection)
+    DE->>DE: ghi decisions(scope=workflow_selection) + phát workflow.selected
+    API-->>U: {process_id, pid, workflow_ref}
+```
 
 ### 1.4 Sắp tới
 
-P-M5-4 vừa xong — **đóng phạm vi lát cắt Milestone 5** (P-M5-0 → P-M5-4): Privacy Filter (`Router.call(..., contains_private_l3=True)`, chặn cloud dựa vào CLASS cấu trúc chứ không tin self-declaration của provider), `paosctl memory show/forget/export/import` (ADR-0029: forget là xóa cứng thật, ngoại lệ có chủ đích với chính sách xóa mềm chung). Việc **ngay tiếp theo**: **P-M6-1 — Feature extraction + candidate generation + scoring** (mở đầu Decision Engine, M6). Lộ trình đầy đủ ở [§3](#3-lộ-trình-sắp-tới) bên dưới.
+P-M6-1 vừa xong — **mở đầu Milestone 6 (Decision Engine)**: `apps/paosd/decision_engine.py` — đặc trưng hóa JobSpec thuần tất định, tra ứng viên workflow theo `policies/intents.yaml`, chấm điểm theo `decision_outcomes` (bảng mới, học từ Process đã kết thúc). `POST /v1/jobs` giờ chấp nhận thiếu `workflow_ref`. Việc **ngay tiếp theo**: **P-M6-2 — Provider ranking: `provider_stats`, EWMA, vòng phản hồi chất lượng** (công thức doc 06 §2.2, khác Decision Engine ở chỗ chọn PROVIDER cho 1 capability call, không phải WORKFLOW cho cả Job). Lộ trình đầy đủ ở [§3](#3-lộ-trình-sắp-tới) bên dưới.
 
 ---
 
@@ -220,7 +248,7 @@ Theo kế hoạch 10 milestone (~31 tuần lập trình thuần, 11–15 tháng 
 | M3 | Agent & Workflow | Video plugin chạy hoàn chỉnh | ✅ Xong |
 | M4 | Quality & Self-Correction | Tự sửa, tự chấm điểm, ghi `edit_rate` | ✅ Xong |
 | M5 | Memory & Knowledge | Nhớ sở thích, xây Knowledge Graph | ✅ Phạm vi xong · 2/5 tiêu chí trọn vẹn |
-| M6 | Decision Engine | Tự chọn workflow phù hợp | ⚪ Chưa tới |
+| M6 | Decision Engine | Tự chọn workflow phù hợp | 🔶 Đang làm — P-M6-1 xong (feature extraction + candidate + scoring) |
 | M7 | Cost / Energy / Time | Chạy đêm, tiết kiệm, đúng ngân sách | ⚪ Chưa tới |
 | M8 | Plugin System & UI | Cài plugin, có giao diện Web thật | ⚪ Chưa tới |
 | M9 | Research Plugin | Nghiên cứu chủ đề, tích luỹ tri thức thật | ⚪ Chưa tới |

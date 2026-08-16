@@ -1,0 +1,15 @@
+# Candidate index cho Decision Engine (doc 06 S1.1 buoc 2, doc 19 P-M6-1).
+# DU LIEU, khong phai code (P10) - map intent -> danh sach workflow ung vien.
+# Moi workflow van tu quyet dinh "shape" cua no o workflows/<id>/<version>/
+# workflow.yaml (khong dong bang); file nay CHI la chi muc de tra cuu theo intent,
+# khong sua workflow.yaml da dong bang (doc 03 S4: version = shape dong bang).
+#
+# Chi khai bao video.create - VI DU CHINH THUC duy nhat trong doc 03 S2.1.
+# demo.pipeline/script_with_review la fixture test/demo, KHONG co intent that
+# trong bat ky doc nao - khong bia ten intent cho chung (P4 "khong truu tuong
+# hoa som").
+version: 1
+intents:
+  video.create:
+    - workflow_id: video.plan_and_script
+      version: 3

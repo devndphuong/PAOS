@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paos://schemas/events/workflow.selected.v1.schema.json",
+  "title": "workflow.selected payload",
+  "description": "doc 06 §1.1 — Decision Engine chọn workflow_id@version từ JobSpec (feature extraction + candidate generation + scoring).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["workflow_ref", "decision_id"],
+  "properties": {
+    "workflow_ref": { "type": "string" },
+    "decision_id": { "type": "string" }
+  }
+}

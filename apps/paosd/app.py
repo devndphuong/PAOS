@@ -10,6 +10,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from apps.paosd.artifact_store import ArtifactNotEditable, ArtifactNotFound, ArtifactStore
+from apps.paosd.decision_engine import DecisionEngine
 from apps.paosd.knowledge_store import KGEdge, KGNode, KnowledgeStore
 from apps.paosd.memory_retriever import MemoryRetriever, RetrievedMemory
 from apps.paosd.memory_store import MemoryItem, MemoryStore
@@ -26,13 +27,17 @@ class CreateJobRequest(BaseModel):
     intent: str
     spec: dict[str, Any] = {}
     name: str
-    workflow_ref: str
+    # Optional từ P-M6-1 (doc 19): thiếu -> DecisionEngine tự chọn theo `intent`
+    # (policies/intents.yaml). Truyền thẳng vẫn hợp lệ — bỏ qua Decision Engine
+    # hoàn toàn, đúng đường cũ M0-M5.
+    workflow_ref: str | None = None
     priority: int = 5
 
 
 class CreateJobResponse(BaseModel):
     process_id: str
     pid: int
+    workflow_ref: str
 
 
 class ReplayRequest(BaseModel):
@@ -258,13 +263,18 @@ def create_app(  # noqa: PLR0915 — đăng ký route tăng tuyến tính theo s
     runner: Runner,
     store: StateStore,
     workspace_root: Path,
+    decision_engine: DecisionEngine,
 ) -> FastAPI:
     """Lớp mỏng dịch HTTP <-> Kernel API (doc 04 §1) — không chứa logic nghiệp vụ.
     `store`/`workspace_root` chỉ dùng để dựng `ArtifactStore` (P-M4-3) — cùng
     tiền lệ `Router` tự dựng `CacheStore` nội bộ (`apps/paosd/router.py`),
     không cần một tầng "wiring" riêng cho 1 DAO nhỏ. `MemoryRetriever` (P-M5-1)
     tái dùng `runner.router` — KHÔNG dựng Router thứ 2 song song. `KnowledgeStore`
-    (P-M5-3) cùng vai trò — dựng tại chỗ, không qua wiring riêng."""
+    (P-M5-3) cùng vai trò — dựng tại chỗ, không qua wiring riêng. `decision_engine`
+    (P-M6-1) KHÁC — nhận từ ngoài (`wiring.py::build_daemon()`), không dựng tại
+    chỗ, vì cùng 1 instance còn phải subscribe `record_outcome()` cho
+    kernel.process.completed/failed — dựng 2 lần sẽ tách rời instance đang chấm
+    điểm khỏi instance đang học từ outcome."""
     app = FastAPI(title="paosd")
     artifacts = ArtifactStore(store, workspace_root)
     memory_store = MemoryStore(store, events)
@@ -274,16 +284,31 @@ def create_app(  # noqa: PLR0915 — đăng ký route tăng tuyến tính theo s
     @app.post("/v1/jobs", response_model=CreateJobResponse)
     async def create_job(body: CreateJobRequest) -> CreateJobResponse:
         try:
+            workflow_ref = body.workflow_ref
+            selection = None
+            if workflow_ref is None:
+                # Thiếu workflow_ref -> Decision Engine chọn theo intent (doc 06
+                # §1.1 bước 1-3). Chấm điểm TRƯỚC khi process_id tồn tại — ghi
+                # Decision Record (bước 5) chỉ sau khi manager.create() xong,
+                # xem docstring apps/paosd/decision_engine.py.
+                selection = await decision_engine.choose_workflow(
+                    intent=body.intent, spec=body.spec
+                )
+                workflow_ref = selection.chosen.ref
             process = await manager.create(
                 intent=body.intent,
                 spec=body.spec,
                 name=body.name,
-                workflow_ref=body.workflow_ref,
+                workflow_ref=workflow_ref,
                 priority=body.priority,
             )
+            if selection is not None:
+                await decision_engine.record_selection(process.process_id, selection)
         except PaosError as exc:
             raise HTTPException(status_code=400, detail=exc.to_dict()) from exc
-        return CreateJobResponse(process_id=process.process_id, pid=process.pid)
+        return CreateJobResponse(
+            process_id=process.process_id, pid=process.pid, workflow_ref=process.workflow_ref
+        )
 
     @app.get("/v1/processes", response_model=list[ProcessResponse])
     async def list_processes(state: str | None = None) -> list[ProcessResponse]:

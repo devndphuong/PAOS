@@ -14,6 +14,7 @@ import httpx
 import pytest
 
 from apps.paosd.app import create_app
+from apps.paosd.decision_engine import DecisionEngine
 from apps.paosd.memory_store import MemoryStore
 from apps.paosd.runner import Runner
 from kernel.events.bus import EventBus, EventEnvelope
@@ -44,19 +45,36 @@ def manager(store: StateStore, events: EventBus) -> ProcessManager:
 
 
 @pytest.fixture
-def runner(manager: ProcessManager, events: EventBus, store: StateStore, tmp_path: Path) -> Runner:
+def registry() -> Registry:
+    reg = Registry(_REPO_ROOT / "capabilities", _REPO_ROOT / "providers")
+    reg.load()
+    return reg
+
+
+@pytest.fixture
+def runner(
+    manager: ProcessManager, events: EventBus, registry: Registry, store: StateStore, tmp_path: Path
+) -> Runner:
     """KHÔNG subscribe vào events ở đây — file này kiểm lớp HTTP chung, không
     cần Agent chạy thật (đó là tests/apps/paosd/test_runner.py)."""
-    registry = Registry(_REPO_ROOT / "capabilities", _REPO_ROOT / "providers")
-    registry.load()
     return Runner(manager, events, registry, store, tmp_path / "workspace")
 
 
 @pytest.fixture
+def decision_engine(registry: Registry, store: StateStore, events: EventBus) -> DecisionEngine:
+    return DecisionEngine(registry, store, events, _REPO_ROOT / "policies" / "intents.yaml")
+
+
+@pytest.fixture
 async def client(
-    manager: ProcessManager, events: EventBus, runner: Runner, store: StateStore, tmp_path: Path
+    manager: ProcessManager,
+    events: EventBus,
+    runner: Runner,
+    store: StateStore,
+    tmp_path: Path,
+    decision_engine: DecisionEngine,
 ):
-    app = create_app(manager, events, runner, store, tmp_path / "workspace")
+    app = create_app(manager, events, runner, store, tmp_path / "workspace", decision_engine)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
         yield c

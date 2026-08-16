@@ -43,11 +43,15 @@ class EventType(StrEnum):
 
     # doc 05 §3.2 Workflow & Decision — thêm thật ở P-M3-2 khi Workflow YAML
     # engine (kernel/workflow/, apps/paosd/workflow_runner.py) có caller đầu
-    # tiên. workflow.selected (Decision Engine chọn workflow) hoãn tới M6 —
-    # M3 nhận workflow_ref trực tiếp từ caller, chưa có gì để "chọn".
+    # tiên.
     WORKFLOW_STEP_SKIPPED = "workflow.step.skipped"
     WORKFLOW_LOOP_ENTERED = "workflow.loop.entered"
     WORKFLOW_COMPENSATION_STARTED = "workflow.compensation.started"
+    # Decision Engine (doc 06 §1.1, doc 19 P-M6-1) chọn workflow từ JobSpec —
+    # apps/paosd/decision_engine.py::DecisionEngine.select_workflow() là caller
+    # thật đầu tiên. Ghi chú ở trên (thêm ở P-M3-2) từng nói "hoãn tới M6" —
+    # đây chính là lát cắt đó.
+    WORKFLOW_SELECTED = "workflow.selected"
 
     # Domain event do plugin/agent tự định nghĩa qua manifest.emits (doc 05 §3.4).
     SUMMARY_CREATED = "summary.created"

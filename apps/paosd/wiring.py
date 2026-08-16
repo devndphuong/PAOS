@@ -18,6 +18,7 @@ from fastapi import FastAPI
 
 from apps.paosd.app import create_app
 from apps.paosd.artifact_store import ArtifactStore
+from apps.paosd.decision_engine import DecisionEngine
 from apps.paosd.knowledge_extractor import KnowledgeExtractor
 from apps.paosd.knowledge_store import KnowledgeStore
 from apps.paosd.memory_store import MemoryStore
@@ -104,6 +105,21 @@ async def build_daemon(
     )
     events.subscribe("runner", "kernel.process.created", runner.on_process_created)
 
+    # DecisionEngine (P-M6-1, doc 06 §1.1/§1.3) — chọn workflow từ JobSpec khi
+    # caller không truyền workflow_ref thẳng (apps/paosd/app.py::create_job).
+    # 2 tên subscriber riêng cho record_outcome() — cùng lý do MemoryWriter/
+    # KnowledgeExtractor bên dưới (EventBus.subscribe ánh xạ 1 tên -> ĐÚNG 1
+    # pattern): completed/failed là 2 pattern khác nhau, cùng 1 handler.
+    decision_engine = DecisionEngine(
+        registry, store, events, _REPO_ROOT / "policies" / "intents.yaml"
+    )
+    events.subscribe(
+        "decision_engine_completed", "kernel.process.completed", decision_engine.record_outcome
+    )
+    events.subscribe(
+        "decision_engine_failed", "kernel.process.failed", decision_engine.record_outcome
+    )
+
     # MemoryWriter (P-M5-2, doc 07 §2) — quan sát Event để tự học sở thích.
     # 2 tên subscriber riêng vì EventBus.subscribe() ánh xạ 1 tên -> ĐÚNG 1
     # pattern (kernel/events/bus.py::_subscribers dict) — không gộp được 2
@@ -156,7 +172,7 @@ async def build_daemon(
         payload={"version": _PAOS_VERSION, "uptime": 0},
     )
 
-    app = create_app(manager, events, runner, store, resolved_workspace_root)
+    app = create_app(manager, events, runner, store, resolved_workspace_root, decision_engine)
     return Daemon(
         store=store,
         events=events,
